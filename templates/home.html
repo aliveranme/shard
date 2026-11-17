@@ -1,60 +1,121 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="ui container">
-  {% if !chrome.signed_in %}
-  <div class="ui segment">
-    <h1 class="tw-mb-2">A Git forge that runs at the edge</h1>
-    <p class="text muted">
-      Shard stores repositories in Cloudflare Artifacts and everything else in D1.
-      No servers, no VMs, no maintenance windows.
-    </p>
-    <a class="ui primary button" href="/user/sign_up">Create an account</a>
-    <a class="ui basic button" href="/user/login">Sign in</a>
-  </div>
-  {% endif %}
-
-  <div class="list-header">
-    <h1>
-      {% if is_explore %}Explore repositories{% else %}Your repositories{% endif %}
-    </h1>
-    {% if chrome.signed_in %}
-      <a class="ui primary button" href="/new">New repository</a>
-    {% endif %}
-  </div>
-
-  <form class="ui form" method="get" action="/explore/repos">
-    <div class="ui fluid action input">
-      <input type="search" name="q" value="{{ query }}" placeholder="Search repositories" aria-label="Search repositories">
-      <button class="ui button" type="submit">Search</button>
+{% if is_explore %}
+<div class="page">
+  <div class="page-head">
+    <div>
+      <h1 class="page-title">Explore repositories</h1>
+      <p class="page-sub">Public projects hosted on this shard.</p>
     </div>
+  </div>
+  <form class="hero__search" method="get" action="/explore/repos" role="search">
+    <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M10.68 11.74a6 6 0 0 1-7.922-8.982 6 6 0 0 1 8.982 7.922l3.04 3.04a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215ZM11.5 7a4.499 4.499 0 1 0-8.997 0A4.499 4.499 0 0 0 11.5 7Z"></path></svg>
+    <input type="search" name="q" value="{{ query }}" placeholder="Search repositories by name, owner or description" aria-label="Search repositories">
+    <button type="submit" aria-label="Search">→</button>
   </form>
-
+  <section class="section">
+    <div class="section__head">
+      <h2 class="section__title">Public repositories</h2>
+      {% if chrome.signed_in %}<a class="btn btn--primary" href="/new">New repository</a>{% endif %}
+    </div>
+    {% if repos.is_empty() %}
+      <div class="card empty">
+        <p class="empty__title">No matching repositories</p>
+        <p>Try a different search{% if chrome.signed_in %}, or <a href="/new">create one</a>{% endif %}.</p>
+      </div>
+    {% else %}
+      <div class="grid grid--repos">
+        {% for repo in repos %}
+          <a class="repo-card" href="/{{ repo.owner }}/{{ repo.name }}">
+            <span class="repo-card__name">{{ repo.owner }}<span>/{{ repo.name }}</span></span>
+            <span class="repo-card__desc">{% if repo.description.is_empty() %}No description yet.{% else %}{{ repo.description }}{% endif %}</span>
+            <span class="repo-card__meta">
+              <span>{{ repo.open_issues }} issue{% if repo.open_issues != 1 %}s{% endif %}</span>
+              <span>{{ repo.open_pulls }} PR{% if repo.open_pulls != 1 %}s{% endif %}</span>
+              {% if repo.private %}<span class="badge badge--private">Private</span>{% endif %}
+            </span>
+          </a>
+        {% endfor %}
+      </div>
+    {% endif %}
+  </section>
+</div>
+{% else %}
+<section class="hero">
+  <div class="page hero__grid">
+    <div>
+      {% if chrome.signed_in %}
+        <p class="eyebrow">Welcome back, {{ chrome.user_name }}</p>
+        <h1 class="hero__title">Your work,<br>at the edge.</h1>
+        <p class="hero__sub">Repositories, issues and pull requests in one calm place. Git lives in Cloudflare Artifacts; metadata sits in D1; nothing needs a server.</p>
+      {% else %}
+        <p class="eyebrow">Self-hosted Git on Cloudflare</p>
+        <h1 class="hero__title">Ship code.<br>Keep the forge.</h1>
+        <p class="hero__sub">A Git forge with issues and pull requests, built on Workers, Artifacts and D1. Clone fast, review in place, and never patch a VM again.</p>
+      {% endif %}
+      <form class="hero__search" method="get" action="/explore/repos" role="search">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M10.68 11.74a6 6 0 0 1-7.922-8.982 6 6 0 0 1 8.982 7.922l3.04 3.04a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215ZM11.5 7a4.499 4.499 0 1 0-8.997 0A4.499 4.499 0 0 0 11.5 7Z"></path></svg>
+        <input type="search" name="q" placeholder="Find a repository, or ask where your code lives" aria-label="Search repositories" value="{{ query }}">
+        <button type="submit" aria-label="Search">→</button>
+      </form>
+      <div class="chips hero__chips">
+        {% if chrome.signed_in %}
+          <a class="chip" href="/new">＋ New repository</a>
+          <a class="chip" href="/issues">◎ Issues</a>
+          <a class="chip" href="/pulls">⑂ Pull requests</a>
+          <a class="chip" href="/user/settings/tokens">◇ Access tokens</a>
+        {% else %}
+          <a class="chip" href="/user/sign_up">Create an account</a>
+          <a class="chip" href="/explore/repos">Explore repositories</a>
+          <a class="chip" href="/user/login">Sign in</a>
+        {% endif %}
+      </div>
+    </div>
+    <div class="hero__art" aria-hidden="true">
+      <div class="orb orb--amber"></div>
+      <div class="orb orb--lavender"></div>
+      <div class="hero__mock">
+        <div class="mock__head">
+          <span class="mock__dot"></span><span class="mock__dot"></span><span class="mock__dot"></span>
+        </div>
+        <div class="mock__row"><span class="mock__name"><span class="mock__dotfile">MD</span>README.md</span><span class="muted">2.1 KB</span></div>
+        <div class="mock__row"><span class="mock__name"><span class="mock__dotfile">/</span>src</span><span class="muted">dir</span></div>
+        <div class="mock__row"><span class="mock__name"><span class="mock__dotfile">rs</span>main.rs</span><span class="muted">1.4 KB</span></div>
+        <div class="mock__row"><span class="mock__name"><span class="mock__dotfile">⚑</span>main · 12 commits</span><span class="badge badge--merged">green</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+<section class="page section">
+  <div class="section__head">
+    <div>
+      <h2 class="section__title">{% if chrome.signed_in %}Your repositories{% else %}Fresh from this shard{% endif %}</h2>
+      <p class="section__intro">Repositories you own appear first{% if chrome.signed_in %}, along with public projects you can read{% endif %}.</p>
+    </div>
+    {% if chrome.signed_in %}<a class="btn btn--primary" href="/new">New repository</a>{% endif %}
+  </div>
   {% if repos.is_empty() %}
-    <div class="ui segment center text muted">
-      No repositories yet.
-      {% if chrome.signed_in %}<a href="/new">Create your first repository</a>.{% endif %}
+    <div class="card empty">
+      <p class="empty__title">Nothing here yet</p>
+      <p>{% if chrome.signed_in %}Create your first repository and push a branch.{% else %}Sign in to create the first repository.{% endif %}</p>
+      {% if chrome.signed_in %}<p style="margin-top:18px"><a class="btn btn--primary" href="/new">Create a repository</a></p>{% endif %}
     </div>
   {% else %}
-    <div class="flex-list">
+    <div class="grid grid--repos">
       {% for repo in repos %}
-      <div class="flex-item">
-        <div class="flex-item-main">
-          <div class="flex-item-title">
-            <a href="/{{ repo.owner }}/{{ repo.name }}">{{ repo.owner }}/{{ repo.name }}</a>
-            {% if repo.private %}<span class="ui label">Private</span>{% endif %}
-          </div>
-          {% if !repo.description.is_empty() %}
-            <div class="text muted">{{ repo.description }}</div>
-          {% endif %}
-          <div class="text light-2 tw-mt-2">
-            Updated {{ repo.updated.relative() }} &middot;
-            {{ repo.open_issues }} open issue{% if repo.open_issues != 1 %}s{% endif %} &middot;
-            {{ repo.open_pulls }} open pull request{% if repo.open_pulls != 1 %}s{% endif %}
-          </div>
-        </div>
-      </div>
+        <a class="repo-card" href="/{{ repo.owner }}/{{ repo.name }}">
+          <span class="repo-card__name">{{ repo.owner }}<span>/{{ repo.name }}</span></span>
+          <span class="repo-card__desc">{% if repo.description.is_empty() %}No description yet.{% else %}{{ repo.description }}{% endif %}</span>
+          <span class="repo-card__meta">
+            <span>{{ repo.open_issues }} issue{% if repo.open_issues != 1 %}s{% endif %}</span>
+            <span>{{ repo.open_pulls }} PR{% if repo.open_pulls != 1 %}s{% endif %}</span>
+            <span>Updated {{ repo.updated.relative() }}</span>
+            {% if repo.private %}<span class="badge badge--private">Private</span>{% endif %}
+          </span>
+        </a>
       {% endfor %}
     </div>
   {% endif %}
-</div>
+</section>
+{% endif %}
 {% endblock %}

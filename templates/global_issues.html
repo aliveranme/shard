@@ -1,24 +1,28 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="ui container issue-list tw-mt-4">
-  <h1>{{ heading }}</h1>
+<div class="page">
+  <div class="page-head">
+    <div>
+      <h1 class="page-title">{{ heading }}</h1>
+      <p class="page-sub">Open work across the repositories you can read.</p>
+    </div>
+  </div>
   {% if issues.is_empty() %}
-    <div class="ui segment text muted">Nothing open right now.</div>
+    <div class="card empty">
+      <p class="empty__title">Nothing open</p>
+      <p>Everything is reviewed and closed for now.</p>
+    </div>
   {% else %}
-    <div class="flex-list">
+    <div class="list">
       {% for issue in issues %}
-      <div class="flex-item">
-        <div class="flex-item-main">
-          <div class="flex-item-title">
-            <a href="/{{ issue.owner }}/{{ issue.repo }}/{% if issue.is_pull %}pulls{% else %}issues{% endif %}/{{ issue.number }}">
-              {{ issue.title }}
-            </a>
+        <a class="list__row" href="/{{ issue.owner }}/{{ issue.repo }}/{% if issue.is_pull %}pulls{% else %}issues{% endif %}/{{ issue.number }}">
+          <span class="list__icon" aria-hidden="true">{% if issue.is_pull %}⧉{% else %}◎{% endif %}</span>
+          <div class="list__main">
+            <div class="list__title">{{ issue.title }}</div>
+            <div class="list__meta">{{ issue.repo_full }} #{{ issue.number }} · opened {{ issue.date.relative() }} by {{ issue.author }}</div>
           </div>
-          <div class="text muted">
-            {{ issue.repo_full }} #{{ issue.number }} &middot; opened {{ issue.date.relative() }} by {{ issue.author }}
-          </div>
-        </div>
-      </div>
+          <span class="badge badge--open">Open</span>
+        </a>
       {% endfor %}
     </div>
   {% endif %}

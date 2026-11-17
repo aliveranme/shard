@@ -1,26 +1,32 @@
 {% extends "base.html" %}
 {% block content %}
 {% include "repo_header.html" %}
-<div class="ui container">
-  <div class="tw-flex tw-items-center tw-mt-4 tw-flex-wrap">
+<div class="page">
+  <div class="breadcrumb" style="font-size:1.25rem;margin-top:26px">
     <a href="/{{ repo.owner_name }}/{{ repo.name }}/src?branch={{ branch_url }}">{{ repo.name }}</a>
     {% for crumb in crumbs %}
-      <span class="text muted tw-mx-1">/</span>
-      {% if loop.last %}
-        <strong>{{ crumb.name }}</strong>
-      {% else %}
-        <a href="/{{ repo.owner_name }}/{{ repo.name }}/src/{{ crumb.url_path }}?branch={{ branch_url }}">{{ crumb.name }}</a>
-      {% endif %}
+      <span class="sep" aria-hidden="true">/</span>
+      <a href="/{{ repo.owner_name }}/{{ repo.name }}/src/{{ crumb.url_path }}?branch={{ branch_url }}">{{ crumb.name }}</a>
     {% endfor %}
-    <span class="tw-ml-auto text muted">{{ size }}</span>
   </div>
-  <div class="ui segment tw-mt-3">
+
+  <div class="code-panel">
+    <div class="code-panel__bar">
+      <span class="mono">{{ path_url }}</span>
+      <span style="display:inline-flex;gap:12px;align-items:center">
+        <span>{{ size }}</span>
+        <a class="btn btn--ghost btn--sm" href="/{{ repo.owner_name }}/{{ repo.name }}/raw/{{ path_url }}?branch={{ branch_url }}">Raw file</a>
+      </span>
+    </div>
     {% if is_binary %}
-      <p class="text muted">Binary file &mdash; preview is not available.</p>
-      <a class="ui basic button" href="/{{ repo.owner_name }}/{{ repo.name }}/raw/{{ path_url }}?branch={{ branch_url }}">Download raw file</a>
+      <div class="empty">
+        <p class="empty__title">Binary file</p>
+        <p style="margin-bottom:16px">Preview is not available for this file.</p>
+        <a class="btn btn--primary" href="/{{ repo.owner_name }}/{{ repo.name }}/raw/{{ path_url }}?branch={{ branch_url }}">Download raw file</a>
+      </div>
     {% else %}
-      {% if truncated %}<div class="ui warning message">Preview truncated to the first 256 KiB.</div>{% endif %}
-      <pre class="tw-overflow-auto"><code>{{ content }}</code></pre>
+      {% if truncated %}<div class="alert alert--warn" style="margin:0;border-radius:0">Preview truncated to the first 256 KiB.</div>{% endif %}
+      <pre><code>{{ content }}</code></pre>
     {% endif %}
   </div>
 </div>

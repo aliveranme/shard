@@ -79,6 +79,7 @@ pub struct CommitRow {
     pub short: String,
     pub message: String,
     pub author: String,
+    pub author_initial: String,
     pub date: Option<Ts>,
 }
 
@@ -107,7 +108,9 @@ pub struct GlobalIssueRow {
 
 #[derive(Clone)]
 pub struct CommentRow {
+    pub id: i64,
     pub author: String,
+    pub initial: String,
     pub date: Ts,
     pub html: String,
 }
@@ -213,7 +216,6 @@ pub struct RepoCodePage {
     pub branch: String,
     pub branch_url: String,
     pub branches: Vec<String>,
-    pub path: String,
     pub crumbs: Vec<Crumb>,
     pub files: Vec<FileRow>,
     pub readme: Option<String>,
@@ -276,6 +278,7 @@ pub struct IssuePage {
     pub repo: Repo,
     pub tab: String,
     pub issue: Issue,
+    pub author_initial: String,
     pub body_html: String,
     pub comments: Vec<CommentRow>,
     pub pull: Option<PullView>,
@@ -341,11 +344,21 @@ impl TokenRow {
 impl CommentRow {
     pub fn from_comment(comment: &Comment) -> Self {
         Self {
+            id: comment.id,
             author: comment.author().to_string(),
+            initial: initial(comment.author()),
             date: comment.created_at,
             html: crate::markdown::render(&comment.body),
         }
     }
+}
+
+/// Single uppercase character for an avatar bubble.
+pub fn initial(name: &str) -> String {
+    name.chars()
+        .next()
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_default()
 }
 
 #[derive(Template)]

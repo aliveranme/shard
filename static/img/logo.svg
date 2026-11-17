@@ -1,4 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="shard">
-  <path fill="#e85d3f" d="M16 1.5 30.5 10v12L16 30.5 1.5 22V10L16 1.5Z"/>
-  <path fill="#fff" d="M16 7.2 12 12h8l-4-4.8Zm-6.2 6.6L7.2 18h17.6l-2.6-4.2H9.8Zm-1.2 6.4v1.9c0 .4.2.7.5.9l6 3.3v-6.1H8.6Z"/>
+  <rect width="32" height="32" rx="9" fill="#F2C94C"/>
+  <path d="M16 6.2 24.4 11l-8.4 4.8L7.6 11 16 6.2Z" fill="#1A1A1A"/>
+  <path d="M7.6 13.4 15 17.6v7.2l-7.4-4.2v-7.2Z" fill="#1A1A1A" opacity=".86"/>
+  <path d="M24.4 13.4 17 17.6v7.2l7.4-4.2v-7.2Z" fill="#1A1A1A" opacity=".7"/>
 </svg>

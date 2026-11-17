@@ -1,51 +1,64 @@
 {% extends "base.html" %}
 {% block content %}
 {% include "repo_header.html" %}
-<div class="ui container tw-mt-4">
-  <h1>Settings</h1>
+<div class="page">
+  <div class="page-head" style="padding-top:34px">
+    <div>
+      <h1 class="page-title">Settings</h1>
+      <p class="page-sub">Name, visibility and storage for {{ repo.full_name() }}.</p>
+    </div>
+  </div>
+
   {% if let Some(message) = message %}
-    <div class="ui positive message">Settings saved.</div>
+    <div class="alert alert--success" role="status">Settings saved.</div>
   {% endif %}
   {% if let Some(message) = error %}
-    <div class="ui negative message">{{ message }}</div>
+    <div class="alert alert--error" role="alert">{{ message }}</div>
   {% endif %}
-  <form class="ui form" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/settings">
+
+  <form class="form card" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/settings">
     <div class="field">
       <label for="description">Description</label>
-      <input id="description" name="description" value="{{ description_value }}">
+      <input class="input" id="description" name="description" value="{{ description_value }}" placeholder="What is this repository for?">
     </div>
-    <div class="field">
-      <label for="default_branch">Default branch</label>
-      <input id="default_branch" name="default_branch" value="{{ repo.default_branch }}">
+    <div class="two-col">
+      <div class="field">
+        <label for="default_branch">Default branch</label>
+        <input class="input" id="default_branch" name="default_branch" value="{{ repo.default_branch }}">
+      </div>
+      <div class="field">
+        <label for="visibility">Visibility</label>
+        <select class="select" id="visibility" name="visibility">
+          <option value="public" {% if visibility_value == "public" %}selected{% endif %}>Public</option>
+          <option value="private" {% if visibility_value == "private" %}selected{% endif %}>Private</option>
+        </select>
+      </div>
     </div>
-    <div class="field">
-      <label for="visibility">Visibility</label>
-      <select id="visibility" name="visibility" class="ui dropdown">
-        <option value="public" {% if visibility_value == "public" %}selected{% endif %}>Public</option>
-        <option value="private" {% if visibility_value == "private" %}selected{% endif %}>Private</option>
-      </select>
+    <div class="form__actions">
+      <button class="btn btn--primary" type="submit">Save settings</button>
     </div>
-    <button class="ui primary button" type="submit">Save settings</button>
   </form>
 
-  <div class="ui divider"></div>
-  <div class="ui segment">
-    <h3>Git storage</h3>
-    <p class="text muted">
-      Backed by Cloudflare Artifacts as <code>{{ repo.artifacts_repo }}</code>.
-    </p>
-  </div>
+  <section class="section" style="padding-top:26px">
+    <div class="card card--warm">
+      <h2 class="card__title">Git storage</h2>
+      <p class="card__sub">Backed by Cloudflare Artifacts. Git clients reach it through this shard's proxy, never directly.</p>
+      <div class="token-value"><code>{{ repo.artifacts_repo }}</code></div>
+    </div>
+  </section>
 
-  <div class="ui negative message">
-    <div class="header">Delete this repository</div>
-    <p>This removes the repository, its issues and its Artifacts storage. It cannot be undone.</p>
-    <form class="ui form" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/settings/delete">
-      <div class="field">
-        <label for="confirm">Type <code>{{ repo.name }}</code> to confirm</label>
-        <input id="confirm" name="confirm" required>
-      </div>
-      <button class="ui red button" type="submit">Delete repository</button>
-    </form>
-  </div>
+  <section class="section" style="padding-top:0">
+    <div class="card card--danger">
+      <h2 class="card__title" style="color:var(--maroon)">Delete this repository</h2>
+      <p class="card__sub" style="margin-bottom:18px">This removes the metadata, issues, pull requests and the Artifacts repository. It cannot be undone.</p>
+      <form class="form" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/settings/delete">
+        <div class="field">
+          <label for="confirm">Type <code>{{ repo.name }}</code> to confirm</label>
+          <input class="input" id="confirm" name="confirm" required>
+        </div>
+        <button class="btn btn--danger" type="submit">Delete repository</button>
+      </form>
+    </div>
+  </section>
 </div>
 {% endblock %}

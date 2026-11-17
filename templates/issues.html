@@ -1,56 +1,66 @@
 {% extends "base.html" %}
 {% block content %}
 {% include "repo_header.html" %}
-<div class="ui container issue-list">
-  <div class="list-header">
-    <h1>{% if is_pull %}Pull requests{% else %}Issues{% endif %}</h1>
+<div class="page">
+  <div class="page-head" style="padding-top:34px">
+    <div>
+      <h1 class="page-title">{% if is_pull %}Pull requests{% else %}Issues{% endif %}</h1>
+      <p class="page-sub">
+        {% if is_pull %}Review changes before they reach the base branch.{% else %}Track bugs, ideas and decisions next to the code.{% endif %}
+      </p>
+    </div>
     {% if chrome.signed_in %}
-      <a class="ui primary button" href="/{{ repo.owner_name }}/{{ repo.name }}/{% if is_pull %}pulls{% else %}issues{% endif %}/new">
+      <a class="btn btn--primary" href="/{{ repo.owner_name }}/{{ repo.name }}/{% if is_pull %}pulls{% else %}issues{% endif %}/new">
         {% if is_pull %}New pull request{% else %}New issue{% endif %}
       </a>
     {% endif %}
   </div>
 
-  <div class="ui secondary pointing menu">
-    <a class="{% if state == "open" %}active {% endif %}item" href="?state=open">Open <span class="ui small label">{{ open_count }}</span></a>
-    <a class="{% if state == "closed" %}active {% endif %}item" href="?state=closed">Closed <span class="ui small label">{{ closed_count }}</span></a>
-    <a class="{% if state == "all" %}active {% endif %}item" href="?state=all">All</a>
+  <div class="tabs" role="tablist" aria-label="State">
+    <a class="tab" role="tab" {% if state == "open" %}aria-current="page"{% endif %} href="?state=open">
+      Open <span class="badge badge--count">{{ open_count }}</span>
+    </a>
+    <a class="tab" role="tab" {% if state == "closed" %}aria-current="page"{% endif %} href="?state=closed">
+      Closed <span class="badge badge--count">{{ closed_count }}</span>
+    </a>
+    <a class="tab" role="tab" {% if state == "all" %}aria-current="page"{% endif %} href="?state=all">All</a>
   </div>
 
-  <form class="ui form" method="get">
+  <form class="hero__search" method="get" style="margin:20px 0 24px;max-width:640px">
     <input type="hidden" name="state" value="{{ state }}">
-    <div class="ui fluid action input">
-      <input type="search" name="q" value="{{ query }}" placeholder="Search title" aria-label="Search title">
-      <button class="ui button" type="submit">Search</button>
-    </div>
+    <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M10.68 11.74a6 6 0 0 1-7.922-8.982 6 6 0 0 1 8.982 7.922l3.04 3.04a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215ZM11.5 7a4.499 4.499 0 1 0-8.997 0A4.499 4.499 0 0 0 11.5 7Z"></path></svg>
+    <input type="search" name="q" value="{{ query }}" placeholder="Search by title" aria-label="Search by title">
+    <button type="submit" aria-label="Search">→</button>
   </form>
 
   {% if issues.is_empty() %}
-    <div class="ui segment text muted tw-mt-3">Nothing here.</div>
+    <div class="card empty">
+      <p class="empty__title">Nothing here</p>
+      <p>{% if state == "open" %}No open {% if is_pull %}pull requests{% else %}issues{% endif %}.{% else %}No matching entries.{% endif %}</p>
+    </div>
   {% else %}
-    <div class="flex-list tw-mt-3">
+    <div class="list">
       {% for issue in issues %}
-      <div class="flex-item">
-        <div class="flex-item-leading">
-          {% if issue.is_pull %}
-            <svg class="octicon" viewBox="0 0 16 16" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z"></path></svg>
+        <a class="list__row" href="/{{ repo.owner_name }}/{{ repo.name }}/{% if issue.is_pull %}pulls{% else %}issues{% endif %}/{{ issue.number }}">
+          <span class="list__icon" aria-hidden="true">
+            {% if issue.is_pull %}
+              <svg viewBox="0 0 16 16" width="18" height="18"><path fill="currentColor" d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z"></path></svg>
+            {% else %}
+              <svg viewBox="0 0 16 16" width="18" height="18"><path fill="currentColor" d="M8 9.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z"></path><path fill="currentColor" d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Z"></path></svg>
+            {% endif %}
+          </span>
+          <div class="list__main">
+            <div class="list__title">{{ issue.title }}</div>
+            <div class="list__meta">
+              #{{ issue.number }} opened {{ issue.date.relative() }} by {{ issue.author }} · {{ issue.comments }} comment{% if issue.comments != 1 %}s{% endif %}
+            </div>
+          </div>
+          {% if issue.state == "closed" %}
+            <span class="badge badge--closed">Closed</span>
           {% else %}
-            <svg class="octicon" viewBox="0 0 16 16" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M8 9.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z"></path><path fill="currentColor" d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Z"></path></svg>
+            <span class="badge badge--open">Open</span>
           {% endif %}
-        </div>
-        <div class="flex-item-main">
-          <div class="flex-item-title">
-            <a href="/{{ repo.owner_name }}/{{ repo.name }}/{% if issue.is_pull %}pulls{% else %}issues{% endif %}/{{ issue.number }}">
-              {{ issue.title }}
-            </a>
-            {% if issue.state == "closed" %}<span class="ui label">Closed</span>{% endif %}
-          </div>
-          <div class="text muted">
-            #{{ issue.number }} opened {{ issue.date.relative() }} by {{ issue.author }}
-            &middot; {{ issue.comments }} comment{% if issue.comments != 1 %}s{% endif %}
-          </div>
-        </div>
-      </div>
+        </a>
       {% endfor %}
     </div>
   {% endif %}

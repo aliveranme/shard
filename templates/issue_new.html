@@ -1,40 +1,50 @@
 {% extends "base.html" %}
 {% block content %}
 {% include "repo_header.html" %}
-<div class="ui container tw-mt-4">
-  <h1>{% if is_pull %}New pull request{% else %}New issue{% endif %}</h1>
+<div class="page">
+  <div class="page-head" style="padding-top:34px">
+    <div>
+      <h1 class="page-title">{% if is_pull %}New pull request{% else %}New issue{% endif %}</h1>
+      <p class="page-sub">
+        {% if is_pull %}Compare two branches already pushed to this repository.{% else %}Describe the problem or idea in Markdown.{% endif %}
+      </p>
+    </div>
+  </div>
+
   {% if let Some(message) = error %}
-    <div class="ui negative message">{{ message }}</div>
+    <div class="alert alert--error" role="alert">{{ message }}</div>
   {% endif %}
-  <form class="ui form" method="post"
+
+  <form class="form card" method="post"
         action="/{{ repo.owner_name }}/{{ repo.name }}/{% if is_pull %}pulls{% else %}issues{% endif %}/new">
     <div class="field">
       <label for="title">Title</label>
-      <input id="title" name="title" value="{{ title_value }}" required autofocus>
+      <input class="input" id="title" name="title" value="{{ title_value }}" placeholder="{% if is_pull %}Improve the README{% else %}Something is broken{% endif %}" required autofocus>
     </div>
     {% if is_pull %}
-    <div class="two fields">
+    <div class="two-col">
       <div class="field">
         <label for="base_branch">Base branch</label>
-        <input id="base_branch" name="base_branch" value="{{ base_value }}" required>
+        <input class="input" id="base_branch" name="base_branch" value="{{ base_value }}" required>
       </div>
       <div class="field">
         <label for="head_branch">Head branch</label>
-        <input id="head_branch" name="head_branch" value="{{ head_value }}" placeholder="feature/my-change" list="branches" required>
+        <input class="input" id="head_branch" name="head_branch" value="{{ head_value }}" placeholder="feature/my-change" list="branches" required>
         <datalist id="branches">
           {% for branch in branches %}<option value="{{ branch }}"></option>{% endfor %}
         </datalist>
-        <span class="help">Branch must already be pushed to this repository.</span>
       </div>
     </div>
+    <p class="help muted">Both branches must already exist in this repository.</p>
     {% endif %}
     <div class="field">
       <label for="body">Description</label>
-      <textarea id="body" name="body" rows="10" placeholder="Markdown is supported">{{ body_value }}</textarea>
+      <textarea class="textarea" id="body" name="body" placeholder="Markdown is supported">{{ body_value }}</textarea>
     </div>
-    <button class="ui primary button" type="submit">
-      {% if is_pull %}Create pull request{% else %}Create issue{% endif %}
-    </button>
+    <div class="form__actions">
+      <button class="btn btn--primary" type="submit">{% if is_pull %}Create pull request{% else %}Create issue{% endif %}</button>
+      <a class="btn btn--ghost" href="/{{ repo.owner_name }}/{{ repo.name }}/{% if is_pull %}pulls{% else %}issues{% endif %}">Cancel</a>
+    </div>
   </form>
 </div>
 {% endblock %}

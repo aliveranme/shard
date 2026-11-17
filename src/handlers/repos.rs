@@ -152,7 +152,6 @@ pub async fn view(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
         branch_url: util::url_path(&branch),
         branch,
         branches,
-        path: String::new(),
         crumbs: Vec::new(),
         files,
         readme,
@@ -207,7 +206,6 @@ pub async fn tree(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
         branch: branch.clone(),
         branch_url: branch_url.clone(),
         branches: vec![repo.default_branch.clone()],
-        path: path.clone(),
         crumbs: crumbs(&path),
         files,
         readme: None,
@@ -453,6 +451,7 @@ fn commit_row(commit: Commit) -> CommitRow {
         short: util::short_hash(&commit.hash),
         hash: commit.hash,
         message: commit.message,
+        author_initial: crate::templates::initial(&commit.author),
         author: commit.author,
         date: commit.timestamp.map(Ts),
     }

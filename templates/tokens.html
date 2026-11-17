@@ -1,64 +1,78 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="ui container tw-mt-4">
-  <h1>Access tokens</h1>
-  <p class="text muted">
-    Use a token as the password when git asks for credentials. Tokens with
-    <em>write</em> scope can push; <em>read</em> tokens can only clone and fetch.
-  </p>
+<div class="page">
+  <div class="page-head">
+    <div>
+      <h1 class="page-title">Access tokens</h1>
+      <p class="page-sub">Use a token as the password when Git asks for credentials.</p>
+    </div>
+  </div>
 
   {% if let Some(token) = new_token %}
-    <div class="ui positive message">
-      <div class="header">New token created</div>
-      <p>Copy it now &mdash; it will not be shown again.</p>
-      <pre><code>{{ token }}</code></pre>
+    <div class="alert alert--success" role="status">
+      <strong>New token created.</strong> Copy it now — it will not be shown again.
+      <div class="token-value"><code>{{ token }}</code></div>
     </div>
   {% endif %}
   {% if let Some(message) = error %}
-    <div class="ui negative message">{{ message }}</div>
+    <div class="alert alert--error" role="alert">{{ message }}</div>
   {% endif %}
 
-  <form class="ui form" method="post" action="/user/settings/tokens">
-    <div class="two fields">
+  <div class="grid grid--two">
+    <form class="form card" method="post" action="/user/settings/tokens">
+      <div>
+        <h2 class="card__title">Generate a token</h2>
+        <p class="card__sub">Write tokens can push to your repositories; read tokens can only fetch.</p>
+      </div>
       <div class="field">
         <label for="name">Token name</label>
-        <input id="name" name="name" placeholder="laptop" required>
+        <input class="input" id="name" name="name" placeholder="laptop" required>
       </div>
       <div class="field">
         <label for="scope">Scope</label>
-        <select id="scope" name="scope" class="ui dropdown">
-          <option value="write" selected>Write (clone, fetch, push)</option>
-          <option value="read">Read (clone, fetch)</option>
+        <select class="select" id="scope" name="scope">
+          <option value="write" selected>Write — clone, fetch, push</option>
+          <option value="read">Read — clone, fetch</option>
         </select>
       </div>
-    </div>
-    <button class="ui primary button" type="submit">Generate token</button>
-  </form>
+      <button class="btn btn--primary" type="submit">Generate token</button>
+    </form>
 
-  <div class="ui divider"></div>
-  {% if tokens.is_empty() %}
-    <div class="ui segment text muted">No tokens yet.</div>
-  {% else %}
-    <table class="ui single line table">
-      <thead>
-        <tr><th>Name</th><th>Scope</th><th>Created</th><th>Last used</th><th></th></tr>
-      </thead>
-      <tbody>
+    <div class="card">
+      <h2 class="card__title">Git quickstart</h2>
+      <p class="card__sub">Clone with your username and a token once the repository exists.</p>
+      <div class="token-value"><code>git clone https://&lt;user&gt;:&lt;token&gt;@&lt;host&gt;/&lt;owner&gt;/&lt;repo&gt;.git</code></div>
+    </div>
+  </div>
+
+  <section class="section">
+    <div class="section__head">
+      <h2 class="section__title" style="font-size:2rem">Your tokens</h2>
+    </div>
+    {% if tokens.is_empty() %}
+      <div class="card empty">
+        <p class="empty__title">No tokens yet</p>
+        <p>Generate one above to push from your machine.</p>
+      </div>
+    {% else %}
+      <div class="list">
         {% for token in tokens %}
-        <tr>
-          <td>{{ token.name }}</td>
-          <td>{{ token.scope }}</td>
-          <td>{{ token.created }}</td>
-          <td>{% if let Some(last) = token.last_used %}{{ last.relative() }}{% else %}never{% endif %}</td>
-          <td class="right aligned">
+          <div class="list__row">
+            <div class="list__icon" aria-hidden="true">◇</div>
+            <div class="list__main">
+              <div class="list__title">{{ token.name }}</div>
+              <div class="list__meta">
+                {{ token.scope }} scope · created {{ token.created }}
+                · {% if let Some(last) = token.last_used %}last used {{ last.relative() }}{% else %}never used{% endif %}
+              </div>
+            </div>
             <form method="post" action="/user/settings/tokens/{{ token.id }}/delete">
-              <button class="ui basic small button" type="submit">Revoke</button>
+              <button class="btn btn--danger btn--sm" type="submit">Revoke</button>
             </form>
-          </td>
-        </tr>
+          </div>
         {% endfor %}
-      </tbody>
-    </table>
-  {% endif %}
+      </div>
+    {% endif %}
+  </section>
 </div>
 {% endblock %}

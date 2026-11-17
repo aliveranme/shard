@@ -1,35 +1,40 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="ui container">
-  <div class="ui segment tw-mt-4">
-    <h1 class="tw-mb-1">
-      <span class="ui avatar image" aria-hidden="true">{{ name.chars().next().unwrap_or_default().to_uppercase() }}</span>
-      {{ name }}
-      {% if is_self %}<span class="ui label">You</span>{% endif %}
-    </h1>
-    <p class="text muted">Member since {{ joined }}</p>
+<div class="page">
+  <div class="page-head">
+    <div style="display:flex;align-items:center;gap:22px;flex-wrap:wrap">
+      <span class="avatar avatar--lg" aria-hidden="true">{{ name.chars().next().unwrap_or_default().to_uppercase() }}</span>
+      <div>
+        <h1 class="page-title">{{ name }}{% if is_self %} <span class="badge">You</span>{% endif %}</h1>
+        <p class="page-sub">Member since {{ joined }}</p>
+      </div>
+    </div>
+    {% if is_self %}<a class="btn btn--primary" href="/new">New repository</a>{% endif %}
   </div>
 
-  <div class="list-header">
-    <h2>Repositories</h2>
-  </div>
-  {% if repos.is_empty() %}
-    <div class="ui segment text muted">No repositories yet.</div>
-  {% else %}
-    <div class="flex-list">
-      {% for repo in repos %}
-      <div class="flex-item">
-        <div class="flex-item-main">
-          <div class="flex-item-title">
-            <a href="/{{ repo.owner }}/{{ repo.name }}">{{ repo.owner }}/{{ repo.name }}</a>
-            {% if repo.private %}<span class="ui label">Private</span>{% endif %}
-          </div>
-          {% if !repo.description.is_empty() %}<div class="text muted">{{ repo.description }}</div>{% endif %}
-          <div class="text light-2 tw-mt-2">Updated {{ repo.updated.relative() }}</div>
-        </div>
-      </div>
-      {% endfor %}
+  <section class="section" style="padding-top:8px">
+    <div class="section__head">
+      <h2 class="section__title" style="font-size:2rem">Repositories</h2>
     </div>
-  {% endif %}
+    {% if repos.is_empty() %}
+      <div class="card empty">
+        <p class="empty__title">No public repositories</p>
+        <p>{% if is_self %}Push your first repository to make it appear here.{% else %}This person has not published anything yet.{% endif %}</p>
+      </div>
+    {% else %}
+      <div class="grid grid--repos">
+        {% for repo in repos %}
+          <a class="repo-card" href="/{{ repo.owner }}/{{ repo.name }}">
+            <span class="repo-card__name">{{ repo.owner }}<span>/{{ repo.name }}</span></span>
+            <span class="repo-card__desc">{% if repo.description.is_empty() %}No description yet.{% else %}{{ repo.description }}{% endif %}</span>
+            <span class="repo-card__meta">
+              <span>Updated {{ repo.updated.relative() }}</span>
+              {% if repo.private %}<span class="badge badge--private">Private</span>{% endif %}
+            </span>
+          </a>
+        {% endfor %}
+      </div>
+    {% endif %}
+  </section>
 </div>
 {% endblock %}

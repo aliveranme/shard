@@ -371,6 +371,7 @@ async fn detail(_req: Request, ctx: RouteContext<AppState>, kind: &str) -> Resul
     let page = IssuePage {
         chrome: Chrome::new(&state.user),
         title: page_title(&[&repo.full_name(), &format!("#{number}")]),
+        author_initial: crate::templates::initial(issue.author()),
         body_html: markdown::render(&issue.body),
         comments: comments.iter().map(CommentRow::from_comment).collect(),
         pull: pull.as_ref().map(PullView::from_pull),

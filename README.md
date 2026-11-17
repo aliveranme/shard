@@ -1,13 +1,15 @@
 # shard
 
 A self-hosted, Cloudflare-native Git forge: repositories, issues and pull
-requests with a Forgejo-derived UI, running on Workers + D1 + Artifacts.
+requests with a warm, conversation-first UI, running on Workers + D1 + Artifacts.
 
 - **Runtime**: Rust on Cloudflare Workers (`workers-rs`), built with `worker-build`.
 - **Git storage**: one [Cloudflare Artifacts](https://developers.cloudflare.com/artifacts/) repository per project.
 - **Metadata**: Cloudflare D1 (users, sessions, repos, issues, comments, tokens).
-- **Frontend**: Forgejo's compiled CSS plus Askama templates that reproduce its page structure.
-- **Toolchain**: [mise](https://mise.jdx.dev/) pins Rust, Node, Wrangler and `worker-build`.
+- **Frontend**: a small CSS design system (amber/lavender accents, pill controls, 28px cards) applied to
+  Askama templates; the visual language follows `DESIGN.md`.
+- **Toolchain**: Rust 1.100, Node 26.13, Wrangler 4.164 and `worker-build` 0.9, pinned with
+  [mise](https://mise.jdx.dev/).
 
 ## Layout
 
@@ -24,17 +26,17 @@ src/
     issues.rs       issues, comments, pull requests + file-level diff
     git.rs          Git smart-HTTP proxy to Artifacts
   templates.rs      Askama page structs
-templates/          Forgejo-shaped HTML
+templates/          Askama page templates
 migrations/         D1 schema
-static/             Forgejo CSS (vendored), logo
+static/             design-system CSS, logo
 wrangler.jsonc      bindings: DB (D1), ARTIFACTS, ASSETS
 ```
 
 ## Local development
 
 ```sh
-mise install          # rust 1.100, node 22, wrangler 4.164, worker-build 0.9
-mise run setup        # wasm target + cargo/npm deps
+mise install          # rust 1.100, node 26.13, wrangler 4.164
+mise run setup        # wasm target, worker-build 0.9, cargo/npm deps
 mise run db:migrate   # apply migrations to the local D1
 mise run dev          # wrangler dev on http://localhost:8787
 ```
@@ -96,7 +98,8 @@ ownership). Anonymous clone works for public repositories.
   close/reopen. Merging is a Git operation by design (Artifacts exposes no write API
   to Workers), so the page states this instead of pretending to merge.
 - Personal access tokens and encrypted-at-rest session/token hashes.
-- Forgejo-derived responsive UI, light/dark/auto themes from the vendored CSS.
+- Responsive, light-only UI using the DESIGN.md tokens: pill inputs and buttons,
+  rounded cards, amber primary actions, lavender accents and warm neutral surfaces.
 
 ## Limits and deliberate choices
 
@@ -110,9 +113,37 @@ ownership). Anonymous clone works for public repositories.
 - **Email**: registration stores an address but shard sends no mail; accounts are
   active immediately. Put Cloudflare Access in front if this is a private forge.
 
-## UI attribution
+## Design
 
-`static/css/index.css` and `theme.css` are compiled Forgejo assets (Forgejo is
-GPL-3.0-or-later and bundles MIT-licensed Fomantic UI). They are vendored
-unchanged; see `static/css/LICENSE`. Layout class names and page structure follow
-Forgejo templates so the CSS renders as upstream intends.
+The interface implements `DESIGN.md`: a white canvas with warm `#F5F5F0` surfaces,
+amber `#F2C94C` primary actions, lavender `#E6D5F5` accents, maroon emphasis,
+pill-shaped inputs/buttons, 28px cards, a 1200px measure and dotted focus rings.
+Typography uses `Segoe UI` / `Segoe UI Variable Display`; Open AI Sans is
+proprietary and is not bundled. There is no dark theme, matching the reference.
+All UI lives in `static/css/shard.css`; templates hold no styling framework.
+
+## Prior art
+
+- [ripgit](https://github.com/deathbyknowledge/ripgit) — one Durable Object per repo,
+  SQLite objects, FTS5, and text/markdown negotiation for agents.
+- [git-on-cloudflare](https://github.com/zllovesuki/git-on-cloudflare) — Smart HTTP
+  v2 with Durable Object refs, R2 packs and a streaming push pipeline.
+- [durable-git](https://github.com/littledivy/durable-git) — Git implemented inside a
+  Durable Object, optional R2 pack cache, cgit-style surface.
+
+Shard delegates object storage and pack negotiation to Artifacts, so it implements
+only the smart-HTTP proxy plus forge metadata. The useful patterns borrowed here are
+owner profile listings, safe raw-file serving, branch-scoped URLs and explicit
+file-level change lists.
+
+## Cloudflare API notes (verified 2026-11-17)
+
+- `wrangler@4.164.0`'s schema accepts `artifacts: [{ binding, namespace, remote? }]`.
+  The local simulator requires Wrangler ≥ 4.163 and Git ≥ 2.32 on `PATH`.
+- Workers binding surface: namespace `create/get/list/import/delete`; repo handle
+  `info/createToken/listTokens/revokeToken/fork/log/readCommit/readTree/readBlob/readFile`.
+  There is **no** branch enumeration, merge or write API; the PR design reflects that.
+- Commit metadata uses `treeHash` and `authoredAt`/`committedAt` (Unix seconds);
+  tree entries are `{ name, mode, type, hash }`.
+- Git remotes accept a Bearer repo token; for Basic auth the password is the token
+  secret before its `?expires=` suffix.

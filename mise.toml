@@ -1,7 +1,7 @@
 # Shard toolchain + tasks. Everything runs through mise so the repo is self-contained.
 [tools]
 rust = "1.100.0"
-node = "22"
+node = "26.13.1"
 "npm:wrangler" = "4.164.0"
 
 [env]

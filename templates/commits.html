@@ -1,22 +1,31 @@
 {% extends "base.html" %}
 {% block content %}
 {% include "repo_header.html" %}
-<div class="ui container">
-  <h1 class="tw-mt-4">Commits on <span class="ui label">{{ branch }}</span></h1>
+<div class="page">
+  <div class="page-head" style="padding-top:32px">
+    <div>
+      <h1 class="page-title">Commits</h1>
+      <p class="page-sub">History on <span class="badge">{{ branch }}</span></p>
+    </div>
+    <a class="btn btn--ghost" href="/{{ repo.owner_name }}/{{ repo.name }}">Back to code</a>
+  </div>
+
   {% if commits.is_empty() %}
-    <div class="ui segment text muted">No commits yet.</div>
+    <div class="card empty">
+      <p class="empty__title">No commits yet</p>
+      <p>Push a branch to create the first commit.</p>
+    </div>
   {% else %}
-    <div class="flex-list tw-mt-3">
+    <div class="list">
       {% for commit in commits %}
-      <div class="flex-item">
-        <div class="flex-item-main">
-          <div class="flex-item-title">{{ commit.message }}</div>
-          <div class="text muted">
-            {{ commit.author }}{% if let Some(date) = commit.date %} committed {{ date.relative() }}{% endif %}
+        <div class="list__row">
+          <span class="avatar avatar--sm" aria-hidden="true">{{ commit.author_initial }}</span>
+          <div class="list__main">
+            <div class="list__title">{{ commit.message }}</div>
+            <div class="list__meta">{{ commit.author }}{% if let Some(date) = commit.date %} · {{ date.relative() }}{% endif %}</div>
           </div>
+          <code class="badge" title="{{ commit.hash }}">{{ commit.short }}</code>
         </div>
-        <div class="flex-item-trailing"><code title="{{ commit.hash }}">{{ commit.short }}</code></div>
-      </div>
       {% endfor %}
     </div>
   {% endif %}

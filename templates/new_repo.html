@@ -1,27 +1,33 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="ui container">
-  <h1>New repository</h1>
+<div class="page">
+  <div class="page-head">
+    <div>
+      <h1 class="page-title">New repository</h1>
+      <p class="page-sub">A repository becomes an Artifacts-backed Git remote on this shard.</p>
+    </div>
+  </div>
   {% if let Some(message) = error %}
-    <div class="ui negative message">{{ message }}</div>
+    <div class="alert alert--error" role="alert">{{ message }}</div>
   {% endif %}
-  <form class="ui form" method="post" action="/repo/create">
+  <form class="form card card--narrow" method="post" action="/repo/create">
     <div class="field">
       <label for="name">Repository name</label>
-      <input id="name" name="name" value="{{ name_value }}" placeholder="hello-world" required>
-      <span class="help">Letters, digits, dot, dash or underscore.</span>
+      <input class="input" id="name" name="name" value="{{ name_value }}" placeholder="hello-world" required>
+      <span class="help">Letters, digits, dot, dash or underscore. Starts with a letter or digit.</span>
     </div>
     <div class="field">
       <label for="description">Description</label>
-      <input id="description" name="description" value="{{ description_value }}" placeholder="What is this repository for?">
+      <input class="input" id="description" name="description" value="{{ description_value }}" placeholder="What is this repository for?">
     </div>
-    <div class="field">
-      <label>
-        <input type="checkbox" name="private" {% if private_checked %}checked{% endif %}>
-        Private &mdash; only you can see it
-      </label>
+    <label class="checkbox">
+      <input type="checkbox" name="private" {% if private_checked %}checked{% endif %}>
+      Private — only you can see it
+    </label>
+    <div class="form__actions">
+      <button class="btn btn--primary" type="submit">Create repository</button>
+      <a class="btn btn--ghost" href="/">Cancel</a>
     </div>
-    <button class="ui primary button" type="submit">Create repository</button>
   </form>
 </div>
 {% endblock %}
