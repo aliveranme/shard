@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "repo_header.html" %}
+<div class="ui container issue-view tw-mt-4">
+  <div class="tw-flex tw-items-start tw-justify-between tw-flex-wrap">
+    <h1 class="tw-mb-1">
+      {{ issue.title }} <span class="text light-2">#{{ issue.number }}</span>
+    </h1>
+    <div>
+      {% if issue.state == "open" %}
+        <span class="ui green label">Open</span>
+      {% else %}
+        <span class="ui label">Closed</span>
+      {% endif %}
+      {% if let Some(pull) = pull %}
+        {% if pull.merged %}<span class="ui purple label">Merged</span>{% endif %}
+      {% endif %}
+    </div>
+  </div>
+  <div class="text muted">
+    {{ issue.author() }} opened this {% if issue.is_pull() %}pull request{% else %}issue{% endif %}
+    {{ issue.created_at.relative() }}
+    &middot; {{ issue.comment_count }} comment{% if issue.comment_count != 1 %}s{% endif %}
+  </div>
+
+  {% if let Some(pull) = pull %}
+    <div class="ui segment secondary tw-mt-3">
+      <strong>{{ pull.head_branch }}</strong>
+      <span class="text muted">wants to merge into</span>
+      <strong>{{ pull.base_branch }}</strong>
+      {% if let Some(head) = pull.head_commit %}<code class="tw-ml-2" title="head">{{ head }}</code>{% endif %}
+      {% if let Some(base) = pull.base_commit %}<code class="tw-ml-2" title="base">{{ base }}</code>{% endif %}
+      {% if let Some(merged) = pull.merged_at %}<span class="ui purple label tw-ml-2">merged {{ merged.relative() }}</span>{% endif %}
+    </div>
+  {% endif %}
+
+  <div class="ui grid tw-mt-1">
+    <div class="eleven wide column">
+      <div class="ui segment">
+        <div class="text muted tw-mb-2">
+          <strong>{{ issue.author() }}</strong> commented {{ issue.created_at.relative() }}
+        </div>
+        <div class="markup">{{ body_html|safe }}</div>
+      </div>
+
+      {% for comment in comments %}
+        <div class="ui segment">
+          <div class="text muted tw-mb-2">
+            <strong>{{ comment.author }}</strong> commented {{ comment.date.relative() }}
+          </div>
+          <div class="markup">{{ comment.html|safe }}</div>
+        </div>
+      {% endfor %}
+
+      {% if chrome.signed_in %}
+        <form class="ui form" method="post"
+              action="/{{ repo.owner_name }}/{{ repo.name }}/{% if issue.is_pull() %}pulls{% else %}issues{% endif %}/{{ issue.number }}/comments">
+          <div class="field">
+            <label for="body">Leave a comment</label>
+            <textarea id="body" name="body" rows="6" placeholder="Markdown is supported" required></textarea>
+          </div>
+          <button class="ui primary button" type="submit">Comment</button>
+        </form>
+      {% else %}
+        <div class="ui message"><a href="/user/login">Sign in</a> to comment.</div>
+      {% endif %}
+    </div>
+
+    <div class="five wide column">
+      {% if can_edit %}
+        <div class="ui segment">
+          <h4>Actions</h4>
+          {% if issue.state == "open" %}
+            <form method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/{% if issue.is_pull() %}pulls{% else %}issues{% endif %}/{{ issue.number }}/state">
+              <input type="hidden" name="state" value="closed">
+              <button class="ui basic button" type="submit">Close</button>
+            </form>
+          {% else %}
+            <form method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/{% if issue.is_pull() %}pulls{% else %}issues{% endif %}/{{ issue.number }}/state">
+              <input type="hidden" name="state" value="open">
+              <button class="ui basic button" type="submit">Reopen</button>
+            </form>
+          {% endif %}
+        </div>
+      {% endif %}
+
+      {% if pull.is_some() %}
+        <div class="ui segment">
+          <h4>Files changed</h4>
+          {% if let Some(note) = diff_error %}
+            <div class="text muted">{{ note }}</div>
+          {% else if changed.is_empty() %}
+            <div class="text muted">No file changes detected between the branches.</div>
+          {% else %}
+            <div class="flex-list">
+              {% for file in changed %}
+                <div class="flex-item">
+                  <div class="flex-item-main">
+                    <code class="tw-break-all">{{ file.path }}</code>
+                  </div>
+                  <div class="flex-item-trailing">
+                    <span class="ui mini label">{{ file.status }}</span>
+                  </div>
+                </div>
+              {% endfor %}
+            </div>
+          {% endif %}
+          <div class="ui divider"></div>
+          <p class="text muted tw-mb-0">
+            Merging is a Git operation: merge locally and push the base branch.
+            Shard tracks the request and its review, and mints the push token for you.
+          </p>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

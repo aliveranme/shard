@@ -1,0 +1,15 @@
+{
+  "name": "shard",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Shard - a self-hosted, Cloudflare-native Git forge",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "build": "worker-build --release",
+    "db:migrate": "wrangler d1 migrations apply shard --local"
+  },
+  "devDependencies": {
+    "wrangler": "4.164.0"
+  }
+}

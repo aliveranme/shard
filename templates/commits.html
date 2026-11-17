@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "repo_header.html" %}
+<div class="ui container">
+  <h1 class="tw-mt-4">Commits on <span class="ui label">{{ branch }}</span></h1>
+  {% if commits.is_empty() %}
+    <div class="ui segment text muted">No commits yet.</div>
+  {% else %}
+    <div class="flex-list tw-mt-3">
+      {% for commit in commits %}
+      <div class="flex-item">
+        <div class="flex-item-main">
+          <div class="flex-item-title">{{ commit.message }}</div>
+          <div class="text muted">
+            {{ commit.author }}{% if let Some(date) = commit.date %} committed {{ date.relative() }}{% endif %}
+          </div>
+        </div>
+        <div class="flex-item-trailing"><code title="{{ commit.hash }}">{{ commit.short }}</code></div>
+      </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

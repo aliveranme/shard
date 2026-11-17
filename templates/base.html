@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="forgejo-auto">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }}</title>
+  <link rel="stylesheet" href="/css/index.css">
+  <link rel="stylesheet" href="/css/theme.css">
+  <link rel="icon" href="/img/logo.svg" type="image/svg+xml">
+</head>
+<body>
+<div class="full height">
+  <nav id="navbar" aria-label="Main navigation">
+    <div class="navbar-left ui secondary menu">
+      <a class="item" id="navbar-logo" href="/" aria-label="Shard home">
+        <img width="30" height="30" src="/img/logo.svg" alt="shard">
+      </a>
+      <a class="item" href="/explore/repos">Explore</a>
+      {% if chrome.signed_in %}
+        <a class="item" href="/issues">Issues</a>
+        <a class="item" href="/pulls">Pull requests</a>
+      {% endif %}
+    </div>
+    <div class="navbar-right ui secondary menu">
+      {% if chrome.signed_in %}
+        <a class="item" href="/new">New repository</a>
+        <a class="item" href="/user/settings/tokens" title="Account settings">
+          <span class="ui avatar image" aria-hidden="true">{{ chrome.user_initial }}</span>
+          {{ chrome.user_name }}
+        </a>
+        <form method="post" action="/user/logout">
+          <button class="ui basic small button" type="submit">Sign out</button>
+        </form>
+      {% else %}
+        <a class="item" href="/user/login">Sign in</a>
+        <a class="item" href="/user/sign_up">Register</a>
+      {% endif %}
+    </div>
+  </nav>
+
+  <div role="main" aria-label="Main" class="page-content">
+    {% block content %}{% endblock %}
+  </div>
+</div>
+<footer class="ui container">
+  <div class="ui divider"></div>
+  <p class="text center muted">
+    <strong>shard</strong> &middot; self-hosted on Cloudflare Workers, D1 and Artifacts
+  </p>
+</footer>
+</body>
+</html>

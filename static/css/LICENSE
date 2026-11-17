@@ -1,0 +1,3 @@
+index.css and theme.css are the compiled Forgejo assets (Forgejo, GPL-3.0-or-later;
+includes Fomantic UI, MIT). Taken from a Forgejo 17.x instance so shard's pages
+share the upstream forge look. Replace these files when updating the vendored UI.

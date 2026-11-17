@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "repo_header.html" %}
+<div class="ui container">
+  <div class="tw-flex tw-items-center tw-mt-4 tw-flex-wrap">
+    <a href="/{{ repo.owner_name }}/{{ repo.name }}/src?branch={{ branch_url }}">{{ repo.name }}</a>
+    {% for crumb in crumbs %}
+      <span class="text muted tw-mx-1">/</span>
+      {% if loop.last %}
+        <strong>{{ crumb.name }}</strong>
+      {% else %}
+        <a href="/{{ repo.owner_name }}/{{ repo.name }}/src/{{ crumb.url_path }}?branch={{ branch_url }}">{{ crumb.name }}</a>
+      {% endif %}
+    {% endfor %}
+    <span class="tw-ml-auto text muted">{{ size }}</span>
+  </div>
+  <div class="ui segment tw-mt-3">
+    {% if is_binary %}
+      <p class="text muted">Binary file &mdash; preview is not available.</p>
+      <a class="ui basic button" href="/{{ repo.owner_name }}/{{ repo.name }}/raw/{{ path_url }}?branch={{ branch_url }}">Download raw file</a>
+    {% else %}
+      {% if truncated %}<div class="ui warning message">Preview truncated to the first 256 KiB.</div>{% endif %}
+      <pre class="tw-overflow-auto"><code>{{ content }}</code></pre>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

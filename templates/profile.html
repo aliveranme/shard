@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="ui container">
+  <div class="ui segment tw-mt-4">
+    <h1 class="tw-mb-1">
+      <span class="ui avatar image" aria-hidden="true">{{ name.chars().next().unwrap_or_default().to_uppercase() }}</span>
+      {{ name }}
+      {% if is_self %}<span class="ui label">You</span>{% endif %}
+    </h1>
+    <p class="text muted">Member since {{ joined }}</p>
+  </div>
+
+  <div class="list-header">
+    <h2>Repositories</h2>
+  </div>
+  {% if repos.is_empty() %}
+    <div class="ui segment text muted">No repositories yet.</div>
+  {% else %}
+    <div class="flex-list">
+      {% for repo in repos %}
+      <div class="flex-item">
+        <div class="flex-item-main">
+          <div class="flex-item-title">
+            <a href="/{{ repo.owner }}/{{ repo.name }}">{{ repo.owner }}/{{ repo.name }}</a>
+            {% if repo.private %}<span class="ui label">Private</span>{% endif %}
+          </div>
+          {% if !repo.description.is_empty() %}<div class="text muted">{{ repo.description }}</div>{% endif %}
+          <div class="text light-2 tw-mt-2">Updated {{ repo.updated.relative() }}</div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

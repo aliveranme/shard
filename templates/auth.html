@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="ui container">
+  <div class="user signin container medium">
+    <h1 class="tw-text-center">
+      {% if mode == "login" %}Sign in{% else %}Register{% endif %}
+    </h1>
+    {% if let Some(message) = error %}
+      <div class="ui negative message">{{ message }}</div>
+    {% endif %}
+    <form class="ui form" method="post" action="{% if mode == "login" %}/user/login{% else %}/user/sign_up{% endif %}">
+      <input type="hidden" name="next" value="{{ next }}">
+      <div class="field">
+        <label for="login">Username or email</label>
+        <input id="login" name="{% if mode == "login" %}login{% else %}username{% endif %}" value="{{ username_value }}" autocomplete="username" required>
+      </div>
+      {% if mode == "signup" %}
+      <div class="field">
+        <label for="email">Email</label>
+        <input id="email" name="email" type="email" value="{{ email_value }}" autocomplete="email" required>
+      </div>
+      {% endif %}
+      <div class="field">
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="{% if mode == "login" %}current-password{% else %}new-password{% endif %}" required>
+      </div>
+      <button class="ui primary button" type="submit">
+        {% if mode == "login" %}Sign in{% else %}Create account{% endif %}
+      </button>
+    </form>
+    <div class="ui divider"></div>
+    <p class="text muted">
+      {% if mode == "login" %}
+        No account? <a href="/user/sign_up">Register</a>.
+      {% else %}
+        Already registered? <a href="/user/login">Sign in</a>.
+      {% endif %}
+    </p>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="ui container">
+  {% if !chrome.signed_in %}
+  <div class="ui segment">
+    <h1 class="tw-mb-2">A Git forge that runs at the edge</h1>
+    <p class="text muted">
+      Shard stores repositories in Cloudflare Artifacts and everything else in D1.
+      No servers, no VMs, no maintenance windows.
+    </p>
+    <a class="ui primary button" href="/user/sign_up">Create an account</a>
+    <a class="ui basic button" href="/user/login">Sign in</a>
+  </div>
+  {% endif %}
+
+  <div class="list-header">
+    <h1>
+      {% if is_explore %}Explore repositories{% else %}Your repositories{% endif %}
+    </h1>
+    {% if chrome.signed_in %}
+      <a class="ui primary button" href="/new">New repository</a>
+    {% endif %}
+  </div>
+
+  <form class="ui form" method="get" action="/explore/repos">
+    <div class="ui fluid action input">
+      <input type="search" name="q" value="{{ query }}" placeholder="Search repositories" aria-label="Search repositories">
+      <button class="ui button" type="submit">Search</button>
+    </div>
+  </form>
+
+  {% if repos.is_empty() %}
+    <div class="ui segment center text muted">
+      No repositories yet.
+      {% if chrome.signed_in %}<a href="/new">Create your first repository</a>.{% endif %}
+    </div>
+  {% else %}
+    <div class="flex-list">
+      {% for repo in repos %}
+      <div class="flex-item">
+        <div class="flex-item-main">
+          <div class="flex-item-title">
+            <a href="/{{ repo.owner }}/{{ repo.name }}">{{ repo.owner }}/{{ repo.name }}</a>
+            {% if repo.private %}<span class="ui label">Private</span>{% endif %}
+          </div>
+          {% if !repo.description.is_empty() %}
+            <div class="text muted">{{ repo.description }}</div>
+          {% endif %}
+          <div class="text light-2 tw-mt-2">
+            Updated {{ repo.updated.relative() }} &middot;
+            {{ repo.open_issues }} open issue{% if repo.open_issues != 1 %}s{% endif %} &middot;
+            {{ repo.open_pulls }} open pull request{% if repo.open_pulls != 1 %}s{% endif %}
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

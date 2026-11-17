@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "shard",
+  "main": "build/index.js",
+  "compatibility_date": "2026-11-17",
+  "build": {
+    "command": "worker-build --release"
+  },
+  "assets": {
+    "directory": "./static",
+    "binding": "ASSETS"
+  },
+  // Git storage: every shard repo is an Artifacts repo in this namespace.
+  "artifacts": [
+    { "binding": "ARTIFACTS", "namespace": "shard" }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "shard",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

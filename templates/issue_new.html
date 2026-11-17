@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "repo_header.html" %}
+<div class="ui container tw-mt-4">
+  <h1>{% if is_pull %}New pull request{% else %}New issue{% endif %}</h1>
+  {% if let Some(message) = error %}
+    <div class="ui negative message">{{ message }}</div>
+  {% endif %}
+  <form class="ui form" method="post"
+        action="/{{ repo.owner_name }}/{{ repo.name }}/{% if is_pull %}pulls{% else %}issues{% endif %}/new">
+    <div class="field">
+      <label for="title">Title</label>
+      <input id="title" name="title" value="{{ title_value }}" required autofocus>
+    </div>
+    {% if is_pull %}
+    <div class="two fields">
+      <div class="field">
+        <label for="base_branch">Base branch</label>
+        <input id="base_branch" name="base_branch" value="{{ base_value }}" required>
+      </div>
+      <div class="field">
+        <label for="head_branch">Head branch</label>
+        <input id="head_branch" name="head_branch" value="{{ head_value }}" placeholder="feature/my-change" list="branches" required>
+        <datalist id="branches">
+          {% for branch in branches %}<option value="{{ branch }}"></option>{% endfor %}
+        </datalist>
+        <span class="help">Branch must already be pushed to this repository.</span>
+      </div>
+    </div>
+    {% endif %}
+    <div class="field">
+      <label for="body">Description</label>
+      <textarea id="body" name="body" rows="10" placeholder="Markdown is supported">{{ body_value }}</textarea>
+    </div>
+    <button class="ui primary button" type="submit">
+      {% if is_pull %}Create pull request{% else %}Create issue{% endif %}
+    </button>
+  </form>
+</div>
+{% endblock %}

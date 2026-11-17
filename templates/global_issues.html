@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="ui container issue-list tw-mt-4">
+  <h1>{{ heading }}</h1>
+  {% if issues.is_empty() %}
+    <div class="ui segment text muted">Nothing open right now.</div>
+  {% else %}
+    <div class="flex-list">
+      {% for issue in issues %}
+      <div class="flex-item">
+        <div class="flex-item-main">
+          <div class="flex-item-title">
+            <a href="/{{ issue.owner }}/{{ issue.repo }}/{% if issue.is_pull %}pulls{% else %}issues{% endif %}/{{ issue.number }}">
+              {{ issue.title }}
+            </a>
+          </div>
+          <div class="text muted">
+            {{ issue.repo_full }} #{{ issue.number }} &middot; opened {{ issue.date.relative() }} by {{ issue.author }}
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "repo_header.html" %}
+<div class="ui container tw-mt-4">
+  <h1>Settings</h1>
+  {% if let Some(message) = message %}
+    <div class="ui positive message">Settings saved.</div>
+  {% endif %}
+  {% if let Some(message) = error %}
+    <div class="ui negative message">{{ message }}</div>
+  {% endif %}
+  <form class="ui form" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/settings">
+    <div class="field">
+      <label for="description">Description</label>
+      <input id="description" name="description" value="{{ description_value }}">
+    </div>
+    <div class="field">
+      <label for="default_branch">Default branch</label>
+      <input id="default_branch" name="default_branch" value="{{ repo.default_branch }}">
+    </div>
+    <div class="field">
+      <label for="visibility">Visibility</label>
+      <select id="visibility" name="visibility" class="ui dropdown">
+        <option value="public" {% if visibility_value == "public" %}selected{% endif %}>Public</option>
+        <option value="private" {% if visibility_value == "private" %}selected{% endif %}>Private</option>
+      </select>
+    </div>
+    <button class="ui primary button" type="submit">Save settings</button>
+  </form>
+
+  <div class="ui divider"></div>
+  <div class="ui segment">
+    <h3>Git storage</h3>
+    <p class="text muted">
+      Backed by Cloudflare Artifacts as <code>{{ repo.artifacts_repo }}</code>.
+    </p>
+  </div>
+
+  <div class="ui negative message">
+    <div class="header">Delete this repository</div>
+    <p>This removes the repository, its issues and its Artifacts storage. It cannot be undone.</p>
+    <form class="ui form" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/settings/delete">
+      <div class="field">
+        <label for="confirm">Type <code>{{ repo.name }}</code> to confirm</label>
+        <input id="confirm" name="confirm" required>
+      </div>
+      <button class="ui red button" type="submit">Delete repository</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

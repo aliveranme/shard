@@ -1,0 +1,51 @@
+# Shard toolchain + tasks. Everything runs through mise so the repo is self-contained.
+[tools]
+rust = "1.100.0"
+node = "22"
+"npm:wrangler" = "4.164.0"
+
+[env]
+CARGO_TERM_COLOR = "always"
+WRANGLER_SEND_METRICS = "false"
+
+[tasks.setup]
+description = "Install the wasm target, worker-build and project dependencies"
+run = """
+rustup target add wasm32-unknown-unknown
+cargo install worker-build --version 0.9.0 --locked
+cargo fetch
+npm install --no-audit --no-fund
+"""
+
+[tasks.dev]
+description = "Run shard locally with the Artifacts simulator and a local D1"
+depends = ["db:migrate"]
+run = "wrangler dev"
+
+[tasks.build]
+description = "Build the Worker bundle"
+run = "worker-build --release"
+
+[tasks.deploy]
+description = "Apply D1 migrations and deploy to Cloudflare"
+run = """
+wrangler d1 migrations apply shard --remote
+worker-build --release
+wrangler deploy
+"""
+
+[tasks.check]
+description = "Type-check the Worker for wasm32"
+run = "cargo check --target wasm32-unknown-unknown"
+
+[tasks.fmt]
+description = "Format the Rust sources"
+run = "cargo fmt"
+
+[tasks."db:migrate"]
+description = "Apply migrations to the local D1 database"
+run = "wrangler d1 migrations apply shard --local"
+
+[tasks."db:console"]
+description = "Open a SQL console against the local D1 database"
+run = "wrangler d1 execute shard --local --command \"select name from sqlite_master where type='table'\""
