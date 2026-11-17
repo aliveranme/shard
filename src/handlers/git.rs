@@ -64,7 +64,9 @@ async fn proxy(mut req: Request, ctx: RouteContext<AppState>, service: &str) -> 
     let write = service == "git-receive-pack" || query.contains("service=git-receive-pack");
     if write {
         let allowed = match &identity {
-            Some(id) => id.user_id == repo.owner_id || id.is_admin == 1,
+            Some(id) => {
+                id.scope == "write" && (id.user_id == repo.owner_id || id.is_admin == 1)
+            }
             None => false,
         };
         if !allowed {
