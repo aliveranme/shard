@@ -69,9 +69,9 @@
       {% endfor %}
 
       {% if let Some(closed) = issue.closed_at %}
+        {# The closer is not stored yet, so do not attribute this event to the author. #}
         <div class="timeline-event">
-          <strong>{{ issue.author() }}</strong> closed this
-          {% if issue.is_pull() %}pull request{% else %}issue{% endif %} {{ closed.relative() }}
+          This {% if issue.is_pull() %}pull request{% else %}issue{% endif %} was closed {{ closed.relative() }}
         </div>
       {% endif %}
 

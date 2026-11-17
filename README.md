@@ -2,6 +2,7 @@
 
 A self-hosted, Cloudflare-native Git forge: repositories, issues and pull
 requests with a warm, conversation-first UI, running on Workers + D1 + Artifacts.
+See [STATUS.md](STATUS.md) for progress, verified behavior and missing pieces.
 
 - **Runtime**: Rust on Cloudflare Workers (`workers-rs`), built with `worker-build`.
 - **Git storage**: one [Cloudflare Artifacts](https://developers.cloudflare.com/artifacts/) repository per project.
