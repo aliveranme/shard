@@ -16,49 +16,65 @@
     <div class="alert alert--error" role="alert">{{ message }}</div>
   {% endif %}
 
-  <form class="form card" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/settings">
-    <div class="field">
-      <label for="description">Description</label>
-      <input class="input" id="description" name="description" value="{{ description_value }}" placeholder="What is this repository for?">
-    </div>
-    <div class="two-col">
-      <div class="field">
-        <label for="default_branch">Default branch</label>
-        <input class="input" id="default_branch" name="default_branch" value="{{ repo.default_branch }}">
-      </div>
-      <div class="field">
-        <label for="visibility">Visibility</label>
-        <select class="select" id="visibility" name="visibility">
-          <option value="public" {% if visibility_value == "public" %}selected{% endif %}>Public</option>
-          <option value="private" {% if visibility_value == "private" %}selected{% endif %}>Private</option>
-        </select>
-      </div>
-    </div>
-    <div class="form__actions">
-      <button class="btn btn--primary" type="submit">Save settings</button>
-    </div>
-  </form>
+  <div class="settings-layout">
+    <nav class="settings-nav" aria-label="Repository settings">
+      <a href="#general" aria-current="page">General</a>
+      <a href="#storage">Git storage</a>
+      <a href="#danger">Danger zone</a>
+    </nav>
 
-  <section class="section" style="padding-top:26px">
-    <div class="card card--warm">
-      <h2 class="card__title">Git storage</h2>
-      <p class="card__sub">Backed by Cloudflare Artifacts. Git clients reach it through this shard's proxy, never directly.</p>
-      <div class="token-value"><code>{{ repo.artifacts_repo }}</code></div>
-    </div>
-  </section>
+    <div class="settings-main">
+      <section id="general">
+        <form class="form card" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/settings">
+          <div>
+            <h2 class="card__title">General</h2>
+            <p class="card__sub">Name, description and default branch.</p>
+          </div>
+          <div class="field">
+            <label for="description">Description</label>
+            <input class="input" id="description" name="description" value="{{ description_value }}" placeholder="What is this repository for?">
+          </div>
+          <div class="two-col">
+            <div class="field">
+              <label for="default_branch">Default branch</label>
+              <input class="input" id="default_branch" name="default_branch" value="{{ repo.default_branch }}">
+            </div>
+            <div class="field">
+              <label for="visibility">Visibility</label>
+              <select class="select" id="visibility" name="visibility">
+                <option value="public" {% if visibility_value == "public" %}selected{% endif %}>Public</option>
+                <option value="private" {% if visibility_value == "private" %}selected{% endif %}>Private</option>
+              </select>
+            </div>
+          </div>
+          <div class="form__actions">
+            <button class="btn btn--primary" type="submit">Save settings</button>
+          </div>
+        </form>
+      </section>
 
-  <section class="section" style="padding-top:0">
-    <div class="card card--danger">
-      <h2 class="card__title" style="color:var(--maroon)">Delete this repository</h2>
-      <p class="card__sub" style="margin-bottom:18px">This removes the metadata, issues, pull requests and the Artifacts repository. It cannot be undone.</p>
-      <form class="form" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/settings/delete">
-        <div class="field">
-          <label for="confirm">Type <code>{{ repo.name }}</code> to confirm</label>
-          <input class="input" id="confirm" name="confirm" required>
+      <section id="storage">
+        <div class="card card--warm">
+          <h2 class="card__title">Git storage</h2>
+          <p class="card__sub">Backed by Cloudflare Artifacts. Git clients reach it through this shard's proxy, never directly.</p>
+          <div class="token-value"><code>{{ repo.artifacts_repo }}</code></div>
         </div>
-        <button class="btn btn--danger" type="submit">Delete repository</button>
-      </form>
+      </section>
+
+      <section id="danger">
+        <div class="card card--danger">
+          <h2 class="card__title" style="color:var(--maroon)">Delete this repository</h2>
+          <p class="card__sub" style="margin-bottom:18px">This removes the metadata, issues, pull requests and the Artifacts repository. It cannot be undone.</p>
+          <form class="form" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/settings/delete">
+            <div class="field">
+              <label for="confirm">Type <code>{{ repo.name }}</code> to confirm</label>
+              <input class="input" id="confirm" name="confirm" required>
+            </div>
+            <button class="btn btn--danger" type="submit">Delete repository</button>
+          </form>
+        </div>
+      </section>
     </div>
-  </section>
+  </div>
 </div>
 {% endblock %}

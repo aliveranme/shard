@@ -10,7 +10,7 @@
         {{ issue.created_at.relative() }} · {{ issue.comment_count }} comment{% if issue.comment_count != 1 %}s{% endif %}
       </p>
     </div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <div class="page-head__actions">
       {% if issue.state == "open" %}
         <span class="badge badge--open">Open</span>
       {% else %}
@@ -18,6 +18,14 @@
       {% endif %}
       {% if let Some(pull) = pull %}
         {% if pull.merged %}<span class="badge badge--merged">Merged</span>{% endif %}
+      {% endif %}
+      {% if can_edit %}
+        <form method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/{% if issue.is_pull() %}pulls{% else %}issues{% endif %}/{{ issue.number }}/state">
+          <input type="hidden" name="state" value="{% if issue.state == "open" %}closed{% else %}open{% endif %}">
+          <button class="btn btn--ghost btn--sm" type="submit">
+            {% if issue.state == "open" %}Close {% if issue.is_pull() %}pull request{% else %}issue{% endif %}{% else %}Reopen{% endif %}
+          </button>
+        </form>
       {% endif %}
     </div>
   </div>
@@ -60,6 +68,13 @@
         </article>
       {% endfor %}
 
+      {% if let Some(closed) = issue.closed_at %}
+        <div class="timeline-event">
+          <strong>{{ issue.author() }}</strong> closed this
+          {% if issue.is_pull() %}pull request{% else %}issue{% endif %} {{ closed.relative() }}
+        </div>
+      {% endif %}
+
       {% if chrome.signed_in %}
         <form class="form card" method="post"
               action="/{{ repo.owner_name }}/{{ repo.name }}/{% if issue.is_pull() %}pulls{% else %}issues{% endif %}/{{ issue.number }}/comments">
@@ -88,23 +103,6 @@
           <div class="side-row"><span class="muted">State</span><span>{{ issue.state }}</span></div>
         </div>
       </div>
-
-      {% if can_edit %}
-        <div class="side-card">
-          <h2 class="side-card__title">Actions</h2>
-          {% if issue.state == "open" %}
-            <form method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/{% if issue.is_pull() %}pulls{% else %}issues{% endif %}/{{ issue.number }}/state">
-              <input type="hidden" name="state" value="closed">
-              <button class="btn btn--ghost btn--block" type="submit">Close {% if issue.is_pull() %}pull request{% else %}issue{% endif %}</button>
-            </form>
-          {% else %}
-            <form method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/{% if issue.is_pull() %}pulls{% else %}issues{% endif %}/{{ issue.number }}/state">
-              <input type="hidden" name="state" value="open">
-              <button class="btn btn--ghost btn--block" type="submit">Reopen</button>
-            </form>
-          {% endif %}
-        </div>
-      {% endif %}
 
       {% if pull.is_some() %}
         <div class="side-card">

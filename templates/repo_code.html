@@ -2,80 +2,111 @@
 {% block content %}
 {% include "repo_header.html" %}
 <div class="page">
-  <div class="repo-toolbar">
-    <div class="clone" title="{{ clone_url }}">
-      <span class="clone__label">Clone</span>
-      <code>{{ clone_url }}</code>
-    </div>
-    <div class="repo-toolbar__right">
-      <form method="get" action="/{{ repo.owner_name }}/{{ repo.name }}">
-        <label class="sr-only" for="branch">Branch</label>
-        <select class="select" id="branch" name="branch" onchange="this.form.submit()">
-          {% for name in branches %}
-            <option value="{{ name }}" {% if name.as_str() == branch.as_str() %}selected{% endif %}>{{ name }}</option>
+  <div class="repo-body">
+    <div class="repo-main">
+      <div class="repo-toolbar">
+        <form method="get" action="/{{ repo.owner_name }}/{{ repo.name }}">
+          <label class="sr-only" for="branch">Branch</label>
+          <select class="select" id="branch" name="branch" onchange="this.form.submit()">
+            {% for name in branches %}
+              <option value="{{ name }}" {% if name.as_str() == branch.as_str() %}selected{% endif %}>{{ name }}</option>
+            {% endfor %}
+          </select>
+        </form>
+        <div class="repo-toolbar__right">
+          <a class="btn btn--ghost btn--sm" href="/{{ repo.owner_name }}/{{ repo.name }}/commits?branch={{ branch_url }}">Commits</a>
+        </div>
+      </div>
+
+      {% if let Some(note) = artifacts_error %}
+        <div class="alert alert--warn" role="alert">
+          <strong>Artifacts is not reachable.</strong> {{ note }}
+        </div>
+      {% endif %}
+
+      {% if !crumbs.is_empty() %}
+        <div class="breadcrumb" style="font-size:1.125rem;margin-top:14px">
+          <a href="/{{ repo.owner_name }}/{{ repo.name }}/src?branch={{ branch_url }}">{{ repo.name }}</a>
+          {% for crumb in crumbs %}
+            <span class="sep" aria-hidden="true">/</span>
+            <a href="/{{ repo.owner_name }}/{{ repo.name }}/src/{{ crumb.url_path }}?branch={{ branch_url }}">{{ crumb.name }}</a>
           {% endfor %}
-        </select>
-      </form>
-      <a class="btn btn--ghost btn--sm" href="/{{ repo.owner_name }}/{{ repo.name }}/commits?branch={{ branch_url }}">Commits</a>
-    </div>
-  </div>
+        </div>
+      {% endif %}
 
-  {% if let Some(note) = artifacts_error %}
-    <div class="alert alert--warn" role="alert">
-      <strong>Artifacts is not reachable.</strong> {{ note }}
-    </div>
-  {% endif %}
-
-  {% if !crumbs.is_empty() %}
-    <div class="breadcrumb" style="font-size:1.125rem;margin-top:24px">
-      <a href="/{{ repo.owner_name }}/{{ repo.name }}/src?branch={{ branch_url }}">{{ repo.name }}</a>
-      {% for crumb in crumbs %}
-        <span class="sep" aria-hidden="true">/</span>
-        <a href="/{{ repo.owner_name }}/{{ repo.name }}/src/{{ crumb.url_path }}?branch={{ branch_url }}">{{ crumb.name }}</a>
-      {% endfor %}
-    </div>
-  {% endif %}
-
-  {% if files.is_empty() && artifacts_error.is_none() %}
-    <div class="card card--warm empty" style="margin-top:22px;text-align:left">
-      <h2 class="empty__title">This repository is empty</h2>
-      <p class="muted" style="margin-bottom:16px">Push a branch to get started:</p>
-      <pre style="background:var(--canvas);border:1px solid var(--border);border-radius:16px;padding:18px;overflow:auto;font-size:.8125rem"><code>git clone {{ clone_url }}
+      {% if files.is_empty() && artifacts_error.is_none() %}
+        <div class="card card--warm empty" style="margin-top:22px;text-align:left">
+          <h2 class="empty__title">This repository is empty</h2>
+          <p class="muted" style="margin-bottom:16px">Push a branch to get started:</p>
+          <pre style="background:var(--canvas);border:1px solid var(--border);border-radius:16px;padding:18px;overflow:auto;font-size:.8125rem"><code>git clone {{ clone_url }}
 cd {{ repo.name }}
 echo "# {{ repo.name }}" &gt; README.md
 git add README.md &amp;&amp; git commit -m "Initial commit"
 git branch -M {{ repo.default_branch }}
 git push -u origin {{ repo.default_branch }}</code></pre>
-    </div>
-  {% else if !files.is_empty() %}
-    <div class="file-list">
-      {% for file in files %}
-        <a class="file-row" href="/{{ repo.owner_name }}/{{ repo.name }}/{% if file.is_dir %}src{% else %}blob{% endif %}/{{ file.url_path }}?branch={{ branch_url }}">
-          <span class="file-row__icon {% if file.is_dir %}file-row__icon--dir{% endif %}" aria-hidden="true">
-            {% if file.is_dir %}
-              <svg viewBox="0 0 16 16" width="16" height="16"><path fill="currentColor" d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z"></path></svg>
-            {% else %}
-              <svg viewBox="0 0 16 16" width="16" height="16"><path fill="currentColor" d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5Zm6.75.062V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011Z"></path></svg>
-            {% endif %}
-          </span>
-          <span class="file-row__name">{{ file.name }}{% if file.is_dir %}/{% endif %}</span>
-          <span class="file-row__size">{{ file.size }}</span>
-        </a>
-      {% endfor %}
-    </div>
-  {% endif %}
+        </div>
+      {% else if !files.is_empty() %}
+        <div class="file-list">
+          <div class="file-row file-row--head" aria-hidden="true">
+            <span></span>
+            <span>Name</span>
+            <span>Size</span>
+          </div>
+          {% for file in files %}
+            <a class="file-row" href="/{{ repo.owner_name }}/{{ repo.name }}/{% if file.is_dir %}src{% else %}blob{% endif %}/{{ file.url_path }}?branch={{ branch_url }}">
+              <span class="file-row__icon {% if file.is_dir %}file-row__icon--dir{% endif %}" aria-hidden="true">
+                {% if file.is_dir %}
+                  <svg viewBox="0 0 16 16" width="16" height="16"><path fill="currentColor" d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z"></path></svg>
+                {% else %}
+                  <svg viewBox="0 0 16 16" width="16" height="16"><path fill="currentColor" d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5Zm6.75.062V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011Z"></path></svg>
+                {% endif %}
+              </span>
+              <span class="file-row__name">{{ file.name }}{% if file.is_dir %}/{% endif %}</span>
+              <span class="file-row__size">{{ file.size }}</span>
+            </a>
+          {% endfor %}
+        </div>
+      {% endif %}
 
-  {% if let Some(commit) = last_commit %}
-    <div class="commit-strip">
-      <span class="avatar avatar--sm" aria-hidden="true">{{ commit.author_initial }}</span>
-      <span><strong>{{ commit.message }}</strong></span>
-      <span class="muted">{{ commit.author }}{% if let Some(date) = commit.date %} · {{ date.relative() }}{% endif %}</span>
-      <code title="{{ commit.hash }}">{{ commit.short }}</code>
-    </div>
-  {% endif %}
+      {% if let Some(commit) = last_commit %}
+        <div class="commit-strip">
+          <span class="avatar avatar--sm" aria-hidden="true">{{ commit.author_initial }}</span>
+          <span><strong>{{ commit.message }}</strong></span>
+          <span class="muted">{{ commit.author }}{% if let Some(date) = commit.date %} · {{ date.relative() }}{% endif %}</span>
+          <code title="{{ commit.hash }}">{{ commit.short }}</code>
+        </div>
+      {% endif %}
 
-  {% if let Some(readme_html) = readme %}
-    <article class="card markup readme">{{ readme_html|safe }}</article>
-  {% endif %}
+      {% if let Some(readme_html) = readme %}
+        <article class="card readme">
+          <div class="readme-card__head">
+            <span class="badge">README</span>
+            <span class="muted" style="font-size:.8125rem">Rendered from the default branch</span>
+          </div>
+          <div class="markup">{{ readme_html|safe }}</div>
+        </article>
+      {% endif %}
+    </div>
+
+    <aside class="repo-side">
+      <div class="side-card">
+        <h2 class="side-card__title">About</h2>
+        <p>{% if repo.description.is_empty() %}No description yet.{% else %}{{ repo.description }}{% endif %}</p>
+        <div class="side-list" style="margin-top:14px">
+          <div class="side-row"><span class="muted">Default branch</span><code>{{ repo.default_branch }}</code></div>
+          <div class="side-row"><span class="muted">Visibility</span><span>{% if repo.is_private() %}Private{% else %}Public{% endif %}</span></div>
+          <div class="side-row"><span class="muted">Issues</span><span>{{ repo.open_issues }} open</span></div>
+          <div class="side-row"><span class="muted">Pull requests</span><span>{{ repo.open_pulls }} open</span></div>
+          <div class="side-row"><span class="muted">Updated</span><span>{{ repo.updated_at.relative() }}</span></div>
+        </div>
+      </div>
+      <div class="side-card">
+        <h2 class="side-card__title">Clone</h2>
+        <code class="clone-url">{{ clone_url }}</code>
+        <p style="margin-top:12px">Authenticate with your username and an access token. Write tokens can push.</p>
+        <p><a href="/user/settings/tokens">Manage access tokens</a></p>
+      </div>
+    </aside>
+  </div>
 </div>
 {% endblock %}

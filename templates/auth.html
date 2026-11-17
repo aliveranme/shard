@@ -1,57 +1,48 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="page auth">
-  <aside class="auth__aside">
-    <div>
-      <p class="eyebrow">shard</p>
-      <h1 class="auth__title">A quieter place for your code.</h1>
-    </div>
-    <ul class="auth__points">
-      <li><span aria-hidden="true">◇</span><span>Repositories stored in Cloudflare Artifacts, with issues and reviews in D1.</span></li>
-      <li><span aria-hidden="true">⚑</span><span>Clone, fetch and push with any Git client — no special tooling.</span></li>
-      <li><span aria-hidden="true">◎</span><span>One account, one token, the same access from every machine.</span></li>
-    </ul>
-  </aside>
-  <div class="auth__form">
-    <div class="card">
-      <h2 class="section__title" style="font-size:2rem">
-        {% if mode == "login" %}Welcome back{% else %}Create your account{% endif %}
-      </h2>
-      <p class="card__sub" style="margin-top:8px">
-        {% if mode == "login" %}Sign in to reach your repositories and reviews.{% else %}Start with a username, an email and a password.{% endif %}
-      </p>
-      {% if let Some(message) = error %}
-        <div class="alert alert--error" role="alert">{{ message }}</div>
-      {% endif %}
-      <form class="form" method="post" action="{% if mode == "login" %}/user/login{% else %}/user/sign_up{% endif %}">
-        <input type="hidden" name="next" value="{{ next }}">
-        <div class="field">
-          <label for="login">Username{% if mode == "login" %} or email{% endif %}</label>
-          <input class="input" id="login" name="{% if mode == "login" %}login{% else %}username{% endif %}" value="{{ username_value }}" autocomplete="username" required>
-        </div>
-        {% if mode == "signup" %}
-        <div class="field">
-          <label for="email">Email</label>
-          <input class="input" id="email" name="email" type="email" value="{{ email_value }}" autocomplete="email" required>
-        </div>
-        {% endif %}
-        <div class="field">
-          <label for="password">Password</label>
-          <input class="input" id="password" name="password" type="password" autocomplete="{% if mode == "login" %}current-password{% else %}new-password{% endif %}" required>
-          {% if mode == "signup" %}<span class="help">At least 8 characters.</span>{% endif %}
-        </div>
-        <button class="btn btn--primary btn--block" type="submit">
-          {% if mode == "login" %}Sign in{% else %}Create account{% endif %}
-        </button>
-      </form>
-    </div>
-    <p class="auth__switch">
-      {% if mode == "login" %}
-        New to shard? <a href="/user/sign_up">Create an account</a>.
-      {% else %}
-        Already have an account? <a href="/user/login">Sign in</a>.
-      {% endif %}
-    </p>
+<div class="page auth-simple">
+  <div class="auth-simple__brand">
+    <img src="/img/logo.svg" width="30" height="30" alt="">
+    <span>shard</span>
   </div>
+  <div class="card">
+    <h1 class="page-title" style="font-size:2rem">
+      {% if mode == "login" %}Sign in{% else %}Create your account{% endif %}
+    </h1>
+    <p class="page-sub" style="margin-bottom:22px">
+      {% if mode == "login" %}Welcome back. Your repositories are waiting.{% else %}One account for every repository on this shard.{% endif %}
+    </p>
+    {% if let Some(message) = error %}
+      <div class="alert alert--error" role="alert">{{ message }}</div>
+    {% endif %}
+    <form class="form" method="post" action="{% if mode == "login" %}/user/login{% else %}/user/sign_up{% endif %}">
+      <input type="hidden" name="next" value="{{ next }}">
+      <div class="field">
+        <label for="login">Username{% if mode == "login" %} or email{% endif %}</label>
+        <input class="input" id="login" name="{% if mode == "login" %}login{% else %}username{% endif %}" value="{{ username_value }}" autocomplete="username" required>
+      </div>
+      {% if mode == "signup" %}
+      <div class="field">
+        <label for="email">Email</label>
+        <input class="input" id="email" name="email" type="email" value="{{ email_value }}" autocomplete="email" required>
+      </div>
+      {% endif %}
+      <div class="field">
+        <label for="password">Password</label>
+        <input class="input" id="password" name="password" type="password" autocomplete="{% if mode == "login" %}current-password{% else %}new-password{% endif %}" required>
+        {% if mode == "signup" %}<span class="help">At least 8 characters.</span>{% endif %}
+      </div>
+      <button class="btn btn--primary btn--block" type="submit">
+        {% if mode == "login" %}Sign in{% else %}Create account{% endif %}
+      </button>
+    </form>
+  </div>
+  <p class="auth-simple__switch">
+    {% if mode == "login" %}
+      New to shard? <a href="/user/sign_up">Create an account</a>.
+    {% else %}
+      Already have an account? <a href="/user/login">Sign in</a>.
+    {% endif %}
+  </p>
 </div>
 {% endblock %}
