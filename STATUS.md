@@ -149,6 +149,7 @@ Update this file whenever a milestone lands or a limitation changes.
 | 2026-11-18 | Wasm check and `mise run test` | 16 scenarios, 17 Node test results passed |
 | 2026-11-18 | Nested file preview and raw download regression | relative links resolve directory spaces and literal percent sequences on a slash-named branch |
 | 2026-11-18 | Ego Browser at 1365px, 390px and 320px | verified language switches, settings navigation, branch form, file links and issue/PR layouts without horizontal overflow |
+| 2026-11-18 | Wasm release build and focused Git HTTP regression | missing Git repository returns an empty, non-cacheable 404, and the missing `.git` suffix page is localized |
 
 ## How to update
 

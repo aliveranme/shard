@@ -240,6 +240,15 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       assert.equal((await anonymous.get(privateRepo)).status, 404);
       assert.equal((await viewer.get(privateRepo)).status, 404);
       assert.equal((await owner.get(privateRepo)).status, 200);
+      const headers = { "Accept-Language": "zh-CN" };
+      const missing = await anonymous.request("/suiteowner/missing.git/info/refs?service=git-upload-pack", { headers });
+      assert.equal(missing.status, 404);
+      assert.equal(missing.body, "");
+      assert.equal(missing.headers.get("cache-control"), "no-store");
+      const withoutSuffix = await anonymous.request(`${publicRepo}/info/refs?service=git-upload-pack`, { headers });
+      assert.equal(withoutSuffix.status, 404);
+      assert.equal(withoutSuffix.headers.get("content-language"), "zh-Hans");
+      assert.match(withoutSuffix.body, /Git 远程地址须以 \.git 结尾/);
       assert.equal((await anonymous.request(`${privateRepo}.git/git-receive-pack`, {
         method: "POST", headers: { "Content-Type": "application/x-git-receive-pack-request" }, body: "0000",
       })).status, 401);

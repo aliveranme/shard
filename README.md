@@ -126,9 +126,10 @@ no saved preference, Shard uses the browser's language cookie, then its
 `Accept-Language` priorities. Unsupported languages fall back to English.
 The **Use browser language** setting explicitly selects the browser header.
 
-The Worker translates UI labels, validation and error messages, accessibility
+The Worker translates Web UI labels, validation messages, errors, accessibility
 labels, relative dates and counts. Repository contents, issues and commit
-messages appear in the language their authors used.
+messages appear in the language their authors used. Git smart HTTP returns an
+empty HTTP 404 when the `.git` repository does not exist.
 
 To add a locale, register its tag and display label in `src/i18n/mod.rs`, add
 its text to each catalog in `src/i18n/`, and add its formatting and negotiation

@@ -8,6 +8,7 @@ use crate::artifacts::Artifacts;
 use crate::auth;
 use crate::ctx::AppState;
 use crate::db;
+use crate::i18n::CommonText;
 use crate::util;
 use worker::*;
 
@@ -32,11 +33,11 @@ pub async fn receive_pack(req: Request, ctx: RouteContext<AppState>) -> Result<R
 }
 
 async fn proxy(mut req: Request, ctx: RouteContext<AppState>, service: &str) -> Result<Response> {
-    let state = ctx.data.clone();
+    let state = &ctx.data;
     let owner = ctx.param("owner").cloned().unwrap_or_default();
     let raw_repo = ctx.param("repo").cloned().unwrap_or_default();
     let Some(repo_name) = raw_repo.strip_suffix(".git") else {
-        return not_found(&state, "Git remotes use the `.git` suffix.");
+        return not_found(state, state.locale.t(CommonText::GitSuffixRequired));
     };
 
     let database = state.db()?;
@@ -49,7 +50,10 @@ async fn proxy(mut req: Request, ctx: RouteContext<AppState>, service: &str) -> 
     )
     .await?;
     let Some(repo) = repo else {
-        return not_found(&state, "Repository not found.");
+        return Ok(Response::builder()
+            .with_status(404)
+            .with_header("Cache-Control", "no-store")?
+            .empty());
     };
 
     let query = req

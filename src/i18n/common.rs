@@ -39,6 +39,7 @@ catalog! {
         Next => "Next", "下一页";
         JustNow => "just now", "刚刚";
         RepositoryNotFound => "Repository not found.", "未找到仓库。";
+        GitSuffixRequired => "Git remotes use the `.git` suffix.", "Git 远程地址须以 .git 结尾。";
         NotFound => "Not found.", "找不到此页面。";
         MethodNotAllowed => "This page does not support that request method.", "此页面不支持该请求方式。";
         ErrorHeading => "Something went sideways", "请求未能完成";
