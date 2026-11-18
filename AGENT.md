@@ -33,3 +33,5 @@ Use the pinned mise toolchain. Standard commands:
 - `mise run test`: run the HTTP regression suite against an isolated local simulator.
 
 Run the narrowest relevant checks after implementing a complete change. For UI changes, inspect the actual page in a browser at desktop and mobile widths. Cover permission, CSRF, credential and pagination boundaries with consumer-visible regression tests. Tests must use isolated data and must not contact deployed services. Update `README.md` and `STATUS.md` with verified behavior and remaining constraints. Keep this instruction file current when commands or conventions change.
+
+Commit every completed feature change to Git after its relevant checks pass. Keep each commit focused on one feature and record the behavior and verification in `STATUS.md`. Preserve unrelated worktree changes. A local commit does not authorize a push.
