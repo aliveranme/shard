@@ -3,6 +3,7 @@
 A self-hosted, Cloudflare-native Git forge: repositories, issues and pull
 requests with a warm, conversation-first UI, running on Workers + D1 + Artifacts.
 See [STATUS.md](STATUS.md) for progress, verified behavior and missing pieces.
+The [delivery plan](PLAN.md) records Cloudflare dependencies and acceptance criteria.
 Contributor and coding-agent conventions live in [AGENT.md](AGENT.md).
 
 - **Runtime**: Rust on Cloudflare Workers (`workers-rs`), built with `worker-build`.
@@ -24,13 +25,23 @@ src/
   pagination.rs     bounded list pagination and query-preserving links
   i18n/             typed UI message catalogs and language negotiation
   account.rs        account and access-token page models
+  recovery.rs       email verification and password reset
   artifacts.rs      Rust wrapper over the Artifacts Workers binding
+  refs.rs           read-only branch and tag discovery over Git HTTPS
+  repo_lifecycle.rs stable repository paths, transfers, forks and imports
+  repo_objects.rs   commit detail and source archives
+  pull_diff.rs      comparisons between two saved commits
+  pull_review.rs    review decisions, line comments and merge verification
+  issue_metadata.rs issue edits and classification
+  notifications.rs inbox and current repository access checks
+  webhooks.rs       signed event delivery from the D1 outbox
   handlers/
     web.rs          dashboard, explore, global issue lists
     auth_handlers.rs registration, login, account language, access tokens
     repos.rs        create/browse/settings, trees, blobs, commits
-    issues.rs       issues, comments, pull requests + file-level diff
+    issues.rs       issue and pull request lists, discussion and state changes
     git.rs          Git smart-HTTP proxy to Artifacts
+    checks.rs       authenticated commit check updates
   templates.rs      Askama page structs
 templates/          Askama page templates
 migrations/         D1 schema
@@ -84,6 +95,12 @@ mise run deploy                                         # apply remote migration
 
 Optional custom domain via `routes` in `wrangler.jsonc`.
 
+Set `PUBLIC_ORIGIN` to the public HTTPS origin and `EMAIL_FROM` to an address on
+an onboarded sending domain. Bind `EMAIL` using Wrangler's `send_email` binding.
+This enables links to verify addresses and reset passwords. Verification links
+expire after 24 hours and reset links after 30 minutes. A reset invalidates all
+browser sessions for that account. [Cloudflare Email Service](https://developers.cloudflare.com/email-service/get-started/send-emails/)
+
 ## URL shape
 
 Branch names contain slashes, so branches are a query parameter:
@@ -94,6 +111,9 @@ Branch names contain slashes, so branches are a query parameter:
 /{owner}/{repo}/blob/{file-path}?branch=main
 /{owner}/{repo}/raw/{file-path}?branch=main
 /{owner}/{repo}/commits?branch=feature%2Freadme&start={commit-hash}
+/{owner}/{repo}/refs
+/{owner}/{repo}/commit/{commit-hash}
+/{owner}/{repo}/archive/{commit-hash}
 ```
 
 Repository and issue lists accept `page` (20 items per page); search and state
@@ -108,14 +128,15 @@ Shard never stores objects itself. On clone/fetch/push it:
 
 1. authenticates the git client (HTTP basic `username:token` or bearer token),
 2. mints a short-lived Artifacts repo token (1 h, `read` for fetch, `write` for push),
-3. proxies the smart-HTTP request to the Artifacts remote and streams the response.
+3. streams the smart-HTTP request body and response through the Artifacts remote.
 
 Create tokens under `/user/settings/tokens`, choosing read/write scope and a
-7/30/90/365-day lifetime (30 days by default). Write tokens can push to your own
-repositories; read tokens can clone public repositories (private ones require
-ownership). Expired or revoked tokens are rejected. Legacy tokens without an
-expiry remain valid until revoked. The secret is shown only at creation; use it
-as the password when Git prompts. Anonymous clone works for public repositories.
+7/30/90/365-day lifetime (30 days by default). In a private repo, owners and
+collaborators with either role can clone using either token scope. Pushing
+requires both a write-scoped token and repository write permission. Expired or
+revoked tokens are rejected. Legacy tokens without an expiry remain valid until
+revoked. The secret is shown only at creation. Use it as the password when Git
+prompts. Anonymous clone works for public repositories.
 
 ## Interface language
 
@@ -141,40 +162,92 @@ escape the output, including interpolated values.
 
 - Registration/login with PBKDF2-SHA256 passwords and HTTP-only session cookies;
   failed logins are limited to eight per source/account pair in a 15-minute window.
-- Account settings at `/user/settings`: change email or password after confirming
-  the current password. A password change signs out other browser sessions.
-- Repositories: create (Artifacts-backed), visibility, description, default branch, delete.
-- Code browsing: tree, blob preview, raw download, commit log (Artifacts metadata).
-- Issues: create, comment (Markdown), close/reopen, search and open/closed/all filters;
-  paginated discussion includes actor-attributed state changes.
-- Pull requests: create from existing branches, discussion, file-level change list,
-  close/reopen. Merging is a Git operation by design (Artifacts exposes no write API
-  to Workers), so the page states this instead of pretending to merge.
-- Personal access tokens: read/write scopes, explicit expiry, last usage and revocation;
-  session and access-token secrets are stored as hashes.
-- Browser forms: session-bound CSRF tokens, same-origin checks and security headers.
-  Git clients use their independent access-token authentication.
-- Scheduled maintenance at 03:00 UTC removes expired sessions, tokens and throttle rows.
+- Account settings support password-confirmed email and password changes, email
+  verification, password reset, and account deletion. Deletion requires transfer
+  or removal of owned repositories and revokes sessions and access tokens.
+- Repository settings support visibility, description, default branch, rename,
+  transfer with recipient acceptance, and deletion. Previous paths retain the
+  repository's current permissions and keep serving existing Git remotes.
+- Collaborators receive read or write access. Forks copy a visible repository.
+  Forks from a private source remain private. Imports accept public HTTPS Git URLs.
+  The copies page shows status until the repository is available.
+- Code browsing includes trees, blobs, raw downloads, commit history with parent
+  links, branch and tag discovery, and commit-pinned source archives.
+- Issues support editing, labels, a milestone, an assignee, Markdown discussion,
+  state history, and search across titles, bodies and comments. The inbox surfaces
+  new issue, discussion and review activity based on current access.
+- Pull requests capture the base and head commit IDs at creation. The UI shows a
+  file list and text diffs for that pair. Reviewers can approve, request changes,
+  or comment on changed lines. After a local merge and push, a writer can verify
+  that both saved commits are ancestors of the current target tip.
+- Personal access tokens have read/write scopes, expiry, last usage, and revocation.
+  Session and access-token secrets are stored as hashes.
+- Browser forms use session-bound CSRF tokens and same-origin checks. Recovery
+  pages send only the site origin as referrer so email link paths stay private.
+- The Worker echoes an `X-Request-ID` on responses for log correlation and applies
+  per-source limits separately to browser, Git, and check update traffic.
+  Daily maintenance at 03:00 UTC removes expired credential and throttle rows.
 - Responsive, light-only UI using the DESIGN.md tokens: pill inputs and buttons,
   rounded cards, amber primary actions, lavender accents and warm neutral surfaces.
 
-## Limits and deliberate choices
+## Integrations
 
-- **Merge**: no server-side merge; merge locally and push the base branch.
-- **Branches**: the binding exposes `log(ref)`, not branch enumeration, so the
-  selector lists the default branch and the branch named in the URL.
-- **Diff**: Artifacts has no diff endpoint; shard walks both trees and reports
-  added/modified/deleted paths, not line hunks.
-- **Push size**: request bodies are buffered before proxying; enormous pushes can
-  exceed Worker memory. Stream the body if that becomes a real workload.
-- **Email**: registration stores an address but shard sends no mail; accounts are
-  active immediately. Put Cloudflare Access in front if this is a private forge.
-- **Account recovery**: there is no email delivery, password-reset flow or account
-  deletion UI. Email changes are stored immediately without verification.
-- **Request limits**: failed-login throttling is per source/account pair; it is
-  not a global rate limiter. Configure edge limits for a public deployment.
-- **Discussion history**: newly recorded state changes include their actor;
-  pre-migration closures appear without an actor because that information was not stored.
+To record a check, POST JSON to `/{owner}/{repo}/commit/{hash}/checks` with
+`Authorization: Bearer <token>` and a write-scoped token belonging to a repository
+writer. Send `{ "context": "ci/unit", "state": "success", "summary": "42 tests passed" }`.
+The accepted states are `pending`, `success`, `failure` and `error`. Each context
+has one current result per commit, shown in the commit detail. A successful write
+returns `204`.
+
+For signed issue and review events, set `WEBHOOK_REPO` to the stable Artifacts
+repository name, `WEBHOOK_ENDPOINT` to the receiver's HTTPS URL, and
+`WEBHOOK_SECRET` as a Worker secret. Add `"* * * * *"` to `triggers.crons` alongside
+the daily maintenance schedule. Verify `X-Shard-Signature` as `sha256=` followed
+by the lowercase hex HMAC-SHA256 of the exact request body. Use `X-Shard-Event-Id`
+to deduplicate deliveries from the Worker. Check `webhook_deliveries` for state,
+attempt count and last HTTP status. The Worker attempts delivery up to six times.
+
+## Backup and restore
+
+Pause writes while taking a paired D1 and Git backup. Keep the SQL and each Git
+mirror in private storage outside the workspace. Record the D1 `repos.artifacts_repo`
+value for each mirror so a replacement namespace can preserve repository bindings.
+
+For a loopback rehearsal, set `SHARD_SOURCE_D1` to the local persistence directory,
+`SHARD_RESTORE_D1` to an empty persistence path, and `SHARD_BACKUP` to an absolute
+backup directory. Set `SHARD_REPO_URL` to the clone URL for one repository with refs
+and `SHARD_REPO_BACKUP` to its own absolute backup directory. Create both backup
+directories before running these commands.
+
+```sh
+mise exec -- node node_modules/wrangler/bin/wrangler.js d1 export shard --local --persist-to "$SHARD_SOURCE_D1" --output "$SHARD_BACKUP/shard.sql"
+mise exec -- node node_modules/wrangler/bin/wrangler.js d1 execute shard --local --persist-to "$SHARD_RESTORE_D1" --file "$SHARD_BACKUP/shard.sql"
+git clone --mirror "$SHARD_REPO_URL" "$SHARD_REPO_BACKUP/source.git"
+git -C "$SHARD_REPO_BACKUP/source.git" bundle create "$SHARD_REPO_BACKUP/source.bundle" --all
+git clone --mirror "$SHARD_REPO_BACKUP/source.bundle" "$SHARD_REPO_BACKUP/restored.git"
+git -C "$SHARD_REPO_BACKUP/restored.git" fsck --full
+```
+
+Compare D1 row counts and check that `git for-each-ref` returns the same names and
+object IDs in both mirrors. For an empty repository, retain the mirror and its
+D1 record. Production recovery includes restoring or provisioning the Artifacts
+repositories under their expected names before serving the restored database.
+[D1 export and import](https://developers.cloudflare.com/d1/best-practices/import-export-data/) · [D1 Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/)
+
+## Limits
+
+- Pull request comparisons explicitly report missing objects and traversal limits.
+  Text diffs cover UTF-8 files up to 96 KiB and 512 lines per side. Merge
+  verification uses bounded ancestry traversal, so the original commit IDs must
+  still be reachable after integration.
+- Branch and tag discovery reads at most 512 advertised refs within 256 KiB.
+  Create, update and delete refs through Git.
+- Source downloads contain regular files and directories up to 16 MiB and 2,000
+  entries in `ustar` format. Use a Git mirror for history, symlinks and submodules.
+- The edge limit is 300 requests per minute per source and traffic class, counted
+  separately at each Cloudflare location. [Rate Limiting binding](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)
+- Historical issue closures from before state history was introduced appear without
+  an actor.
 
 ## Design
 
@@ -210,7 +283,8 @@ file-level change lists.
   The local simulator requires Wrangler ≥ 4.163 and Git ≥ 2.32 on `PATH`.
 - Workers binding surface: namespace `create/get/list/import/delete`; repo handle
   `info/createToken/listTokens/revokeToken/fork/log/readCommit/readTree/readBlob/readFile`.
-  There is **no** branch enumeration, merge or write API; the PR design reflects that.
+- The binding exposes object and history reads. Shard uses Git HTTPS for ref
+  discovery and leaves ref changes and merges to the Git client.
 - Commit metadata uses `treeHash` and `authoredAt`/`committedAt` (Unix seconds);
   tree entries are `{ name, mode, type, hash }`.
 - Git remotes accept a Bearer repo token; for Basic auth the password is the token

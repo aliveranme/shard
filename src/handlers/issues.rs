@@ -1,13 +1,16 @@
 use super::common::{can_admin, forbidden, not_found, page_title, visible_repo};
-use crate::artifacts::Artifacts;
+use super::common::can_write;
+use crate::artifacts::{is_object_id, Artifacts};
 use crate::ctx::AppState;
 use crate::db;
 use crate::i18n::{CommonText, DiscussionText, Locale};
 use crate::markdown;
 use crate::models::{Issue, Pull, Repo, Ts};
 use crate::pagination::{query_url, PageRequest, PAGE_SIZE};
+use crate::pull_diff::{self, Comparison, FileDiff};
 use crate::templates::{
-    render, ChangedRow, Chrome, DiscussionRow, IssueNewPage, IssuePage, IssueRow, IssuesPage, PullView,
+    render, Chrome, DiscussionRow, FilePreview, IssueNewPage, IssuePage, IssueRow, IssuesPage, PullView,
+    ReviewContext, ReviewLine,
 };
 use crate::util;
 use worker::*;
@@ -66,7 +69,8 @@ async fn list(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result<R
                 (SELECT COUNT(*) FROM comments c WHERE c.issue_id = i.id) AS comment_count
            FROM issues i LEFT JOIN users u ON u.id = i.author_id
           WHERE i.repo_id = ? AND i.kind = ? AND (? = 'all' OR i.state = ?)
-                AND (? = '' OR i.title LIKE ?)
+                AND (?5 = '' OR i.title LIKE ?6 OR i.body LIKE ?6
+                     OR EXISTS (SELECT 1 FROM comments c WHERE c.issue_id = i.id AND c.body LIKE ?6))
           ORDER BY i.updated_at DESC, i.id DESC LIMIT ? OFFSET ?",
         &[
             util::js_int(repo.id), util::js_text(kind),
@@ -229,15 +233,15 @@ async fn create(_req: Request, ctx: RouteContext<AppState>, kind: &str) -> Resul
                 return invalid(locale.t(DiscussionText::GitUnavailable).into());
             }
         };
-        head_commit = match handle.head_commit(&head_branch).await {
-            Ok(commit) => commit.map(|c| c.hash),
+        head_commit = match handle.head_commit(&format!("refs/heads/{head_branch}")).await {
+            Ok(commit) => commit.map(|c| c.hash).filter(|hash| is_object_id(hash)),
             Err(error) => {
                 console_log!("pull request setup: could not read the head branch: {error}");
                 return invalid(locale.t(DiscussionText::ReadHeadBranchFailed).into());
             }
         };
-        base_commit = match handle.head_commit(&base_branch).await {
-            Ok(commit) => commit.map(|c| c.hash),
+        base_commit = match handle.head_commit(&format!("refs/heads/{base_branch}")).await {
+            Ok(commit) => commit.map(|c| c.hash).filter(|hash| is_object_id(hash)),
             Err(error) => {
                 console_log!("pull request setup: could not read the base branch: {error}");
                 return invalid(locale.t(DiscussionText::ReadBaseBranchFailed).into());
@@ -256,49 +260,32 @@ async fn create(_req: Request, ctx: RouteContext<AppState>, kind: &str) -> Resul
     struct Number {
         number: i64,
     }
-    let number: Option<Number> = db::first(
-        &database,
-        "UPDATE repos SET next_issue_number = next_issue_number + 1 WHERE id = ? RETURNING next_issue_number - 1 AS number",
-        &[util::js_int(repo.id)],
-    )
-    .await?;
-    let Some(Number { number }) = number else {
+    let now = util::js_int(util::now());
+    let mut statements = vec![
+        database.prepare("UPDATE repos SET next_issue_number = next_issue_number + 1 WHERE id = ? RETURNING next_issue_number - 1 AS number")
+            .bind(&[util::js_int(repo.id)])?,
+        database.prepare(
+            "INSERT INTO issues (repo_id, number, kind, title, body, state, author_id, created_at, updated_at)
+             SELECT id, next_issue_number - 1, ?, ?, ?, 'open', ?, ?, ? FROM repos WHERE id = ?",
+        ).bind(&[
+            util::js_text(kind), util::js_text(title.trim()), util::js_text(&body),
+            util::js_int(user.id), now.clone(), now, util::js_int(repo.id),
+        ])?,
+    ];
+    if let (Some(base), Some(head)) = (base_commit, head_commit) {
+        statements.push(database.prepare(
+            "INSERT INTO pulls (issue_id, head_branch, base_branch, head_commit, base_commit, merged)
+             SELECT i.id, ?, ?, ?, ?, 0 FROM issues i JOIN repos r ON r.id = i.repo_id
+              WHERE r.id = ? AND i.number = r.next_issue_number - 1",
+        ).bind(&[
+            util::js_text(&head_branch), util::js_text(&base_branch), util::js_text(&head),
+            util::js_text(&base), util::js_int(repo.id),
+        ])?);
+    }
+    let results = database.batch(statements).await?;
+    let Some(Number { number }) = results[0].results::<Number>()?.into_iter().next() else {
         return invalid(locale.t(DiscussionText::AllocateNumberFailed).into());
     };
-
-    db::run(
-        &database,
-        "INSERT INTO issues (repo_id, number, kind, title, body, state, author_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?)",
-        &[
-            util::js_int(repo.id),
-            util::js_int(number),
-            util::js_text(kind),
-            util::js_text(title.trim()),
-            util::js_text(&body),
-            util::js_int(user.id),
-            util::js_int(util::now()),
-            util::js_int(util::now()),
-        ],
-    )
-    .await?;
-
-    if kind == "pull" {
-        db::run(
-            &database,
-            "INSERT INTO pulls (issue_id, head_branch, base_branch, head_commit, base_commit, merged)
-             SELECT id, ?, ?, ?, ?, 0 FROM issues WHERE repo_id = ? AND number = ?",
-            &[
-                util::js_text(&head_branch),
-                util::js_text(&base_branch),
-                head_commit.map(|v| util::js_text(&v)).unwrap_or_else(util::js_null),
-                base_commit.map(|v| util::js_text(&v)).unwrap_or_else(util::js_null),
-                util::js_int(repo.id),
-                util::js_int(number),
-            ],
-        )
-        .await?;
-    }
 
     let path = if kind == "pull" { "pulls" } else { "issues" };
     util::redirect(&format!("/{}/{}/{}/{}", repo.owner_name, repo.name, path, number))
@@ -343,14 +330,19 @@ async fn detail(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result
     let request_page = PageRequest::new(&req, "comments_page");
     let mut entries: Vec<DiscussionEntry> = db::all(
         &database,
-        "SELECT c.id AS id, c.body, 'comment' AS kind, c.created_at AS created_at, u.username AS author_name, 0 AS item_order
-           FROM comments c LEFT JOIN users u ON u.id = c.author_id WHERE c.issue_id = ?
+        "SELECT c.id AS id, c.body, 'comment' AS kind, c.created_at AS created_at, u.username AS author_name, 0 AS item_order,
+                NULL AS base, NULL AS head, NULL AS path, NULL AS side, NULL AS line
+           FROM comments c LEFT JOIN users u ON u.id = c.author_id WHERE c.issue_id = ?1
          UNION ALL
-         SELECT e.id, '' AS body, e.event AS kind, e.created_at, u.username AS author_name, 1 AS item_order
-           FROM issue_events e LEFT JOIN users u ON u.id = e.actor_id WHERE e.issue_id = ?
-         ORDER BY created_at ASC, item_order ASC, id ASC LIMIT ? OFFSET ?",
+         SELECT e.id, '', e.event, e.created_at, u.username, 1, NULL, NULL, NULL, NULL, NULL
+           FROM issue_events e LEFT JOIN users u ON u.id = e.actor_id WHERE e.issue_id = ?1
+         UNION ALL
+         SELECT p.id, p.body, p.decision, p.created_at, u.username, 2,
+                p.base_commit, p.head_commit, p.path, p.side, p.line
+           FROM pull_reviews p LEFT JOIN users u ON u.id = p.actor_id WHERE p.issue_id = ?1
+         ORDER BY created_at ASC, item_order ASC, id ASC LIMIT ?2 OFFSET ?3",
         &[
-            util::js_int(issue.id), util::js_int(issue.id),
+            util::js_int(issue.id),
             util::js_int((PAGE_SIZE + 1) as i64), util::js_int(request_page.offset()),
         ],
     )
@@ -371,34 +363,57 @@ async fn detail(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result
 
     let mut changed = Vec::new();
     let mut diff_error = None;
-    if let Some(pull) = &pull {
-        let files = async {
-            Artifacts::from_env(&state.env)?
-                .get(&repo.artifacts_repo)
-                .await?
-                .changed_files(&pull.base_branch, &pull.head_branch)
-                .await
-        }
-        .await;
-        match files {
-            Ok(files) => changed = files
-                .into_iter()
-                .map(|file| ChangedRow { path: file.path, status: file.status })
-                .collect(),
+    let mut preview = None;
+    let mut preview_missing = false;
+    if kind == "pull" {
+        let selected = util::query_param(&req, "file");
+        let comparison = async {
+            let Some((base, head)) = pull.as_ref().and_then(|pull| {
+                pull.base_commit.as_deref().zip(pull.head_commit.as_deref())
+            }) else {
+                return Ok(Comparison::MissingSnapshot);
+            };
+            let handle = Artifacts::from_env(&state.env)?.get(&repo.artifacts_repo).await?;
+            let comparison = pull_diff::compare(&handle, base, head).await?;
+            if let (Comparison::Complete(files), Some(path)) = (&comparison, selected) {
+                if let Ok(index) = files.binary_search_by(|file| file.path.cmp(&path)) {
+                    let file = &files[index];
+                    let diff = match file.lines(&handle).await {
+                        Ok(diff) => diff,
+                        Err(error) => {
+                            console_log!("pull request: Git file comparison failed: {error}");
+                            FileDiff::Unavailable
+                        }
+                    };
+                    preview = Some(FilePreview { path, modes: file.modes(), diff });
+                } else {
+                    preview_missing = true;
+                }
+            }
+            Ok::<_, Error>(comparison)
+        }.await;
+        match comparison {
+            Ok(Comparison::Complete(files)) => changed = files,
+            Ok(Comparison::MissingSnapshot) => diff_error = Some(locale.t(DiscussionText::MissingSnapshot)),
+            Ok(Comparison::Limited) => diff_error = Some(locale.t(DiscussionText::ComparisonLimited)),
             Err(error) => {
-                console_log!("pull request diff: could not compare branches: {error}");
+                console_log!("pull request: saved Git comparison failed: {error}");
                 diff_error = Some(locale.t(DiscussionText::CompareBranchesFailed));
             }
         }
     }
 
-    let can_edit = match &state.user {
-        Some(user) => {
-            user.id == issue.author_id.unwrap_or(-1)
-                || can_admin(&state, &repo)
-        }
-        None => false,
-    };
+    let merged = pull.as_ref().is_some_and(|pull| pull.merged != 0);
+    let can_edit = !merged && state.user.as_ref().is_some_and(|user| {
+        Some(user.id) == issue.author_id || can_admin(&state, &repo)
+    });
+    let has_snapshot = pull.as_ref().is_some_and(|pull| {
+        pull.base_commit.as_deref().is_some_and(is_object_id)
+            && pull.head_commit.as_deref().is_some_and(is_object_id)
+    });
+    let can_verify_merge = has_snapshot && !merged && can_write(&state, &repo).await?;
+    let can_comment_on_diff = has_snapshot && !merged && state.user.is_some() && issue.is_open() && diff_error.is_none();
+    let can_review = can_comment_on_diff && can_verify_merge && state.user_id() != issue.author_id;
     let is_owner = can_admin(&state, &repo);
     let page = IssuePage {
         chrome: Chrome::new(&state),
@@ -411,7 +426,13 @@ async fn detail(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result
         pagination,
         pull: pull.as_ref().map(PullView::from_pull),
         changed,
+        preview,
+        preview_missing,
         diff_error,
+        metadata: if issue.is_pull() { None } else { Some(crate::issue_metadata::load(&state, &repo, &issue).await?) },
+        can_review,
+        can_comment_on_diff,
+        can_verify_merge,
         can_edit,
         is_owner,
         repo,
@@ -499,21 +520,33 @@ pub async fn set_state(req: Request, ctx: RouteContext<AppState>) -> Result<Resp
         Some("closed") => "closed",
         Some("open") => "open",
         _ => return crate::templates::error_response(
-            Chrome::new(&state), 400, state.locale.t(DiscussionText::InvalidState),
+            &Chrome::new(&state), 400, state.locale.t(DiscussionText::InvalidState),
         ),
     };
+    if kind == "pull" {
+        #[derive(serde::Deserialize)]
+        struct MergeState { merged: i64 }
+        let merge: Option<MergeState> = db::first(&database,
+            "SELECT merged FROM pulls WHERE issue_id = ?", &[util::js_int(issue.id)],
+        ).await?;
+        if merge.is_some_and(|row| row.merged != 0) {
+            return crate::templates::error_response(&Chrome::new(&state), 409, state.locale.t(DiscussionText::MergeStateLocked));
+        }
+    }
     let now = util::now();
     // D1 executes the batch as one transaction. Test the live state inside it,
     // so concurrent or repeated submissions cannot create duplicate events.
     let event = database.prepare(
         "INSERT INTO issue_events (issue_id, actor_id, event, created_at)
-         SELECT id, ?, ?, ? FROM issues WHERE id = ? AND state <> ?"
+         SELECT id, ?, ?, ? FROM issues WHERE id = ? AND state <> ?
+           AND NOT EXISTS (SELECT 1 FROM pulls WHERE issue_id = issues.id AND merged = 1)"
     ).bind(&[
         util::js_int(user.id), util::js_text(if desired == "closed" { "closed" } else { "reopened" }),
         util::js_int(now), util::js_int(issue.id), util::js_text(desired),
     ])?;
     let update = database.prepare(
-        "UPDATE issues SET state = ?, closed_at = ?, updated_at = ? WHERE id = ? AND state <> ?"
+        "UPDATE issues SET state = ?, closed_at = ?, updated_at = ? WHERE id = ? AND state <> ?
+           AND NOT EXISTS (SELECT 1 FROM pulls WHERE issue_id = issues.id AND merged = 1)"
     ).bind(&[
         util::js_text(desired),
         if desired == "closed" { util::js_int(now) } else { util::js_null() },
@@ -531,11 +564,25 @@ struct DiscussionEntry {
     kind: String,
     author_name: Option<String>,
     created_at: Ts,
+    base: Option<String>,
+    head: Option<String>,
+    path: Option<String>,
+    side: Option<String>,
+    line: Option<i64>,
 }
 
 impl DiscussionEntry {
     fn into_row(self, locale: Locale) -> DiscussionRow {
         let is_comment = self.kind == "comment";
+        let review = self.base.zip(self.head).map(|(base, head)| ReviewContext {
+            base, head,
+            line: match (self.path, self.side, self.line) {
+                (Some(path), Some(side), Some(line)) => Some(ReviewLine {
+                    url_path: util::url_path(&path), path, side, line,
+                }),
+                _ => None,
+            },
+        });
         DiscussionRow {
             id: self.id,
             initial: if is_comment {
@@ -545,9 +592,10 @@ impl DiscussionEntry {
             },
             author: self.author_name,
             date: self.created_at,
-            html: if is_comment { markdown::render(&self.body) } else { String::new() },
+            html: if is_comment || (review.is_some() && self.kind != "merge_verified") { markdown::render(&self.body) } else { String::new() },
             action: self.kind,
             is_comment,
+            review,
         }
     }
 }
@@ -574,18 +622,24 @@ fn route_kind(req: &Request) -> Result<&'static str> {
 }
 
 async fn redirect_to_discussion(database: &worker::d1::D1Database, repo: &Repo, issue: &Issue) -> Result<Response> {
+    redirect_to_entry(database, repo, issue, None).await
+}
+
+pub(crate) async fn redirect_to_entry(database: &worker::d1::D1Database, repo: &Repo, issue: &Issue, review: Option<i64>) -> Result<Response> {
     #[derive(serde::Deserialize)]
     struct Count { n: i64 }
     let count = db::first::<Count>(
         database,
-        "SELECT (SELECT COUNT(*) FROM comments WHERE issue_id = ?)
-              + (SELECT COUNT(*) FROM issue_events WHERE issue_id = ?) AS n",
-        &[util::js_int(issue.id), util::js_int(issue.id)],
+        "SELECT (SELECT COUNT(*) FROM comments WHERE issue_id = ?1)
+              + (SELECT COUNT(*) FROM issue_events WHERE issue_id = ?1)
+              + (SELECT COUNT(*) FROM pull_reviews WHERE issue_id = ?1) AS n",
+        &[util::js_int(issue.id)],
     ).await?.map(|count| count.n).unwrap_or(0);
     let page = (count.saturating_sub(1).max(0) / PAGE_SIZE as i64 + 1)
         .min(i64::from(crate::pagination::MAX_PAGE));
+    let fragment = review.map_or_else(|| "discussion".into(), |id| format!("review-{id}"));
     util::redirect(&format!(
-        "/{}/{}/{}/{}?comments_page={}#discussion",
+        "/{}/{}/{}/{}?comments_page={}#{fragment}",
         repo.owner_name, repo.name, section(&issue.kind), issue.number, page
     ))
 }

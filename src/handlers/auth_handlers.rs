@@ -35,11 +35,11 @@ pub async fn login_submit(req: Request, ctx: RouteContext<AppState>) -> Result<R
     let password = util::form_value(form, "password").unwrap_or_default();
     let next = util::safe_next(util::form_value(form, "next"));
     if login.is_empty() || login.len() > 254 || password.is_empty() || password.len() > 1024 {
-        return error_response(Chrome::new(&state), 400, state.locale.t(AccountText::InvalidLoginLength));
+        return error_response(&Chrome::new(&state), 400, state.locale.t(AccountText::InvalidLoginLength));
     }
     let key = auth::login_key(&req, &login).await?;
     if let Some(seconds) = auth::login_retry_after(&state.env, &key).await? {
-        let mut response = error_response(Chrome::new(&state), 429, state.locale.t(AccountText::LoginThrottled))?;
+        let mut response = error_response(&Chrome::new(&state), 429, state.locale.t(AccountText::LoginThrottled))?;
         response.headers_mut().set("Retry-After", &seconds.to_string())?;
         return Ok(response);
     }
@@ -226,9 +226,19 @@ pub async fn delete_token(
     util::redirect("/user/settings/tokens")
 }
 
-fn render_account(state: &AppState, email: String, success: Option<&'static str>, error: Option<&'static str>) -> Result<Response> {
+async fn render_account(state: &AppState, email: String, success: Option<&'static str>, error: Option<&'static str>) -> Result<Response> {
+    #[derive(serde::Deserialize)]
+    struct Verification { email_verified_at: Option<i64> }
+    let user_id = state.user_id().ok_or_else(|| Error::RustError("authentication required".into()))?;
+    let verification: Option<Verification> = db::first(
+        &state.db()?,
+        "SELECT email_verified_at FROM users WHERE id = ?",
+        &[util::js_int(user_id)],
+    ).await?;
     let mut response = render(&AccountPage {
         chrome: Chrome::new(state), title: page_title(&[state.locale.t(CommonText::AccountSettings)]), email, success, error,
+        email_verified: verification.is_some_and(|row| row.email_verified_at.is_some()),
+        mail_configured: crate::recovery::configured(&state.env),
     })?;
     response.headers_mut().set("Cache-Control", "no-store")?;
     Ok(response)
@@ -242,9 +252,10 @@ pub async fn account_page(req: Request, ctx: RouteContext<AppState>) -> Result<R
     let success = match util::query_param(&req, "updated").as_deref() {
         Some("email") => Some(state.locale.t(AccountText::EmailUpdated)),
         Some("password") => Some(state.locale.t(AccountText::PasswordUpdated)),
+        Some("verification-requested") => Some(state.locale.t(AccountText::VerificationRequested)),
         _ => None,
     };
-    render_account(&state, user.email.clone(), success, None)
+    render_account(&state, user.email.clone(), success, None).await
 }
 
 pub async fn update_email(_req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
@@ -256,10 +267,10 @@ pub async fn update_email(_req: Request, ctx: RouteContext<AppState>) -> Result<
     let email = util::form_value(form, "email").unwrap_or_default().trim().to_string();
     let password = util::form_value(form, "current_password").unwrap_or_default();
     if email.len() > 254 || !util::valid_email(&email) {
-        return render_account(&state, user.email.clone(), None, Some(state.locale.t(AccountText::InvalidEmail)));
+        return render_account(&state, user.email.clone(), None, Some(state.locale.t(AccountText::InvalidEmail))).await;
     }
     if !auth::verify_current_password(&state.env, user.id, &password).await? {
-        return render_account(&state, email, None, Some(state.locale.t(AccountText::IncorrectCurrentPassword)));
+        return render_account(&state, email, None, Some(state.locale.t(AccountText::IncorrectCurrentPassword))).await;
     }
     let database = state.db()?;
     #[derive(serde::Deserialize)]
@@ -268,13 +279,13 @@ pub async fn update_email(_req: Request, ctx: RouteContext<AppState>) -> Result<
         "SELECT COUNT(*) AS n FROM users WHERE email = ? COLLATE NOCASE AND id != ?",
         &[util::js_text(&email), util::js_int(user.id)]).await?.map(|row| row.n).unwrap_or(0);
     if taken > 0 {
-        return render_account(&state, email, None, Some(state.locale.t(AccountText::EmailTaken)));
+        return render_account(&state, email, None, Some(state.locale.t(AccountText::EmailTaken))).await;
     }
     match db::run(&database, "UPDATE users SET email = ? WHERE id = ?",
         &[util::js_text(&email), util::js_int(user.id)]).await {
         Ok(()) => util::redirect("/user/settings?updated=email"),
         Err(error) if error.to_string().contains("UNIQUE constraint failed: users.email") => {
-            render_account(&state, email, None, Some(state.locale.t(AccountText::EmailTaken)))
+            render_account(&state, email, None, Some(state.locale.t(AccountText::EmailTaken))).await
         }
         Err(error) => Err(error),
     }
@@ -297,11 +308,56 @@ pub async fn update_password(req: Request, ctx: RouteContext<AppState>) -> Resul
         Some(AccountText::IncorrectCurrentPassword)
     } else { None };
     if let Some(error) = error {
-        return render_account(&state, user.email.clone(), None, Some(state.locale.t(error)));
+        return render_account(&state, user.email.clone(), None, Some(state.locale.t(error))).await;
     }
     let token = auth::replace_password(&state.env, user.id, &password).await?;
     let mut response = util::redirect("/user/settings?updated=password")?;
     response.headers_mut().append("Set-Cookie", &util::set_cookie(&token, 30 * 24 * 3600, util::is_secure(&req))?)?;
+    Ok(response)
+}
+
+pub async fn delete_account(_req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
+    let state = &ctx.data;
+    let Some(user) = &state.user else {
+        return util::redirect("/user/login?next=/user/settings");
+    };
+    let locale = state.locale;
+    let error = |status, key| crate::templates::error_response(&Chrome::new(state), status, locale.t(key));
+    let form = state.form()?;
+    if util::form_value(form, "confirm").as_deref() != Some(user.username.as_str()) {
+        return error(400, AccountText::ConfirmAccountDeletion);
+    }
+    let password = util::form_value(form, "current_password").unwrap_or_default();
+    if password.is_empty() || password.len() > 1024 {
+        return error(403, AccountText::IncorrectCurrentPassword);
+    }
+    #[derive(serde::Deserialize)]
+    struct Credential { password_hash: String }
+    let database = state.db()?;
+    let args = [util::js_int(user.id)];
+    let credential: Option<Credential> = db::first(&database,
+        "SELECT password_hash FROM users WHERE id = ?", &args,
+    ).await?;
+    let Some(credential) = credential else {
+        return util::redirect("/user/login");
+    };
+    if !crypto::verify_password(&password, &credential.password_hash).await? {
+        return error(403, AccountText::IncorrectCurrentPassword);
+    }
+    #[derive(serde::Deserialize)]
+    struct Deleted { id: i64 }
+    let deleted: Option<Deleted> = db::first(&database,
+        "DELETE FROM users WHERE id = ?1 AND password_hash = ?2
+          AND NOT EXISTS (SELECT 1 FROM repos WHERE owner_id = ?1)
+          AND NOT EXISTS (SELECT 1 FROM repo_copies WHERE owner_id = ?1 AND state IN ('starting', 'pending', 'discard'))
+          RETURNING id",
+        &[util::js_int(user.id), util::js_text(&credential.password_hash)],
+    ).await?;
+    if !deleted.is_some_and(|row| row.id == user.id) {
+        return error(409, AccountText::AccountDeletionBlocked);
+    }
+    let mut response = util::redirect("/")?;
+    response.headers_mut().append("Set-Cookie", &util::clear_cookie())?;
     Ok(response)
 }
 
@@ -320,7 +376,7 @@ pub async fn update_language(req: Request, ctx: RouteContext<AppState>) -> Resul
     let state = &ctx.data;
     let value = util::form_value(state.form()?, "language");
     let Some(preference) = value.as_deref().and_then(LanguagePreference::parse) else {
-        return error_response(Chrome::new(state), 400, state.locale.t(AccountText::InvalidLanguage));
+        return error_response(&Chrome::new(state), 400, state.locale.t(AccountText::InvalidLanguage));
     };
     let mut response = util::redirect("/user/settings/language?updated=1")?;
     if let Some(user_id) = state.user_id() {

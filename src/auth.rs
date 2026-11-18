@@ -165,6 +165,8 @@ pub async fn cleanup_expired(env: &Env) -> Result<()> {
         database.prepare("DELETE FROM sessions WHERE expires_at <= ?").bind(&[util::js_int(now)])?,
         database.prepare("DELETE FROM access_tokens WHERE expires_at <= ?").bind(&[util::js_int(now)])?,
         database.prepare("DELETE FROM login_throttle WHERE window_started <= ?").bind(&[util::js_int(now - 900)])?,
+        database.prepare("DELETE FROM account_email_links WHERE expires_at <= ? AND next_send_at <= ?")
+            .bind(&[util::js_int(now), util::js_int(now)])?,
     ]).await?;
     Ok(())
 }
@@ -222,7 +224,6 @@ pub async fn replace_password(env: &Env, user_id: i64, password: &str) -> Result
     database.batch(vec![
         database.prepare("UPDATE users SET password_hash = ? WHERE id = ?")
             .bind(&[util::js_text(&password_hash), util::js_int(user_id)])?,
-        database.prepare("DELETE FROM sessions WHERE user_id = ?").bind(&[util::js_int(user_id)])?,
         database.prepare("INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
             .bind(&[util::js_text(&token_hash), util::js_int(user_id), util::js_int(now), util::js_int(now + SESSION_TTL)])?,
     ]).await?;

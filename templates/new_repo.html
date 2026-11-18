@@ -6,6 +6,10 @@
       <h1 class="page-title">{{ chrome.locale.t(crate::i18n::CommonText::NewRepository) }}</h1>
       <p class="page-sub">{{ chrome.locale.t(crate::i18n::RepoText::NewRepositoryIntro) }}</p>
     </div>
+    <div class="page-head__actions">
+      <a class="btn btn--ghost" href="/user/settings/repository-import">{{ chrome.locale.t(crate::i18n::LifecycleText::Import) }}</a>
+      <a class="btn btn--ghost" href="/user/settings/repository-copies">{{ chrome.locale.t(crate::i18n::LifecycleText::Copies) }}</a>
+    </div>
   </div>
   {% if let Some(message) = error %}
     <div class="alert alert--error" role="alert">{{ message }}</div>

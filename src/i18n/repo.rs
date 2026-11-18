@@ -3,6 +3,14 @@ catalog! {
         Repository => "Repository", "仓库";
         Branch => "Branch", "分支";
         BrowseBranch => "Browse branch", "浏览分支";
+        BranchesAndTags => "Branches and tags", "分支和标签";
+        Branches => "Branches", "分支";
+        Tags => "Tags", "标签";
+        NoBranches => "No branches yet.", "暂无分支。";
+        NoTags => "No tags yet.", "暂无标签。";
+        TagObject => "Git object", "Git 对象";
+        PeeledTarget => "Target object", "目标对象";
+        RefsLimit => "The Git reference advertisement exceeds the size or record limit. Use Git to list the references.", "Git 引用公告超出大小或记录数量限制。请使用 Git 列出引用。";
         EmptyRepository => "This repository is empty", "此仓库为空";
         EmptyDirectory => "This directory is empty", "此目录为空";
         EmptyBranch => "No files on this branch", "此分支暂无文件";
@@ -14,7 +22,7 @@ catalog! {
         Visibility => "Visibility", "可见性";
         Updated => "Updated", "更新时间";
         Clone => "Clone", "克隆";
-        CloneHelp => "Authenticate with your username and an access token. Write tokens can push.", "使用用户名和访问令牌进行身份验证。具有写入权限的令牌可以推送。";
+        CloneHelp => "Use your access token as the Git password. Pushing requires repository write access and a write token.", "请使用访问令牌作为 Git 密码。推送需要仓库写入权限及写入令牌。";
         ManageTokens => "Manage access tokens", "管理访问令牌";
         File => "File", "文件";
         RawFile => "Raw file", "原始文件";
@@ -32,7 +40,7 @@ catalog! {
         NameHelp => "Letters, digits, dot, dash or underscore. Starts with a letter or digit.", "可使用字母、数字、点、连字符或下划线，须以字母或数字开头。";
         Description => "Description", "描述";
         DescriptionPlaceholder => "What is this repository for?", "此仓库的用途是什么？";
-        PrivateHelp => "Private — only you can see it", "设为私有，仅你可见";
+        PrivateHelp => "Private — accessible only to authorized users", "设为私有，仅授权用户可访问";
         CreateRepository => "Create repository", "创建仓库";
         Cancel => "Cancel", "取消";
         SettingsSaved => "Settings saved.", "设置已保存。";

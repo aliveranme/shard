@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page">
+  <div class="page-head">
+    <div>
+      <h1 class="page-title">{{ heading }}</h1>
+      <p class="page-sub">{{ help }}</p>
+    </div>
+    <a class="btn btn--ghost" href="/user/settings/repository-copies">{{ chrome.locale.t(crate::i18n::LifecycleText::Copies) }}</a>
+  </div>
+  {% if let Some(message) = error %}<div class="alert alert--error" role="alert">{{ message }}</div>{% endif %}
+  <form class="form card card--narrow" method="post" action="{{ action }}">
+    {% include "csrf.html" %}
+    {% if let Some(repo) = source %}
+    <p class="card__sub">{{ chrome.locale.t(crate::i18n::LifecycleText::ForkSource) }} <a href="/{{ repo.owner_name }}/{{ repo.name }}">{{ repo.full_name() }}</a></p>
+    {% else %}
+    <div class="field">
+      <label for="source-url">{{ chrome.locale.t(crate::i18n::LifecycleText::SourceUrl) }}</label>
+      <input class="input" id="source-url" name="source_url" type="url" value="{{ source_url }}" maxlength="2048" required>
+    </div>
+    {% endif %}
+    <div class="field">
+      <label for="name">{{ chrome.locale.t(crate::i18n::RepoText::RepositoryName) }}</label>
+      <input class="input" id="name" name="name" value="{{ destination.name }}" maxlength="100" required>
+      <span class="help">{{ chrome.locale.t(crate::i18n::RepoText::NameHelp) }}</span>
+    </div>
+    <div class="field">
+      <label for="description">{{ chrome.locale.t(crate::i18n::RepoText::Description) }}</label>
+      <input class="input" id="description" name="description" value="{{ destination.description }}">
+    </div>
+    {% if private_source %}
+    <p class="card__sub">{{ chrome.locale.t(crate::i18n::LifecycleText::PrivateFork) }}</p>
+    {% else %}
+    <label class="checkbox">
+      <input type="checkbox" name="private" {% if destination.private %}checked{% endif %}>
+      {{ chrome.locale.t(crate::i18n::RepoText::PrivateHelp) }}
+    </label>
+    {% endif %}
+    <div class="form__actions">
+      <button class="btn btn--primary" type="submit">{{ heading }}</button>
+      <a class="btn btn--ghost" href="{{ cancel }}">{{ chrome.locale.t(crate::i18n::RepoText::Cancel) }}</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

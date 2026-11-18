@@ -53,14 +53,47 @@ catalog! {
         Opened => "Opened", "创建时间";
         Comments => "Comments", "评论";
         FilesChanged => "Files changed", "变更文件";
-        CompareBranchesFailed => "Could not compare branches.", "无法比较分支。";
-        NoFileChanges => "No file changes detected between the branches.", "未发现两个分支之间有文件变更。";
+        CompareBranchesFailed => "Git storage could not read the saved comparison.", "Git 存储无法读取已保存的对比。";
+        MissingSnapshot => "The saved comparison commits are unavailable.", "已保存的对比提交不可用。";
+        ComparisonLimited => "This comparison exceeds the file or tree limits.", "此对比超出了文件或目录树的上限。";
+        NoFileChanges => "No file changes between the saved commits.", "已保存的提交之间没有文件变更。";
+        FileNotChanged => "This path is absent from the saved comparison.", "已保存的对比中没有此路径。";
+        DiffLimited => "This file exceeds the line diff size limit.", "此文件超出了行级差异的大小上限。";
+        DiffBinary => "Line diff is unavailable for binary or non-UTF-8 content.", "二进制或非 UTF-8 内容无法显示行级差异。";
+        DiffSubmodule => "This change updates a Git submodule reference.", "此变更涉及 Git 子模块引用。";
+        DiffUnchanged => "There are no text changes.", "没有文本变更。";
+        DiffUnavailable => "Git storage could not read this file's contents.", "Git 存储无法读取此文件的内容。";
+        OldLine => "Old line", "旧行号";
+        NewLine => "New line", "新行号";
+        FileChanges => "File changes", "文件差异";
+        OmittedLines => "Unchanged lines omitted", "已省略未变更的行";
+        NoFinalNewline => "No newline at end of file", "文件末尾没有换行符";
+        FileMode => "File mode", "文件模式";
         Added => "added", "新增";
         Modified => "modified", "修改";
         Deleted => "deleted", "删除";
         UnknownStatus => "Unknown", "未知";
         Merging => "Merging", "合并方式";
-        MergingHelp => "Merge locally and push the base branch. Shard tracks the review and mints the push token; Artifacts exposes no server-side merge.", "请在本地完成合并，再推送目标分支。Shard 跟踪审查并签发推送令牌，Artifacts 不支持在服务器上合并。";
+        MergingHelp => "Merge locally and push the result to the base branch.", "请在本地完成合并，再将结果推送至目标分支。";
+        Review => "Review this comparison", "审查此对比";
+        Approve => "Approve", "批准";
+        RequestChanges => "Request changes", "要求修改";
+        Approved => "Approved this comparison", "批准了此对比";
+        ChangesRequested => "Requested changes", "要求修改";
+        ReviewComment => "Comment on a changed line", "对变更行发表评论";
+        LineComment => "Line comment", "行评论";
+        ReviewLine => "Changed line", "变更行";
+        ReviewForbidden => "Only repository writers can record a decision on another author's pull request.", "只有仓库写入者可以审查其他作者的合并请求。";
+        ReviewInvalid => "Select a review decision or a changed line, with a valid comment.", "请选择审查结论或变更行，并填写有效评论。";
+        ReviewConflict => "This comparison can no longer be reviewed.", "此对比已无法审查。";
+        VerifyMerge => "Verify merge on base branch", "验证目标分支中的合并";
+        MergeForbidden => "Only repository writers can verify a merge.", "只有仓库写入者可以验证合并。";
+        MergeVerified => "Verified integration in Git", "已验证提交合入 Git";
+        MergeAbsent => "The target branch does not contain both saved commits, or its tip has not advanced.", "目标分支尚未包含两个已保存的提交，或分支顶端尚未推进。";
+        MergeLimited => "The merge could not be verified within the Git history read limit.", "在 Git 历史读取上限内无法验证合并。";
+        MergeUnavailable => "Git storage could not verify the target history.", "Git 存储无法验证目标分支历史。";
+        MergeStateLocked => "A verified merge cannot be reopened.", "已验证合并的请求无法重新开启。";
+        VerifiedTip => "Verified target tip", "已验证的目标分支顶端";
     }
 }
 
@@ -132,6 +165,16 @@ impl Locale {
 
     pub fn discussion_state(self, state: &str) -> &'static str {
         self.t(if state == "open" { CommonText::Open } else { CommonText::Closed })
+    }
+
+    pub fn review_decision(self, value: &str) -> &'static str {
+        self.t(match value {
+            "approved" => DiscussionText::Approved,
+            "changes_requested" => DiscussionText::ChangesRequested,
+            "line_comment" => DiscussionText::LineComment,
+            "merge_verified" => DiscussionText::MergeVerified,
+            _ => DiscussionText::UnknownStatus,
+        })
     }
 
     pub fn diff_status(self, status: &str) -> &'static str {

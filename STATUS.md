@@ -3,7 +3,7 @@
 Living record of what works, what is missing, and how it was verified.
 Update this file whenever a milestone lands or a limitation changes.
 
-**Snapshot: 2026-11-18** · bilingual interface and Rust development setup · local development only
+**Snapshot: 2026-11-18** · repository collaboration, pull request review, and operations · local development
 
 | Item | Value |
 |---|---|
@@ -14,95 +14,44 @@ Update this file whenever a milestone lands or a limitation changes.
 | Deployment | not deployed; `database_id` is still a placeholder |
 | Git remote | none configured (`origin` absent) |
 
-## Working end to end (verified locally)
+## Verified locally
 
-- Registration and login: PBKDF2-SHA256 (100k), HttpOnly session cookie, logout, failed-login throttling.
-- Account settings: password-confirmed email/password updates; password rotation invalidates older sessions.
-- Interface language: English, Simplified Chinese, and browser preference. Account choices persist across sessions, and guest choices stay in the browser.
-- Browser protection: CSRF tokens, origin checks, CSP/security headers, safe post-login redirects.
-- Access tokens: strict scope/name/expiry validation, one-time secret display, expiration enforcement, legacy compatibility and revocation.
-- Repository lifecycle: create calls the real Artifacts binding (local simulator), visibility, description, default branch, delete.
-- Git smart HTTP proxy: anonymous clone of public repos, token clone, push with a write token; read tokens are rejected for push.
-- Private repositories: anonymous page 404, anonymous clone 401, owner clone 200.
-- Code browsing: tree, blob preview, raw download, cursor-paginated first-parent history, branches containing `/` via `?branch=feature%2Freadme`.
-- Branch navigation submits a GET form under the no-script CSP. Code, files, and commit history retain the selected branch in their links.
-- Issues: create, Markdown body, comments, close/reopen, open/closed/all filters, title search, paginated actor-attributed discussion history.
-- Pull requests: branch-validated creation, discussion, file-level changes, close/reopen and state history.
-- Markdown safety: raw HTML escaped, `javascript:`/`data:`/`vbscript:`/`file:` destinations replaced with `#`.
-- Design system: measured 1200px measure, 96px hero, 999px pills, 28px cards, amber primary actions; no console errors.
-- Forgejo-shaped layouts: repo two-column with About/Clone, single issue filter toolbar, header Close/Reopen, settings side nav, centered auth card.
-- Pagination: 20-item repository/issue/discussion pages, stable ordering and preserved query filters.
-- Scheduled cleanup: expired session/token rows are removed by the configured daily event.
-- Repository deletion: incorrect confirmation preserves the repo; confirmed deletion removes storage and metadata.
-
-## Progress
-
-### ✅ Done
-
-| Area | Notes |
+| Area | Behavior |
 |---|---|
-| Auth | register, login, logout, session lookup, eight-failure/15-minute source/account throttle |
-| Account | email/password settings, current-password checks, password-change session rotation |
-| Personal access tokens | one-time `shard_` secrets, read/write scopes, expiry picker, list/revoke, SHA-256 at rest |
-| Browser security | centralized CSRF/origin checks, CSP/security headers, safe local redirects |
-| Repositories | create, visibility, description, default branch, delete, owner profile |
-| Git transport | smart HTTP proxy with per-request 1h Artifacts tokens; push scope enforcement |
-| Code browser | directory tree, blob preview, raw bytes, bounded cursor history |
-| Issues | create, list/filter/search, comments, atomic close/reopen events with actor attribution |
-| Pull requests | create, validate branches, file-level diff, comments, close/reopen |
-| UI | DESIGN.md tokens, pill controls, responsive breakpoints (720/980px) |
-| Pagination | dashboard, explore, profiles, global/repository issue lists, combined discussion and commit history |
-| Cleanup | daily scheduled removal of expired sessions, tokens and throttle windows |
-| Internationalization | typed bilingual catalogs, per-request language selection, localized validation, counts and accessibility labels |
-| Regression tests | 16 isolated HTTP scenarios, including account and guest language preferences and real Git workflows |
-| CI | GitHub Actions workflow added; remote workflow run has not been observed |
-| Agent guidance | AGENT.md covers design, security, localization, verification and one Git commit per verified feature |
-| Local development | pinned Rust/Wasm, rust-analyzer, rust-src, Clippy, rustfmt and lockfile-pinned Wrangler |
-| Docs | README, this status file, verified Cloudflare API notes |
+| Accounts | Registration, login throttling, password-confirmed settings changes, account deletion with an ownership guard, and single-use verification and reset links through the email simulator. Password reset revokes all browser sessions. |
+| Browser security | Session-bound CSRF, same-origin checks, CSP, safe redirects, and origin-only referrers on recovery pages. |
+| Internationalization | Typed English and Simplified Chinese catalogs. Guest language follows the browser cookie or header. Account settings persist across sessions. |
+| Access tokens | Read/write scopes, expiry and revocation, one-time secret display, last usage, and legacy credential compatibility. |
+| Repository access | Owners grant read or write access. Private visibility is enforced for Web, Git, search, downloads, and notification reads. Revocation removes access on subsequent requests. |
+| Repository lifecycle | Rename and accepted transfers preserve existing Web and Git routes. Forks preserve Git refs. The import form rejects sources outside its public HTTPS URL policy. |
+| Git transport | Smart HTTP request and response bodies are streamed. Private clone requires a credential, and push also requires write scope and repository write access. |
+| Code browsing | Branch and tag inventory, branch-scoped trees and files, cursor-paginated first-parent history, parent links, and commit-pinned source TAR downloads. |
+| Pull requests | Fixed commit pair, bounded file and line diffs, explicit missing and limited states, review decisions and comments on changed lines. Writers can verify integration after pushing a merge. |
+| Issues and search | Edit, label, assign, milestone, close/reopen, and search across titles, bodies, and comments. Paginated discussions preserve actor attribution. |
+| Notifications and integrations | Permission-aware inbox, one current CI result per commit and context, and signed webhook retries using stable event IDs. |
+| Maintenance | Per-source limits, `X-Request-ID` correlation, and daily removal of expired sessions, tokens, throttle windows, and email links. |
+| Backups | Rehearsed D1 export and restore into isolated persistence and Git bundle restore with matching refs and object IDs. |
+| UI and development | Forgejo-shaped server-rendered pages with the shared design tokens. Chromium covered bilingual desktop and mobile layouts. The pinned Rust/Wasm, Wrangler, and IDE toolchain supports local builds and regression tests. |
 
-### 🟡 Partial
+## Remaining work and prerequisites
 
-| Area | What exists | What is missing |
-|---|---|---|
-| Branch selection | default branch + branch named in URL | enumeration API absent; no branch list/switcher beyond that |
-| Pull requests | file-level add/modify/delete list | line hunks, reviews, approvals, merge action |
-| Repo home | README, latest commit, About | language stats, topics, releases, archive |
-| Settings | general, storage, danger zone | rename, transfer, collaborators, webhooks |
-| Tokens | scope, prefix, expiry, created/last used, revocation | audit trail, token-list pagination |
-| Search | repo search + issue title search | code search, commit search, full text |
-| Errors | friendly 404/403/500 pages | structured error IDs, request correlation |
+| Area | Requirement |
+|---|---|
+| Deployment | A Workers Paid account with Artifacts access, a real D1 database and an owned HTTPS origin. Staging exercises public HTTPS import, production delivery and restore, compatibility with existing D1 rows, and the GitHub Actions workflow once a remote is configured. |
+| Email | An onboarded sending domain, an `EMAIL` binding, and an available mailbox to verify real delivery. |
+| Merge automation | Web merges, protected refs and merge queues need a component that can update a validated target ref atomically. Current merge verification relies on reachable commit IDs. |
+| Repository search | Code and commit search require a bounded permission-aware index. A push event subscription can drive ingestion, with staging needed to exercise push delivery. |
+| Forge workflows | Organizations, teams, releases, issue templates, reactions, and watch/star controls. |
+| Git protocol | Verify shallow and partial clones on Artifacts. LFS and receive-pack v2 depend on provider support. |
+| Operations | Public deployment metrics, webhook retention, token-list pagination, and further CSP tightening after moving inline styles. |
+| UI | Dark theme needs a corresponding design specification. |
 
-### ❌ Missing
-
-**P0 — before calling it production-ready**
-
-- Account recovery: email delivery/verification, password reset and account deletion.
-- Global/edge rate limiting beyond the implemented source/account failed-login throttle.
-- Remove remaining template inline styles before tightening CSP `style-src` further.
-- Real deployment checklist: D1 `database_id`, remote migrations, custom domain, backups.
-- Repository rename (Artifacts internal name is stable; UI surface needs mapping rules).
-
-**P1 — forge parity**
-
-- Labels, milestones, assignees, reactions, issue templates.
-- PR line diffs, per-line review comments, approvals, merge queue/merge commit tracking.
-- Notifications, activity feed, watch/star/fork.
-- Repository import and fork UI (binding supports `import`, `fork`).
-- Tags/branches management, archive/export (`git archive`, zip/tar).
-- Organizations, teams, collaborators; current permissions are owner-or-admin only.
-
-**P2 — scale and polish**
-
-- Streaming Git push (currently the whole pack body is buffered in memory).
-- Git LFS, shallow/partial clone verification, protocol v2 receive-pack (Artifacts limitation).
-- Caching for hot UI paths and repeated Artifacts reads.
-- Observability: structured logs, tracing IDs, Artifacts metrics.
-- Dark theme (not defined in DESIGN.md; light-only today).
+Architecture decisions and provider evidence are recorded in [PLAN.md](PLAN.md).
 
 ## Cloudflare Artifacts constraints (verified 2026-11-17)
 
 - Workers binding: namespace `create/get/list/import/delete`; repo `info/createToken/listTokens/revokeToken/fork/log/readCommit/readTree/readBlob/readFile`.
-- No branch enumeration, no merge, no write API. PR merge therefore remains a Git operation.
+- Object and history reads use the binding. Shard performs ref discovery through Git HTTPS and records merges verified against Git ancestry.
 - Commit metadata uses `treeHash`, `authoredAt`, `committedAt`; tree entries are `{ name, mode, type, hash }`.
 - Git tokens: Bearer, or Basic with the token secret before `?expires=`; write scope required for `git-receive-pack` including its `info/refs` advertisement.
 - Artifacts requires Workers Paid; local simulator requires Wrangler ≥ 4.163 and Git ≥ 2.32.
@@ -112,10 +61,9 @@ Update this file whenever a milestone lands or a limitation changes.
 - `Router` is rebuilt per request; routes allocate strings. Move to a cached router with request-scoped state.
 - Repository create is not transactional across Artifacts + D1: Artifacts repo is deleted best-effort if the D1 insert fails.
 - Repository deletion spans Artifacts and D1; if D1 fails after storage deletion succeeds, metadata can remain for a deleted repository.
-- PR diff walks both full trees over RPC (bounded to 2000 entries / depth 12); large repos will be slow.
-- Push bodies are buffered; multi-hundred-MB pushes risk Worker memory limits.
+- PR comparisons bound tree depth, entry count and reads per comparison. Large comparisons surface the limit in the UI.
 - Token lists remain unpaginated; accounts with many tokens can produce large settings pages.
-- Error responses hide internals (good) but emit no correlation ID, making support harder.
+- Request IDs link client responses to handler errors. Production latency, Git transfer size and throttling metrics still need live measurements.
 - Claims of "public read" rely on the proxy; the Artifacts remote URL/token never reaches clients.
 
 ## Verification log
@@ -150,6 +98,10 @@ Update this file whenever a milestone lands or a limitation changes.
 | 2026-11-18 | Nested file preview and raw download regression | relative links resolve directory spaces and literal percent sequences on a slash-named branch |
 | 2026-11-18 | Ego Browser at 1365px, 390px and 320px | verified language switches, settings navigation, branch form, file links and issue/PR layouts without horizontal overflow |
 | 2026-11-18 | Wasm release build and focused Git HTTP regression | missing Git repository returns an empty, non-cacheable 404, and the missing `.git` suffix page is localized |
+| 2026-11-18 | `mise run build` | Wasm release built successfully |
+| 2026-11-18 | Chromium at 320px, 390px, and 1365px | Sign-in, recovery request, and saved Simplified Chinese preference worked. Six views had one main landmark, one H1, and no page overflow. Long diff lines scrolled within the diff. |
+| 2026-11-18 | Local D1 and Git restore | Imported D1 users, routes, PRs, and notification counts matched the source. The restored Git mirror passed `git fsck --full` with identical refs and object IDs. |
+| 2026-11-18 | `mise exec -- node --test tests/http.test.mjs` | 22 isolated HTTP and Git scenarios passed, with 23 passing Node test results. The suite covered collaborator revocation, immutable PR comparisons, verified integration, CI result updates, email link replay, and signed webhook retries. |
 
 ## How to update
 

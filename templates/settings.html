@@ -21,6 +21,9 @@
       <a href="#general">{{ chrome.locale.t(crate::i18n::RepoText::General) }}</a>
       <a href="#storage">{{ chrome.locale.t(crate::i18n::RepoText::GitStorage) }}</a>
       <a href="#danger">{{ chrome.locale.t(crate::i18n::RepoText::DangerZone) }}</a>
+      <a href="/{{ repo.owner_name }}/{{ repo.name }}/settings/collaborators">{{ chrome.locale.t(crate::i18n::CollaboratorText::Collaborators) }}</a>
+      <a href="/{{ repo.owner_name }}/{{ repo.name }}/settings/lifecycle">{{ chrome.locale.t(crate::i18n::LifecycleText::RepositoryLifecycle) }}</a>
+      <a href="/{{ repo.owner_name }}/{{ repo.name }}/settings/issues">{{ chrome.locale.t(crate::i18n::IssueMetadataText::Catalog) }}</a>
     </nav>
 
     <div class="settings-main">

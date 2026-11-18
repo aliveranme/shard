@@ -19,6 +19,19 @@ pub fn is_git_request(req: &Request) -> bool {
     }
 }
 
+/// This machine-only endpoint requires a bearer token and never reads a session.
+pub(crate) fn is_check_request(req: &Request) -> bool {
+    let path = req.path();
+    let mut parts = path.split('/');
+    parts.next() == Some("")
+        && parts.next().is_some_and(|owner| !owner.is_empty())
+        && parts.next().is_some_and(|repo| !repo.is_empty())
+        && parts.next() == Some("commit")
+        && parts.next().is_some_and(|hash| !hash.is_empty())
+        && parts.next() == Some("checks")
+        && parts.next().is_none()
+}
+
 fn valid_token(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit())
 }
@@ -78,7 +91,9 @@ pub fn finish(
     let headers = response.headers_mut();
     headers.set("X-Content-Type-Options", "nosniff")?;
     headers.set("X-Frame-Options", "DENY")?;
-    headers.set("Referrer-Policy", "same-origin")?;
+    if headers.get("Referrer-Policy")?.is_none() {
+        headers.set("Referrer-Policy", "same-origin")?;
+    }
     headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")?;
     headers.set(
         "Content-Security-Policy",

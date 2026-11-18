@@ -10,8 +10,8 @@ Use the pinned Wrangler simulator and real Git over loopback for validation. App
 | 2 · Repository collaboration | Give existing users read or write access to a repository. Apply the same decisions to Web pages, listings and Git tokens. Add a read-only branch and tag inventory through Git HTTPS. | Readers can browse and clone private repos. Only writers can push. Revocation removes access on the next request. The list contains real Git refs and preserves slash names. |
 | 3 · Review workflow | Tie decisions and comments to a commit pair. Track a Git merge when the stored source commit is verified in the target history. | Review decisions and inline comments identify the code reviewed. A deleted or unrelated ref cannot be marked merged. |
 | 4 · Repository workflows | Add repository rename with stable storage identity and old URL handling, transfer and fork/import flows. Add commit detail and source archives. | Old names resolve under the same permission checks. Fork and import only publish metadata after the storage operation can be accounted for. |
-| 5 · Issue workflows and integrations | Add edit, labels, assignees and milestones. Extend search to descriptions and discussion. Add notifications and integration events with authenticated delivery. | Only authorized users can edit or classify issues. Private results stay private. Delivery is idempotent and has observable failures. |
-| 6 · Operational readiness | Stream Git bodies, add rate limiting and request correlation, build account recovery and document backup and restore. | Replays and failed authorizations are covered. Local backup and recovery can be rehearsed without contacting production. |
+| 5 · Issue workflows and integrations | Add edit, labels, assignees and milestones, discussion search, notifications, commit checks, and signed webhooks. | Private results stay private. Repository writes require permission. Repeated CI reports update one context, and webhook retries retain their event ID and signature. |
+| 6 · Operational readiness | Stream Git bodies, add rate limiting and request correlation, build account recovery and document backup and restore. | Replays and failed authorizations are covered. Rehearse D1 and Git recovery in disposable local state. |
 
 ## Cloudflare capability and prerequisites
 
@@ -24,3 +24,18 @@ Use the pinned Wrangler simulator and real Git over loopback for validation. App
 | Limits | [Workers](https://developers.cloudflare.com/workers/platform/limits/#memory) have 128 MB per isolate. [Artifacts](https://developers.cloudflare.com/artifacts/platform/limits/) caps pushes at 64 MiB and new repositories at 1 GB. [Streams](https://developers.cloudflare.com/workers/runtime-apis/streams/) reduce buffering within both ceilings. | Show limits to users. Git protocol v2 receive-pack is unavailable upstream. Test the supported clone and push paths locally. |
 | Public operations | [Rate Limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/) is approximate per Cloudflare location. [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) indexes structured events. [D1 Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/) restores metadata in place. | A deployed site needs a Workers Paid account, an Artifacts namespace, real D1 IDs and ownership of the target domain. Keep an independent mirror of Git objects and refs. Production restores need operator authorization. |
 | Email | [Email Service](https://developers.cloudflare.com/email-service/get-started/send-emails/) requires Cloudflare DNS and an onboarded sending domain. | Real account verification, password reset and notification delivery require the configured sender and access to a test mailbox. |
+
+## Deployment prerequisites
+
+- Staging requires Workers Paid with Artifacts access, an Artifacts namespace,
+  real D1 IDs and an owned HTTPS origin. Use staging to verify allowed public
+  import through completion, real scheduled delivery and Artifacts push events.
+- Email delivery requires the configured `EMAIL` binding, a verified sending
+  domain and a mailbox available for end-to-end verification.
+- Web merges, protected refs and merge queues require an authorized execution
+  path that can validate and update the target ref atomically.
+- Code and commit search require a permission-aware index with bounded ingestion
+  and reconciliation for ref changes. Local Artifacts lifecycle events can be
+  tested through Workflows. Push-triggered ingestion requires staging.
+
+Current local coverage and remaining gaps are recorded in [STATUS.md](STATUS.md).

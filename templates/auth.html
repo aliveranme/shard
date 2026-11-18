@@ -40,6 +40,7 @@
   </div>
   <p class="auth-simple__switch">
     {% if mode == "login" %}
+      <a href="/user/forgot_password">{{ chrome.locale.t(crate::i18n::AccountText::ForgotPassword) }}</a>
       {{ chrome.locale.t(crate::i18n::AccountText::NewHere) }} <a href="/user/sign_up">{{ chrome.locale.t(crate::i18n::CommonText::CreateAccount) }}</a>
     {% else %}
       {{ chrome.locale.t(crate::i18n::AccountText::AlreadyRegistered) }} <a href="/user/login">{{ chrome.locale.t(crate::i18n::CommonText::SignIn) }}</a>

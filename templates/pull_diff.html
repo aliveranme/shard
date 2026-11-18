@@ -1,0 +1,66 @@
+{% if let Some(file) = preview %}
+<section class="side-card pull-diff" id="file-diff" aria-labelledby="diff-title">
+  <h2 class="side-card__title pull-diff__path" id="diff-title"><code dir="ltr">{{ file.path }}</code></h2>
+  {% if let Some((before, after)) = file.modes %}
+    <p>{{ chrome.locale.t(crate::i18n::DiscussionText::FileMode) }} <code>{{ before }} → {{ after }}</code></p>
+  {% endif %}
+  {% match file.diff %}
+    {% when crate::pull_diff::FileDiff::Text with (diff) %}
+      <div class="diff-scroll" role="region" aria-labelledby="diff-title" tabindex="0">
+        <table class="diff-table" dir="ltr">
+          <thead><tr>
+            <th scope="col">{{ chrome.locale.t(crate::i18n::DiscussionText::OldLine) }}</th>
+            <th scope="col">{{ chrome.locale.t(crate::i18n::DiscussionText::NewLine) }}</th>
+            <th scope="col">{{ chrome.locale.t(crate::i18n::DiscussionText::FileChanges) }}</th>
+          </tr></thead>
+          <tbody>
+          {% for row in diff.rows() %}
+            {% if row.gap %}<tr class="diff-table__gap"><td colspan="3">… {{ chrome.locale.t(crate::i18n::DiscussionText::OmittedLines) }}</td></tr>{% endif %}
+            <tr class="diff-table__{{ row.class }}"{% if row.old == 0 %} id="diff-new-{{ row.new }}"{% else if row.new == 0 %} id="diff-old-{{ row.old }}"{% endif %}>
+              <td class="diff-table__number">{% if row.old > 0 %}{{ row.old }}{% endif %}</td>
+              <td class="diff-table__number">{% if row.new > 0 %}{{ row.new }}{% endif %}</td>
+              <td class="diff-table__text"><code>{{ row.marker }} {{ row.text }}</code>{% if row.no_newline %}<span class="diff-table__note">{{ chrome.locale.t(crate::i18n::DiscussionText::NoFinalNewline) }}</span>{% endif %}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% if can_comment_on_diff %}
+      <form class="form diff-comment" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/pulls/{{ issue.number }}/reviews">
+        {% include "csrf.html" %}
+        {% include "pull_snapshot_fields.html" %}
+        <input type="hidden" name="path" value="{{ file.path }}">
+        <div class="field">
+          <label for="review-line">{{ chrome.locale.t(crate::i18n::DiscussionText::ReviewLine) }}</label>
+          <select class="select" id="review-line" name="line" required>
+            {% for row in diff.rows() %}
+              {% if row.old == 0 %}
+                <option value="new:{{ row.new }}">{{ chrome.locale.t(crate::i18n::DiscussionText::NewLine) }} {{ row.new }}</option>
+              {% else if row.new == 0 %}
+                <option value="old:{{ row.old }}">{{ chrome.locale.t(crate::i18n::DiscussionText::OldLine) }} {{ row.old }}</option>
+              {% endif %}
+            {% endfor %}
+          </select>
+        </div>
+        <div class="field">
+          <label for="line-body">{{ chrome.locale.t(crate::i18n::DiscussionText::ReviewComment) }}</label>
+          <textarea class="textarea" id="line-body" name="body" maxlength="8192" required></textarea>
+        </div>
+        <button class="btn btn--primary" type="submit" name="decision" value="line_comment">{{ chrome.locale.t(crate::i18n::DiscussionText::Comment) }}</button>
+      </form>
+      {% endif %}
+    {% when crate::pull_diff::FileDiff::Unchanged %}
+      <p>{{ chrome.locale.t(crate::i18n::DiscussionText::DiffUnchanged) }}</p>
+    {% when crate::pull_diff::FileDiff::Binary %}
+      <p>{{ chrome.locale.t(crate::i18n::DiscussionText::DiffBinary) }}</p>
+    {% when crate::pull_diff::FileDiff::Submodule %}
+      <p>{{ chrome.locale.t(crate::i18n::DiscussionText::DiffSubmodule) }}</p>
+    {% when crate::pull_diff::FileDiff::Limited %}
+      <p>{{ chrome.locale.t(crate::i18n::DiscussionText::DiffLimited) }}</p>
+    {% when crate::pull_diff::FileDiff::Unavailable %}
+      <p>{{ chrome.locale.t(crate::i18n::DiscussionText::DiffUnavailable) }}</p>
+  {% endmatch %}
+</section>
+{% else if preview_missing %}
+  <p class="side-card" id="file-diff">{{ chrome.locale.t(crate::i18n::DiscussionText::FileNotChanged) }}</p>
+{% endif %}

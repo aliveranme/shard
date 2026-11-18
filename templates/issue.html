@@ -44,6 +44,7 @@
       {% if let Some(head) = pull.head_commit %}<span class="muted">· {{ chrome.locale.t(crate::i18n::DiscussionText::HeadCommit) }}</span><code dir="ltr" title="{{ head }}">{{ head }}</code>{% endif %}
       {% if let Some(base) = pull.base_commit %}<span class="muted">· {{ chrome.locale.t(crate::i18n::DiscussionText::BaseCommit) }}</span><code dir="ltr" title="{{ base }}">{{ base }}</code>{% endif %}
       {% if let Some(merged) = pull.merged_at.as_ref() %}<span class="badge badge--merged">{{ chrome.locale.merged_when(merged) }}</span>{% endif %}
+      {% if let Some(tip) = pull.merge_commit %}<span class="muted">{{ chrome.locale.t(crate::i18n::DiscussionText::VerifiedTip) }}</span><code dir="ltr">{{ tip }}</code>{% endif %}
     </div>
   {% endif %}
 
@@ -60,6 +61,8 @@
         <div class="markup">{{ body_html|safe }}</div>
       </article>
 
+      {% include "pull_diff.html" %}
+
       <h2 class="side-card__title" id="discussion">{{ chrome.locale.t(crate::i18n::DiscussionText::Discussion) }}</h2>
       {% for entry in discussion %}
         {% if entry.is_comment %}
@@ -73,6 +76,8 @@
             </div>
             <div class="markup">{{ entry.html|safe }}</div>
           </article>
+        {% else if let Some(review) = entry.review %}
+          {% include "pull_review_event.html" %}
         {% else %}
           <div class="timeline-event" id="event-{{ entry.id }}">
             <span>{{ chrome.locale.discussion_event(issue.is_pull(), entry.action.as_str(), entry.author.as_deref()) }}</span>
@@ -81,6 +86,8 @@
         {% endif %}
       {% endfor %}
       {% include "pagination.html" %}
+      {% include "pull_review_form.html" %}
+
 
       {% if chrome.signed_in %}
         <form class="form card" method="post"
@@ -112,7 +119,11 @@
         </div>
       </div>
 
-      {% if pull.is_some() %}
+      {% if let Some(details) = metadata %}
+        {% include "issue_metadata.html" %}
+      {% endif %}
+
+      {% if issue.is_pull() %}
         <div class="side-card">
           <h2 class="side-card__title">{{ chrome.locale.t(crate::i18n::DiscussionText::FilesChanged) }}</h2>
           {% if let Some(note) = diff_error %}
@@ -123,8 +134,8 @@
             <div class="side-list">
               {% for file in changed %}
                 <div class="side-row">
-                  <code style="overflow-wrap:anywhere">{{ file.path }}</code>
-                  <span class="badge badge--{{ file.status }}">{{ chrome.locale.diff_status(file.status) }}</span>
+                  <a href="?file={{ file.url_path }}#file-diff"><code>{{ file.path }}</code></a>
+                  <span class="badge badge--{{ file.status() }}">{{ chrome.locale.diff_status(file.status()) }}</span>
                 </div>
               {% endfor %}
             </div>
@@ -135,6 +146,13 @@
           <p class="muted" style="font-size:.8125rem">
             {{ chrome.locale.t(crate::i18n::DiscussionText::MergingHelp) }}
           </p>
+          {% if can_verify_merge %}
+          <form method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/pulls/{{ issue.number }}/reviews">
+            {% include "csrf.html" %}
+            {% include "pull_snapshot_fields.html" %}
+            <button class="btn btn--ghost btn--sm" type="submit" name="decision" value="merge_verified">{{ chrome.locale.t(crate::i18n::DiscussionText::VerifyMerge) }}</button>
+          </form>
+          {% endif %}
         </div>
       {% endif %}
     </aside>

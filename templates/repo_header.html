@@ -24,9 +24,12 @@
       </div>
     </div>
   </div>
-  {% if is_owner %}
+  {% if chrome.signed_in %}
     <div class="repo-head__actions">
-      <a class="btn btn--ghost btn--sm" href="/{{ repo.owner_name }}/{{ repo.name }}/settings">{{ chrome.locale.t(crate::i18n::CommonText::Settings) }}</a>
+      <a class="btn btn--ghost btn--sm" href="/{{ repo.owner_name }}/{{ repo.name }}/fork">{{ chrome.locale.t(crate::i18n::LifecycleText::Fork) }}</a>
+      {% if is_owner %}
+        <a class="btn btn--ghost btn--sm" href="/{{ repo.owner_name }}/{{ repo.name }}/settings">{{ chrome.locale.t(crate::i18n::CommonText::Settings) }}</a>
+      {% endif %}
     </div>
   {% endif %}
 </div>
@@ -39,6 +42,9 @@
     <a class="tab" {% if tab == "commits" %}aria-current="page"{% endif %} href="/{{ repo.owner_name }}/{{ repo.name }}/commits{% if repo_nav_branch is defined %}?branch={{ repo_nav_branch }}{% endif %}">
       <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M10.5 7.75a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0Zm1.45-2.25h2.3a.75.75 0 0 1 0 1.5h-2.3a4.001 4.001 0 0 1-7.9 0H1.75a.75.75 0 0 1 0-1.5h2.3a4.001 4.001 0 0 1 7.9 0Z"></path></svg>
       {{ chrome.locale.t(crate::i18n::CommonText::Commits) }}
+    </a>
+    <a class="tab" {% if tab == "refs" %}aria-current="page"{% endif %} href="/{{ repo.owner_name }}/{{ repo.name }}/refs">
+      {{ chrome.locale.t(crate::i18n::RepoText::BranchesAndTags) }}
     </a>
     <a class="tab" {% if tab == "issues" %}aria-current="page"{% endif %} href="/{{ repo.owner_name }}/{{ repo.name }}/issues">
       <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 9.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z"></path><path fill="currentColor" d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Z"></path></svg>

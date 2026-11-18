@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "repo_header.html" %}
+<div class="page">
+  <div class="page-head">
+    <div>
+      <h1 class="page-title">{{ chrome.locale.t(crate::i18n::CollaboratorText::Collaborators) }}</h1>
+      <p class="page-sub">{{ chrome.locale.t(crate::i18n::CollaboratorText::AccessHelp) }}</p>
+    </div>
+  </div>
+
+  <div class="settings-layout">
+    <nav class="settings-nav" aria-label="{{ chrome.locale.t(crate::i18n::RepoText::RepositorySettings) }}">
+      <a href="/{{ repo.owner_name }}/{{ repo.name }}/settings#general">{{ chrome.locale.t(crate::i18n::RepoText::General) }}</a>
+      <a href="/{{ repo.owner_name }}/{{ repo.name }}/settings#storage">{{ chrome.locale.t(crate::i18n::RepoText::GitStorage) }}</a>
+      <a href="/{{ repo.owner_name }}/{{ repo.name }}/settings#danger">{{ chrome.locale.t(crate::i18n::RepoText::DangerZone) }}</a>
+      <a href="/{{ repo.owner_name }}/{{ repo.name }}/settings/collaborators" aria-current="page">{{ chrome.locale.t(crate::i18n::CollaboratorText::Collaborators) }}</a>
+    </nav>
+
+    <div class="settings-main">
+      {% if let Some(message) = notice %}
+        <div class="alert alert--success" role="status">{{ message }}</div>
+      {% endif %}
+      {% if let Some(message) = error %}
+        <div class="alert alert--error" role="alert">{{ message }}</div>
+      {% endif %}
+
+      <form class="form card" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/settings/collaborators">
+        {% include "csrf.html" %}
+        <h2 class="card__title">{{ chrome.locale.t(crate::i18n::CollaboratorText::AddCollaborator) }}</h2>
+        <div class="two-col">
+          <div class="field">
+            <label for="collaborator-username">{{ chrome.locale.t(crate::i18n::AccountText::Username) }}</label>
+            <input class="input" id="collaborator-username" name="username" maxlength="100" required>
+          </div>
+          <div class="field">
+            <label for="collaborator-role">{{ chrome.locale.t(crate::i18n::CollaboratorText::Role) }}</label>
+            <select class="select" id="collaborator-role" name="role">
+              <option value="read">{{ chrome.locale.t(crate::i18n::CollaboratorText::Reader) }}</option>
+              <option value="write">{{ chrome.locale.t(crate::i18n::CollaboratorText::Writer) }}</option>
+            </select>
+          </div>
+        </div>
+        <div class="form__actions">
+          <button class="btn btn--primary" type="submit">{{ chrome.locale.t(crate::i18n::CollaboratorText::Grant) }}</button>
+        </div>
+      </form>
+
+      {% if collaborators.is_empty() %}
+        <div class="card card--warm"><p>{{ chrome.locale.t(crate::i18n::CollaboratorText::NoCollaborators) }}</p></div>
+      {% else %}
+        <div class="list">
+          {% for collaborator in collaborators %}
+            <div class="list__row" role="group" aria-labelledby="collaborator-{{ collaborator.id }}">
+              <div class="list__main">
+                <a class="list__title" id="collaborator-{{ collaborator.id }}" href="/{{ collaborator.username }}">{{ collaborator.username }}</a>
+                <form class="form" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/settings/collaborators">
+                  {% include "csrf.html" %}
+                  <input type="hidden" name="username" value="{{ collaborator.username }}">
+                  <div class="form__actions">
+                    <label for="role-{{ collaborator.id }}">{{ chrome.locale.t(crate::i18n::CollaboratorText::Role) }}</label>
+                    <select class="select" id="role-{{ collaborator.id }}" name="role">
+                      <option value="read" {% if collaborator.role == "read" %}selected{% endif %}>{{ chrome.locale.t(crate::i18n::CollaboratorText::Reader) }}</option>
+                      <option value="write" {% if collaborator.role == "write" %}selected{% endif %}>{{ chrome.locale.t(crate::i18n::CollaboratorText::Writer) }}</option>
+                    </select>
+                    <button class="btn btn--ghost btn--sm" type="submit">{{ chrome.locale.t(crate::i18n::CollaboratorText::Update) }}</button>
+                  </div>
+                </form>
+              </div>
+              <form method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/settings/collaborators/revoke">
+                {% include "csrf.html" %}
+                <input type="hidden" name="username" value="{{ collaborator.username }}">
+                <button class="btn btn--danger btn--sm" type="submit">{{ chrome.locale.t(crate::i18n::CollaboratorText::Revoke) }}</button>
+              </form>
+            </div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

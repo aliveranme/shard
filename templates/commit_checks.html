@@ -1,0 +1,25 @@
+<section class="code-panel" aria-labelledby="commit-checks">
+  <h2 class="code-panel__bar" id="commit-checks">{{ chrome.locale.t(crate::i18n::CheckText::Title) }}</h2>
+  <div style="padding: 16px 22px; overflow-wrap: anywhere">
+    {% if checks.rows.is_empty() %}
+      <p class="muted">{{ chrome.locale.t(crate::i18n::CheckText::Empty) }}</p>
+    {% else %}
+      <ul class="side-list" role="list" style="list-style: none; margin: 0; padding: 0">
+        {% for check in checks.rows %}
+          <li>
+            <div class="side-row" style="flex-wrap: wrap">
+              <code dir="auto">{{ check.context }}</code>
+              <span class="badge">{{ check.label(chrome.locale) }}</span>
+            </div>
+            {% if let Some(summary) = check.summary %}
+              <p class="muted" dir="auto" style="white-space: pre-wrap">{{ summary }}</p>
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+      {% if checks.has_more %}
+        <p class="muted">{{ chrome.locale.t(crate::i18n::CheckText::Omitted) }}</p>
+      {% endif %}
+    {% endif %}
+  </div>
+</section>

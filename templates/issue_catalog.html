@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "repo_header.html" %}
+<div class="page">
+  <div class="page-head">
+    <h1 class="page-title">{{ chrome.locale.t(crate::i18n::IssueMetadataText::Catalog) }}</h1>
+  </div>
+
+  {% if saved %}
+    <div class="alert alert--success" role="status">{{ chrome.locale.t(crate::i18n::IssueMetadataText::CatalogSaved) }}</div>
+  {% endif %}
+  {% if let Some(message) = error %}
+    <div class="alert alert--error" role="alert">{{ message }}</div>
+  {% endif %}
+
+  <div class="settings-layout">
+    <nav class="settings-nav" aria-label="{{ chrome.locale.t(crate::i18n::RepoText::RepositorySettings) }}">
+      <a href="/{{ repo.owner_name }}/{{ repo.name }}/settings">{{ chrome.locale.t(crate::i18n::RepoText::General) }}</a>
+      <a href="{{ action_url }}" aria-current="page">{{ chrome.locale.t(crate::i18n::IssueMetadataText::Catalog) }}</a>
+    </nav>
+    <div class="settings-main">
+      <section class="form card" aria-labelledby="labels-heading">
+        <div>
+          <h2 id="labels-heading" class="card__title">{{ chrome.locale.t(crate::i18n::IssueMetadataText::Labels) }}</h2>
+          <p class="card__sub">{{ chrome.locale.t(crate::i18n::IssueMetadataText::RemoveLabelHelp) }}</p>
+        </div>
+        {% for item in labels %}
+          <form class="form" method="post" action="{{ action_url }}">
+            {% include "csrf.html" %}
+            <input type="hidden" name="id" value="{{ item.id }}">
+            <div class="field">
+              <label for="label-{{ item.id }}">{{ chrome.locale.t(crate::i18n::IssueMetadataText::LabelName) }}</label>
+              <input class="input" id="label-{{ item.id }}" name="name" value="{{ item.name }}" required dir="auto">
+            </div>
+            <div class="form__actions">
+              <button class="btn btn--ghost btn--sm" type="submit" name="action" value="rename_label">{{ chrome.locale.t(crate::i18n::IssueMetadataText::Rename) }}</button>
+              <button class="btn btn--danger btn--sm" type="submit" name="action" value="remove_label" formnovalidate>{{ chrome.locale.t(crate::i18n::IssueMetadataText::Remove) }}</button>
+            </div>
+          </form>
+        {% else %}
+          <p class="help muted">{{ chrome.locale.t(crate::i18n::IssueMetadataText::NoLabels) }}</p>
+        {% endfor %}
+        <form class="form" method="post" action="{{ action_url }}">
+          {% include "csrf.html" %}
+          <input type="hidden" name="action" value="create_label">
+          <div class="field">
+            <label for="new-label">{{ chrome.locale.t(crate::i18n::IssueMetadataText::LabelName) }}</label>
+            <input class="input" id="new-label" name="name" value="{{ label_value }}" required dir="auto">
+          </div>
+          <div class="form__actions">
+            <button class="btn btn--primary" type="submit">{{ chrome.locale.t(crate::i18n::IssueMetadataText::AddLabel) }}</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="form card" aria-labelledby="milestones-heading">
+        <div>
+          <h2 id="milestones-heading" class="card__title">{{ chrome.locale.t(crate::i18n::IssueMetadataText::Milestones) }}</h2>
+          <p class="card__sub">{{ chrome.locale.t(crate::i18n::IssueMetadataText::RemoveMilestoneHelp) }}</p>
+        </div>
+        {% for item in milestones %}
+          <form class="form" method="post" action="{{ action_url }}">
+            {% include "csrf.html" %}
+            <input type="hidden" name="id" value="{{ item.id }}">
+            <div class="field">
+              <label for="milestone-{{ item.id }}">{{ chrome.locale.t(crate::i18n::IssueMetadataText::MilestoneName) }}</label>
+              <input class="input" id="milestone-{{ item.id }}" name="name" value="{{ item.name }}" required dir="auto">
+            </div>
+            <div class="form__actions">
+              <button class="btn btn--ghost btn--sm" type="submit" name="action" value="rename_milestone">{{ chrome.locale.t(crate::i18n::IssueMetadataText::Rename) }}</button>
+              <button class="btn btn--danger btn--sm" type="submit" name="action" value="remove_milestone" formnovalidate>{{ chrome.locale.t(crate::i18n::IssueMetadataText::Remove) }}</button>
+            </div>
+          </form>
+        {% else %}
+          <p class="help muted">{{ chrome.locale.t(crate::i18n::IssueMetadataText::NoMilestones) }}</p>
+        {% endfor %}
+        <form class="form" method="post" action="{{ action_url }}">
+          {% include "csrf.html" %}
+          <input type="hidden" name="action" value="create_milestone">
+          <div class="field">
+            <label for="new-milestone">{{ chrome.locale.t(crate::i18n::IssueMetadataText::MilestoneName) }}</label>
+            <input class="input" id="new-milestone" name="name" value="{{ milestone_value }}" required dir="auto">
+          </div>
+          <div class="form__actions">
+            <button class="btn btn--primary" type="submit">{{ chrome.locale.t(crate::i18n::IssueMetadataText::AddMilestone) }}</button>
+          </div>
+        </form>
+      </section>
+    </div>
+  </div>
+</div>
+{% endblock %}

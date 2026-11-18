@@ -15,15 +15,27 @@ macro_rules! catalog {
 }
 
 mod account;
+mod checks;
+mod collaborators;
 mod common;
 mod discussion;
+mod issue_metadata;
+mod lifecycle;
+mod notifications;
 mod repo;
+mod repo_objects;
 mod web;
 
 pub use account::AccountText;
+pub use checks::CheckText;
+pub use collaborators::CollaboratorText;
 pub use common::CommonText;
 pub use discussion::DiscussionText;
+pub use issue_metadata::IssueMetadataText;
+pub use lifecycle::LifecycleText;
+pub use notifications::{NotificationAction, NotificationText};
 pub use repo::RepoText;
+pub use repo_objects::RepoObjectText;
 pub use web::WebText;
 
 pub const LANGUAGE_COOKIE: &str = "shard_lang";

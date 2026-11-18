@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "repo_header.html" %}
+<div class="page">
+  <div class="page-head">
+    <h1 class="page-title">{{ chrome.locale.t(crate::i18n::RepoText::BranchesAndTags) }}</h1>
+  </div>
+  {% if let Some(message) = notice %}
+    <div class="card empty"><p>{{ message }}</p></div>
+  {% else %}
+    <section aria-labelledby="refs-branches">
+      <h2 id="refs-branches">{{ chrome.locale.t(crate::i18n::RepoText::Branches) }}</h2>
+      {% if inventory.branches.is_empty() %}
+        <div class="card empty"><p>{{ chrome.locale.t(crate::i18n::RepoText::NoBranches) }}</p></div>
+      {% else %}
+        <div class="list">
+          {% for branch in inventory.branches %}
+            <div class="list__row">
+              <div class="list__main">
+                <a class="list__title" href="/{{ repo.owner_name }}/{{ repo.name }}?branch={{ crate::util::url_path(branch.name.as_str()) }}">{{ branch.name }}</a>
+                <div class="list__meta"><code>{{ branch.oid }}</code></div>
+              </div>
+            </div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    </section>
+    <section aria-labelledby="refs-tags">
+      <h2 id="refs-tags">{{ chrome.locale.t(crate::i18n::RepoText::Tags) }}</h2>
+      {% if inventory.tags.is_empty() %}
+        <div class="card empty"><p>{{ chrome.locale.t(crate::i18n::RepoText::NoTags) }}</p></div>
+      {% else %}
+        <div class="list">
+          {% for tag in inventory.tags %}
+            <div class="list__row">
+              <div class="list__main">
+                <div class="list__title">{{ tag.name }}</div>
+                <div class="list__meta">{{ chrome.locale.t(crate::i18n::RepoText::TagObject) }} <code>{{ tag.oid }}</code></div>
+                {% if let Some(target) = tag.peeled %}
+                  <div class="list__meta">{{ chrome.locale.t(crate::i18n::RepoText::PeeledTarget) }} <code>{{ target }}</code></div>
+                {% endif %}
+              </div>
+            </div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    </section>
+  {% endif %}
+</div>
+{% endblock %}

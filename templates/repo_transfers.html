@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page">
+  <div class="page-head"><h1 class="page-title">{{ chrome.locale.t(crate::i18n::LifecycleText::Transfers) }}</h1></div>
+  <div class="settings-layout">
+    <nav class="settings-nav" aria-label="{{ chrome.locale.t(crate::i18n::CommonText::AccountSettings) }}">
+      <a href="/user/settings">{{ chrome.locale.t(crate::i18n::LifecycleText::BackToAccountSettings) }}</a>
+    </nav>
+    <div class="settings-main">
+      {% if declined %}<div class="alert alert--success" role="status">{{ chrome.locale.t(crate::i18n::LifecycleText::Declined) }}</div>{% endif %}
+      {% if let Some(message) = error %}<div class="alert alert--error" role="alert">{{ message }}</div>{% endif %}
+      <h2 class="card__title">{{ chrome.locale.t(crate::i18n::LifecycleText::IncomingTransfers) }}</h2>
+      {% for request in incoming %}
+      <form class="form card" method="post" action="/user/settings/transfers">
+        {% include "csrf.html" %}
+        <h3 class="card__title">{{ request.owner }}/{{ request.name }}</h3>
+        <p class="card__sub">{{ chrome.locale.transfer_destination(request.recipient.as_str(), request.name.as_str()) }}</p>
+        <input type="hidden" name="transfer_id" value="{{ request.id }}">
+        <div class="form__actions">
+          <button class="btn btn--primary" type="submit" name="action" value="accept">{{ chrome.locale.t(crate::i18n::LifecycleText::Accept) }}</button>
+          <button class="btn btn--ghost" type="submit" name="action" value="decline">{{ chrome.locale.t(crate::i18n::LifecycleText::Decline) }}</button>
+        </div>
+      </form>
+      {% else %}
+      <div class="card card--warm"><p class="card__sub">{{ chrome.locale.t(crate::i18n::LifecycleText::TransfersEmpty) }}</p></div>
+      {% endfor %}
+      {% include "pagination.html" %}
+    </div>
+  </div>
+</div>
+{% endblock %}

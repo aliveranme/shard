@@ -20,6 +20,9 @@
         </form>
         <div class="repo-toolbar__right">
           <a class="btn btn--ghost btn--sm" href="/{{ repo.owner_name }}/{{ repo.name }}/commits?branch={{ branch_url }}">{{ chrome.locale.t(crate::i18n::CommonText::Commits) }}</a>
+          {% if let Some(commit) = last_commit %}
+            <a class="btn btn--ghost btn--sm" href="/{{ repo.owner_name }}/{{ repo.name }}/archive/{{ commit.hash }}">{{ chrome.locale.t(crate::i18n::RepoObjectText::DownloadSource) }}</a>
+          {% endif %}
         </div>
       </div>
 
@@ -84,7 +87,7 @@ git push -u origin {{ repo.default_branch }}</code></pre>
       {% if let Some(commit) = last_commit %}
         <div class="commit-strip">
           <span class="avatar avatar--sm" aria-hidden="true">{{ commit.author_initial }}</span>
-          <span><strong>{{ commit.message }}</strong></span>
+          <span><strong><a href="/{{ repo.owner_name }}/{{ repo.name }}/commit/{{ commit.hash }}?branch={{ branch_url }}">{{ commit.message }}</a></strong></span>
           <span class="muted">{{ commit.author }}{% if let Some(date) = commit.date %} · {{ date.relative(chrome.locale) }}{% endif %}</span>
           <code title="{{ commit.hash }}">{{ commit.short }}</code>
         </div>

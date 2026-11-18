@@ -7,17 +7,27 @@ use worker::*;
 mod account;
 mod artifacts;
 mod auth;
+mod collaborators;
 mod crypto;
 mod ctx;
 mod db;
 mod handlers;
 mod i18n;
+mod issue_metadata;
 mod markdown;
 mod models;
+mod notifications;
 mod templates;
 mod pagination;
+mod pull_diff;
+mod pull_review;
+mod recovery;
+mod refs;
+mod repo_lifecycle;
+mod repo_objects;
 mod security;
 mod util;
+mod webhooks;
 
 use ctx::AppState;
 use i18n::{CommonText, LANGUAGE_COOKIE, LanguagePreference, Locale};
@@ -34,12 +44,30 @@ fn routes(router: Router<AppState>) -> Router<AppState> {
         .post_async("/user/login", handlers::auth_handlers::login_submit)
         .get_async("/user/sign_up", handlers::auth_handlers::signup_form)
         .post_async("/user/sign_up", handlers::auth_handlers::signup_submit)
+        .get_async("/user/forgot_password", recovery::request_form)
+        .post_async("/user/forgot_password", recovery::request_submit)
+        .get_async("/user/reset_password", recovery::reset_form)
+        .post_async("/user/reset_password", recovery::reset_submit)
+        .get_async("/user/verify_email", recovery::verify_form)
+        .post_async("/user/verify_email", recovery::verify_submit)
         .post_async("/user/logout", handlers::auth_handlers::logout)
+        .get_async("/user/notifications", notifications::inbox)
+        .post_async("/user/notifications/:id/read", notifications::read_one)
+        .post_async("/user/notifications/read-all", notifications::read_all)
         .get_async("/user/settings", handlers::auth_handlers::account_page)
+        .post_async("/user/settings/delete", handlers::auth_handlers::delete_account)
         .post_async("/user/settings/email", handlers::auth_handlers::update_email)
+        .post_async("/user/settings/email/verify", recovery::request_verification)
         .post_async("/user/settings/password", handlers::auth_handlers::update_password)
         .get_async("/user/settings/language", handlers::auth_handlers::language_page)
         .post_async("/user/settings/language", handlers::auth_handlers::update_language)
+        .get_async("/user/settings/transfers", repo_lifecycle::transfers)
+        .post_async("/user/settings/transfers", repo_lifecycle::respond_transfer)
+        .get_async("/user/settings/repository-import", repo_lifecycle::import_form)
+        .post_async("/user/settings/repository-import", repo_lifecycle::import)
+        .get_async("/user/settings/repository-copies", repo_lifecycle::copies)
+        .get_async("/user/settings/repository-copies/:id", repo_lifecycle::copy_status)
+        .post_async("/user/settings/repository-copies/:id", repo_lifecycle::poll_copy)
         .get_async(
             "/user/settings/tokens",
             handlers::auth_handlers::tokens_page,
@@ -58,6 +86,12 @@ fn routes(router: Router<AppState>) -> Router<AppState> {
         .post_async("/repo/create", handlers::repos::create)
         .get_async("/:owner/:repo", handlers::repos::view)
         .get_async("/:owner/:repo/commits", handlers::repos::commits)
+        .get_async("/:owner/:repo/commit/:hash", repo_objects::commit)
+        .post_async("/:owner/:repo/commit/:hash/checks", handlers::checks::record)
+        .get_async("/:owner/:repo/archive/:hash", repo_objects::archive)
+        .get_async("/:owner/:repo/refs", handlers::repos::references)
+        .get_async("/:owner/:repo/fork", repo_lifecycle::fork_form)
+        .post_async("/:owner/:repo/fork", repo_lifecycle::fork)
         .get_async("/:owner/:repo/src", handlers::repos::tree)
         .get_async("/:owner/:repo/src/*path", handlers::repos::tree)
         .get_async("/:owner/:repo/blob/*path", handlers::repos::file)
@@ -65,11 +99,20 @@ fn routes(router: Router<AppState>) -> Router<AppState> {
         .get_async("/:owner/:repo/settings", handlers::repos::settings)
         .post_async("/:owner/:repo/settings", handlers::repos::update_settings)
         .post_async("/:owner/:repo/settings/delete", handlers::repos::delete)
+        .get_async("/:owner/:repo/settings/collaborators", collaborators::settings)
+        .post_async("/:owner/:repo/settings/collaborators", collaborators::save)
+        .post_async("/:owner/:repo/settings/collaborators/revoke", collaborators::revoke)
+        .get_async("/:owner/:repo/settings/issues", issue_metadata::catalog)
+        .post_async("/:owner/:repo/settings/issues", issue_metadata::catalog_action)
+        .get_async("/:owner/:repo/settings/lifecycle", repo_lifecycle::settings)
+        .post_async("/:owner/:repo/settings/lifecycle", repo_lifecycle::update)
         // Issues and pull requests
         .get_async("/:owner/:repo/issues", handlers::issues::list_issues)
         .get_async("/:owner/:repo/issues/new", handlers::issues::new_issue_form)
         .post_async("/:owner/:repo/issues/new", handlers::issues::create_issue)
         .get_async("/:owner/:repo/issues/:number", handlers::issues::detail_issue)
+        .get_async("/:owner/:repo/issues/:number/edit", issue_metadata::edit_form)
+        .post_async("/:owner/:repo/issues/:number/edit", issue_metadata::save_edit)
         .post_async(
             "/:owner/:repo/issues/:number/comments",
             handlers::issues::comment,
@@ -82,6 +125,7 @@ fn routes(router: Router<AppState>) -> Router<AppState> {
         .get_async("/:owner/:repo/pulls/new", handlers::issues::new_pull_form)
         .post_async("/:owner/:repo/pulls/new", handlers::issues::create_pull)
         .get_async("/:owner/:repo/pulls/:number", handlers::issues::detail_pull)
+        .post_async("/:owner/:repo/pulls/:number/reviews", pull_review::submit)
         .post_async(
             "/:owner/:repo/pulls/:number/comments",
             handlers::issues::comment,
@@ -103,39 +147,65 @@ fn routes(router: Router<AppState>) -> Router<AppState> {
 }
 
 #[event(fetch)]
-async fn fetch(mut req: Request, env: Env, _worker_ctx: Context) -> Result<Response> {
+async fn fetch(req: Request, env: Env, worker_ctx: Context) -> Result<Response> {
     console_error_panic_hook::set_once();
+    let request_id = match util::header(&req, "cf-ray").filter(|id| {
+        (16..=32).contains(&id.len()) && id.bytes().all(|ch| ch.is_ascii_alphanumeric() || ch == b'-')
+    }) {
+        Some(id) => id,
+        None => crypto::random_token()?,
+    };
+    let mut response = serve(req, env, worker_ctx, &request_id).await?;
+    response.headers_mut().set("X-Request-ID", &request_id)?;
+    Ok(response)
+}
 
+async fn serve(mut req: Request, env: Env, worker_ctx: Context, request_id: &str) -> Result<Response> {
     let secure = util::is_secure(&req);
-    let previous_csrf = util::cookie(&req, "shard_csrf");
     let is_git = security::is_git_request(&req);
-    let guest_preference = if is_git {
+    let is_check = req.method() == Method::Post && security::is_check_request(&req);
+    let machine = is_git || is_check;
+    let previous_csrf = if machine { None } else { util::cookie(&req, "shard_csrf") };
+    let guest_preference = if machine {
         None
     } else {
         util::cookie(&req, LANGUAGE_COOKIE).as_deref().and_then(LanguagePreference::parse)
     };
     let browser_locale = || {
-        if is_git {
+        if machine {
             Locale::En
         } else {
             util::header(&req, "accept-language").as_deref().map_or(Locale::En, Locale::negotiate)
         }
     };
-    let user = match auth::current_user(&env, &req).await {
+    let source = util::header(&req, "cf-connecting-ip").unwrap_or_else(|| "local".into());
+    let class = if is_git { "git" } else if is_check { "checks" } else { "web" };
+    if !env.rate_limiter("REQUEST_LIMITER")?.limit(format!("{class}:{source}")).await?.success {
+        console_log!("request_id={request_id} event=rate_limit class={class}");
+        let locale = guest_preference.and_then(LanguagePreference::locale).unwrap_or_else(browser_locale);
+        let mut response = Response::error(locale.t(CommonText::RateLimit), 429)?;
+        response.headers_mut().set("Retry-After", "60")?;
+        response.headers_mut().set("Cache-Control", "no-store")?;
+        if !machine {
+            response.headers_mut().set("Content-Language", locale.code())?;
+        }
+        return Ok(response);
+    }
+    let user = match if machine { Ok(None) } else { auth::current_user(&env, &req).await } {
         Ok(user) => user,
         Err(error) => {
-            console_log!("session lookup failed: {error}");
+            console_log!("request_id={request_id} event=session_lookup_failed error={error}");
             let token = security::csrf_token(&req, false).await?;
             let locale = guest_preference.and_then(LanguagePreference::locale).unwrap_or_else(browser_locale);
             let response = templates::error_response(
-                templates::Chrome { locale, ..Default::default() },
+                &templates::Chrome { locale, ..Default::default() },
                 503,
                 locale.t(CommonText::AccountUnavailable),
             )?;
             return security::finish(response, &token, previous_csrf.as_deref(), secure, locale);
         }
     };
-    let language_preference = if is_git {
+    let language_preference = if machine {
         LanguagePreference::Browser
     } else {
         user.as_ref().and_then(|user| user.locale.as_deref()).and_then(LanguagePreference::parse)
@@ -143,9 +213,10 @@ async fn fetch(mut req: Request, env: Env, _worker_ctx: Context) -> Result<Respo
             .unwrap_or(LanguagePreference::Browser)
     };
     let locale = language_preference.locale().unwrap_or_else(browser_locale);
-    let csrf_token = security::csrf_token(&req, user.is_some()).await?;
+    let csrf_token = if machine { String::new() } else { security::csrf_token(&req, user.is_some()).await? };
     let mut state = AppState {
         env: env.clone(),
+        worker_ctx: std::rc::Rc::new(worker_ctx),
         user,
         locale,
         language_preference,
@@ -154,7 +225,7 @@ async fn fetch(mut req: Request, env: Env, _worker_ctx: Context) -> Result<Respo
     };
     let chrome = templates::Chrome::new(&state);
 
-    if req.method() == Method::Post && !is_git {
+    if req.method() == Method::Post && !machine {
         let rejected = if !security::same_origin(&req) {
             Some((403, CommonText::FormOrigin))
         } else {
@@ -168,26 +239,30 @@ async fn fetch(mut req: Request, env: Env, _worker_ctx: Context) -> Result<Respo
             }
         };
         if let Some((status, message)) = rejected {
-            let response = templates::error_response(chrome, status, locale.t(message))?;
+            let response = templates::error_response(&chrome, status, locale.t(message))?;
             return security::finish(response, &state.csrf_token, previous_csrf.as_deref(), secure, locale);
         }
     }
 
     let router = routes(Router::with_data(state));
     let response = match router.run(req, env).await {
-        Ok(response) if !is_git && matches!(response.status_code(), 404 | 405)
+        Ok(response) if !machine && matches!(response.status_code(), 404 | 405)
             && !security::is_html(response.headers())? => {
                 let status = response.status_code();
                 let message = if status == 404 { CommonText::NotFound } else { CommonText::MethodNotAllowed };
-                templates::error_response(chrome.clone(), status, locale.t(message))?
+                templates::error_response(&chrome, status, locale.t(message))?
             }
         Ok(response) => response,
         Err(error) => {
-            console_log!("unhandled worker error: {error}");
-            templates::error_response(chrome.clone(), 500, locale.t(CommonText::WorkerError))?
+            console_log!("request_id={request_id} event=handler_error error={error}");
+            if machine {
+                Response::error(locale.t(CommonText::WorkerError), 500)?
+            } else {
+                templates::error_response(&chrome, 500, locale.t(CommonText::WorkerError))?
+            }
         }
     };
-    if is_git {
+    if machine {
         Ok(response)
     } else {
         security::finish(response, &chrome.csrf_token, previous_csrf.as_deref(), secure, locale)
@@ -195,7 +270,15 @@ async fn fetch(mut req: Request, env: Env, _worker_ctx: Context) -> Result<Respo
 }
 
 #[event(scheduled)]
-async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
+async fn scheduled(event: ScheduledEvent, env: Env, ctx: ScheduleContext) {
+    if event.cron() == "* * * * *" {
+        ctx.wait_until(async move {
+            if webhooks::deliver_pending(&env).await.is_err() {
+                console_log!("event=webhook_delivery_failed");
+            }
+        });
+        return;
+    }
     if let Err(error) = auth::cleanup_expired(&env).await {
         console_log!("credential cleanup failed: {error}");
     }

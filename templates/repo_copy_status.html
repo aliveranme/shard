@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page">
+  <div class="page-head">
+    <div>
+      <h1 class="page-title">{{ chrome.locale.t(crate::i18n::LifecycleText::CopyStatus) }}</h1>
+      <p class="page-sub">{{ job.name }}</p>
+    </div>
+  </div>
+  <div class="card card--warm card--narrow">
+    <p class="card__sub" role="status">{{ message }}</p>
+    <div class="form__actions">
+      {% if check_again %}
+      <form method="post" action="/user/settings/repository-copies/{{ job.id }}">
+        {% include "csrf.html" %}
+        <button class="btn btn--primary" type="submit">{{ chrome.locale.t(crate::i18n::LifecycleText::CheckCopy) }}</button>
+      </form>
+      {% endif %}
+      <a class="btn btn--ghost" href="/user/settings/repository-copies">{{ chrome.locale.t(crate::i18n::LifecycleText::Copies) }}</a>
+    </div>
+  </div>
+</div>
+{% endblock %}

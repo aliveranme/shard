@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page auth-simple">
+  <div class="card">
+    <h1 class="card__title">{{ heading }}</h1>
+    {% if let Some(message) = notice %}<div class="alert alert--success" role="status">{{ message }}</div>{% endif %}
+    {% if let Some(message) = error %}<div class="alert alert--error" role="alert">{{ message }}</div>{% endif %}
+    {% if !action.is_empty() %}
+      <form class="form" method="post" action="{{ action }}">
+        {% include "csrf.html" %}
+        {% if request_email %}
+          <div class="field">
+            <label for="email">{{ chrome.locale.t(crate::i18n::AccountText::Email) }}</label>
+            <input class="input" id="email" name="email" type="email" autocomplete="email" maxlength="254" required>
+          </div>
+        {% else %}
+          <input type="hidden" name="token" value="{{ token }}">
+          {% if reset_password %}
+            <div class="field">
+              <label for="password">{{ chrome.locale.t(crate::i18n::AccountText::NewPassword) }}</label>
+              <input class="input" id="password" name="password" type="password" autocomplete="new-password" minlength="8" maxlength="1024" required>
+            </div>
+            <div class="field">
+              <label for="password-confirm">{{ chrome.locale.t(crate::i18n::AccountText::ConfirmPassword) }}</label>
+              <input class="input" id="password-confirm" name="password_confirm" type="password" autocomplete="new-password" minlength="8" maxlength="1024" required>
+            </div>
+          {% endif %}
+        {% endif %}
+        <button class="btn btn--primary btn--block" type="submit">{{ button }}</button>
+      </form>
+    {% endif %}
+  </div>
+  <p class="auth-simple__switch"><a href="{{ back_url }}">{{ back_label }}</a></p>
+</div>
+{% endblock %}

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { createHash, pbkdf2Sync } from "node:crypto";
+import { createHash, createHmac, pbkdf2Sync } from "node:crypto";
+import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,8 +26,19 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
   const temporary = await mkdtemp(join(tmpdir(), "shard-http-"));
   const persistence = join(temporary, "state");
   const configPath = join(temporary, "wrangler.json");
+  const webhookSecret = "local-regression-webhook-signing-key";
+  const deliveries = [];
+  const receiver = createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    deliveries.push({ id: req.headers["x-shard-event-id"], signature: req.headers["x-shard-signature"],
+      method: req.method, path: req.url, body: Buffer.concat(chunks) });
+    res.writeHead(deliveries.length === 1 ? 503 : 204).end();
+  });
   let worker;
   try {
+    receiver.listen({ host: "127.0.0.1", port: 0 });
+    await once(receiver, "listening");
     const config = JSON.parse((await readFile(join(root, "wrangler.jsonc"), "utf8"))
       .replace(/^\s*\/\/.*$/gm, ""));
     delete config.$schema;
@@ -34,6 +47,12 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
     config.main = resolve(root, config.main);
     config.assets.directory = resolve(root, config.assets.directory);
     config.artifacts = config.artifacts.map((binding) => ({ ...binding, remote: false }));
+    config.send_email = [{ name: "EMAIL", remote: false }];
+    config.vars = {
+      ...config.vars, PUBLIC_ORIGIN: "https://forge.example.test", EMAIL_FROM: "shard@example.test",
+      WEBHOOK_LOCAL_HTTP: "1", WEBHOOK_SECRET: webhookSecret, WEBHOOK_REPO: "webhook-regression-repo",
+      WEBHOOK_ENDPOINT: `http://127.0.0.1:${receiver.address().port}/hooks/shard`,
+    };
     config.d1_databases = config.d1_databases.map((binding) => ({
       ...binding, remote: false, migrations_dir: resolve(root, binding.migrations_dir),
     }));
@@ -65,6 +84,9 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       INSERT INTO sessions (token_hash,user_id,created_at,expires_at)
         SELECT '${sha(expiredSession)}',id,${now - 100},${now - 1}
         FROM users WHERE username='expiredfixture';
+      INSERT INTO repos (owner_id, name, artifacts_repo, visibility, created_at, updated_at)
+        SELECT id,'webhook-fixture','webhook-regression-repo','private',${now},${now}
+        FROM users WHERE username='expiredfixture';
     `);
     await cli(["d1", "execute", "shard", "--local", "--persist-to", persistence, "--file", fixture]);
     worker = await unstable_dev(config.main, {
@@ -77,12 +99,15 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       },
     });
     const base = `http://127.0.0.1:${worker.port}`;
+    let clientNumber = 0;
 
     class Client {
+      source = `2001:db8::${(++clientNumber).toString(16)}`;
       cookies = new Map();
       csrf = "";
       async request(path, options = {}) {
         const headers = new Headers(options.headers);
+        if (!headers.has("CF-Connecting-IP")) headers.set("CF-Connecting-IP", this.source);
         if (this.cookies.size) headers.set("Cookie", [...this.cookies]
           .map(([name, value]) => `${name}=${value}`).join("; "));
         const response = await fetch(new URL(path, base), {
@@ -318,14 +343,47 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
         await git("-C", worktree, "-c", "core.hooksPath=", "commit", "--no-verify", "-m", `history-${String(i).padStart(2, "0")}`);
       }
       await git("-C", worktree, "checkout", "-b", "feature/readme");
+      await writeFile(join(worktree, "README.md"), "# Updated branch\n<div>literal text</div>");
+      await writeFile(join(worktree, "IMAGE.bin"), Buffer.from([0, 1, 2]));
+      await writeFile(join(worktree, "LARGE.txt"), "long fixture line\n".repeat(513));
       await writeFile(join(worktree, "FEATURE.md"), "# A branch with a slash\n");
       const folder = join(worktree, "docs and examples");
       await mkdir(folder);
       await writeFile(join(folder, "release%20notes.txt"), "A nested file from the slash branch.\n");
-      await git("-C", worktree, "add", "FEATURE.md", "docs and examples");
+      await git("-C", worktree, "add", "FEATURE.md", "README.md", "IMAGE.bin", "LARGE.txt", "docs and examples");
       await git("-C", worktree, "-c", "core.hooksPath=", "commit", "--no-verify", "-m", "feature note");
       await git("-C", worktree, "remote", "add", "origin", `${base}/suiteowner/history.git`);
       await git("-C", worktree, "push", "origin", "main", "feature/readme");
+      const rootCommit = (await git("-C", worktree, "rev-list", "--max-parents=0", "main")).stdout.trim();
+      assert.match((await owner.get(`/suiteowner/history/commit/${rootCommit}`)).body, /Root commit \(no parents\)/);
+      const featureCommit = (await git("-C", worktree, "rev-parse", "feature/readme")).stdout.trim();
+      const download = await fetch(`${base}/suiteowner/history/archive/${featureCommit}`);
+      assert.equal(download.status, 200);
+      assert.equal(download.headers.get("content-type"), "application/x-tar");
+      const tar = Buffer.from(await download.arrayBuffer());
+      assert.equal(tar.toString("ascii", 257, 262), "ustar");
+      const members = new Map();
+      for (let at = 0; at + 512 < tar.length && tar[at] !== 0;) {
+        const string = (start, end) => tar.toString("utf8", at + start, at + end).split("\0", 1)[0];
+        const path = [string(345, 500), string(0, 100)].filter(Boolean).join("/");
+        const size = Number.parseInt(string(124, 136), 8);
+        members.set(path, tar.subarray(at + 512, at + 512 + size));
+        at += 512 + Math.ceil(size / 512) * 512;
+      }
+      const prefix = `source-${featureCommit}/`;
+      assert.deepEqual(members.get(`${prefix}IMAGE.bin`), Buffer.from([0, 1, 2]));
+      assert.equal(members.get(`${prefix}docs and examples/release%20notes.txt`)?.toString(), "A nested file from the slash branch.\n");
+      const history = "/suiteowner/history";
+      const tag = "review-tag";
+      await git("-C", worktree, "tag", "-a", tag, "-m", "Annotated tag");
+      await git("-C", worktree, "push", "origin", tag);
+      const refs = await owner.get(`${history}/refs`);
+      assert.match(refs.body, /\?branch=feature%2Freadme"/);
+      for (const ref of [tag, `${tag}^{}`]) {
+        const oid = (await git("-C", worktree, "rev-parse", ref)).stdout.trim();
+        assert.ok(refs.body.includes(oid));
+      }
+      assert.equal((await new Client().get(`${privateRepo}/refs`)).status, 404);
       const branchPage = await owner.get("/suiteowner/history?branch=feature%2Freadme");
       assert.match(branchPage.body, /<option value="feature\/readme"\s+selected>/);
       assert.match(branchPage.body, /<button[^>]*type="submit">Browse branch<\/button>/);
@@ -362,14 +420,245 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       assert.equal(new Set([...firstMessages, ...secondMessages]).size, 21);
       assert.ok([...firstMessages].every((message) => !secondMessages.has(message)));
       assert.match(first.body, /feature note/);
-      redirected(await owner.post("/suiteowner/history/pulls/new", {
+      const tagged = await owner.post(`${history}/pulls/new`, {
+        title: "A tag is not a branch", base_branch: "main", head_branch: tag,
+      });
+      assert.notEqual(tagged.status, 302);
+      const createdPull = await viewer.post(`${history}/pulls/new`, {
         title: "Review a slash branch", body: "Review this feature.", base_branch: "main", head_branch: "feature/readme",
-      }));
-      const pull = await owner.get("/suiteowner/history/pulls/1");
-      assert.match(pull.body, /FEATURE\.md/);
+      });
+      redirected(createdPull);
+      const pullUrl = createdPull.location;
+      const pull = await owner.get(pullUrl);
+      assert.match(pull.body, /\?file=FEATURE.md#file-diff/);
+      assert.match(pull.body, /\?file=docs%20and%20examples%2Frelease%2520notes.txt#file-diff/);
+      const readme = await owner.get(`${pullUrl}?file=README.md`);
+      assert.match(readme.body, /diff-table__deleted[\s\S]*# History 20/);
+      assert.match(readme.body, /diff-table__added[\s\S]*# Updated branch/);
+      assert.doesNotMatch(readme.body, /<div>literal text<\/div>/);
+      assert.match(readme.body, /(?:&lt;|&#60;|&#x3c;)div(?:&gt;|&#62;|&#x3e;)literal text/i);
+      assert.match(readme.body, /No newline at end of file/);
+      assert.match((await owner.get(`${pullUrl}?file=IMAGE.bin`)).body, /binary or non-UTF-8/);
+      assert.match((await owner.get(`${pullUrl}?file=LARGE.txt`)).body, /exceeds the line diff size limit/);
+
+      const fields = Object.fromEntries([...readme.body.matchAll(/name="(base_commit|head_commit)" value="([a-f0-9]{40})"/g)]
+        .map(([, name, value]) => [name, value]));
+      assert.equal(fields.base_commit, (await git("-C", worktree, "rev-parse", "main")).stdout.trim());
+      assert.equal(fields.head_commit, (await git("-C", worktree, "rev-parse", "feature/readme")).stdout.trim());
+      const reviews = `${pullUrl}/reviews`;
+      assert.equal((await viewer.post(reviews, { ...fields, decision: "approved" })).status, 403);
+      assert.equal((await owner.post(reviews, { ...fields, head_commit: "f".repeat(40), decision: "approved" })).status, 409);
+      assert.equal((await owner.post(reviews, { ...fields, decision: "merge_verified" })).status, 409);
+      const decision = await owner.post(reviews, { ...fields, decision: "approved", body: "Approval for the saved pair." });
+      redirected(decision);
+      assert.match((await owner.get(decision.location)).body, /Approved this comparison[\s\S]*Approval for the saved pair/);
+      const lineComment = { ...fields, decision: "line_comment", path: "README.md", line: "new:2", body: "Comment for the exact line." };
+      assert.equal((await viewer.post(reviews, { ...lineComment, line: "new:900" })).status, 400);
+      const comment = await viewer.post(reviews, lineComment);
+      redirected(comment);
+      const review = await viewer.get(comment.location);
+      assert.match(review.body, /\?file=README\.md#diff-new-2/);
+      assert.match(review.body, /Comment for the exact line/);
+
+      await writeFile(join(worktree, "LATER.txt"), "Changed after review started.\n");
+      await git("-C", worktree, "add", "LATER.txt");
+      await git("-C", worktree, "-c", "core.hooksPath=", "commit", "--no-verify", "-m", "Advance the head");
+      await git("-C", worktree, "push", "origin", "feature/readme");
+      await git("-C", worktree, "checkout", "main");
+      await writeFile(join(worktree, "README.md"), "# Moved base\n");
+      await git("-C", worktree, "add", "README.md");
+      await git("-C", worktree, "-c", "core.hooksPath=", "commit", "--no-verify", "-m", "Advance the base");
+      await git("-C", worktree, "push", "origin", "main");
+      assert.doesNotMatch((await owner.get(pullUrl)).body, /LATER\.txt/);
+      const frozen = await owner.get(`${pullUrl}?file=README.md`);
+      assert.match(frozen.body, /# History 20/);
+      assert.doesNotMatch(frozen.body, /# Moved base/);
+
+      assert.equal((await owner.post(reviews, { ...fields, decision: "merge_verified" })).status, 409);
+      // Integrate the exact head that was reviewed as a non-first parent.
+      await git("-C", worktree, "merge", "--no-ff", "-X", "theirs", fields.head_commit, "-m", "Integrate the reviewed branch");
+      await git("-C", worktree, "push", "origin", "main");
+      const merged = await owner.post(reviews, { ...fields, decision: "merge_verified" });
+      redirected(merged);
+      assert.match((await owner.get(merged.location)).body, /Verified integration in Git/);
+      const mergeTip = (await git("-C", worktree, "rev-parse", "main")).stdout.trim();
+      assert.match((await owner.get(`${history}/commit/${mergeTip}`)).body,
+        new RegExp(`/commit/${fields.head_commit}\\?branch=main`));
+      assert.equal((await owner.post(`${pullUrl}/state`, { state: "open" })).status, 409);
+      await git("-C", worktree, "checkout", "-b", "feature/deep");
+      const deep = join(worktree, ...Array.from({ length: 14 }, (_, index) => `d${index}`));
+      await mkdir(deep, { recursive: true });
+      await writeFile(join(deep, "deep.txt"), "past the tree depth limit\n");
+      await git("-C", worktree, "add", "d0");
+      await git("-C", worktree, "-c", "core.hooksPath=", "commit", "--no-verify", "-m", "Deep comparison");
+      await git("-C", worktree, "push", "origin", "feature/deep");
+      const deepPull = await owner.post(`${history}/pulls/new`, {
+        title: "Deep comparison", base_branch: "main", head_branch: "feature/deep",
+      });
+      redirected(deepPull);
+      const limited = await owner.get(deepPull.location);
+      assert.match(limited.body, /exceeds the file or tree limits/);
+      assert.doesNotMatch(limited.body, /No file changes/);
       const empty = await owner.post("/suiteowner/history/pulls/1/comments", { body: " " });
       redirected(empty);
       assert.match(empty.location, /^\/suiteowner\/history\/pulls\/1/);
+
+      await cli(["d1", "execute", "shard", "--local", "--persist-to", persistence,
+        "--command", `UPDATE pulls SET base_commit = '${"f".repeat(40)}'
+          WHERE issue_id = (SELECT id FROM issues WHERE title = 'Deep comparison')`]);
+      const unavailable = await owner.get(deepPull.location);
+      assert.match(unavailable.body, /saved comparison commits are unavailable/);
+      assert.doesNotMatch(unavailable.body, /No file changes/);
+    });
+
+    await t.test("private repository grants govern Git, issue classification and notifications", async () => {
+      const access = `${privateRepo}/settings/collaborators`;
+      const writeToken = async (account, name) => {
+        const result = await account.post("/user/settings/tokens", { name, scope: "write" });
+        const secret = result.body.match(/\bshard_[a-f0-9]{64}\b/)?.[0];
+        assert.equal(result.status, 200);
+        assert.ok(secret);
+        return secret;
+      };
+      const ownerToken = await writeToken(owner, "private repo owner");
+      const readerToken = await writeToken(viewer, "private repo collaborator");
+      const outsider = await signup("outsidefixture");
+      const outsiderToken = await writeToken(outsider, "private repo outsider");
+      const privateRef = `${privateRepo}.git/info/refs?service=`;
+      const auth = (token) => ({ headers: { Authorization: `Bearer ${token}` } });
+      const git = (token, ...args) => exec("git", args, {
+        cwd: root, timeout: 30_000,
+        env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_COUNT: "1",
+          GIT_CONFIG_KEY_0: "http.extraHeader", GIT_CONFIG_VALUE_0: `Authorization: Bearer ${token}` },
+      });
+      const remote = `${base}${privateRepo}.git`;
+      const seed = join(temporary, "private-seed");
+      await git(ownerToken, "init", "--initial-branch=main", seed);
+      await writeFile(join(seed, "README.md"), "# Private source\n");
+      await git(ownerToken, "-C", seed, "add", "README.md");
+      await git(ownerToken, "-C", seed, "-c", "core.hooksPath=", "-c", "user.name=Regression",
+        "-c", "user.email=git@example.test", "-c", "commit.gpgsign=false", "commit", "-m", "Private fixture");
+      await git(ownerToken, "-C", seed, "push", remote, "main");
+      const oid = (await git(ownerToken, "-C", seed, "rev-parse", "HEAD")).stdout.trim();
+      assert.equal((await outsider.get(`${privateRepo}/archive/${oid}`)).status, 404);
+      const checkPath = `${privateRepo}/commit/${oid}/checks`;
+      const checkResult = (client, token, state, summary) => client.request(checkPath, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(token ? auth(token).headers : {}) },
+        body: JSON.stringify({ context: "ci/unit", state, summary }),
+      });
+      assert.equal((await checkResult(owner, null, "pending")).status, 401);
+      assert.equal((await checkResult(outsider, outsiderToken, "pending")).status, 404);
+
+      assert.equal((await outsider.post(access, { username: "suiteviewer", role: "read" })).status, 404);
+      redirected(await owner.post(access, { username: "suiteviewer", role: "read" }));
+      assert.match((await viewer.get(privateRepo)).body, /Private source/);
+      assert.equal((await viewer.get(access)).status, 403);
+      assert.equal((await viewer.request(`${privateRef}git-receive-pack`, auth(readerToken))).status, 401);
+      assert.equal((await checkResult(viewer, readerToken, "pending")).status, 403);
+      const clone = join(temporary, "private-clone");
+      await git(readerToken, "clone", "--config", "core.autocrlf=false", remote, clone);
+      assert.equal(await readFile(join(clone, "README.md"), "utf8"), "# Private source\n");
+      redirected(await owner.post(access, { username: "suiteviewer", role: "write" }));
+      const readCredential = await viewer.post("/user/settings/tokens", { name: "read-only CI", scope: "read" });
+      const readSecret = readCredential.body.match(/\bshard_[a-f0-9]{64}\b/)?.[0];
+      assert.ok(readSecret);
+      assert.equal((await checkResult(viewer, readSecret, "pending")).status, 403);
+      await git(readerToken, "-C", clone, "push", remote, "HEAD:refs/heads/from/viewer");
+      assert.equal((await checkResult(viewer, readerToken, "pending", "First run")).status, 204);
+      assert.equal((await checkResult(viewer, readerToken, "success", "Checks complete")).status, 204);
+      assert.equal((await checkResult(viewer, readerToken, "success", "Checks complete")).status, 204);
+      const checks = await viewer.get(`${privateRepo}/commit/${oid}`);
+      assert.equal([...checks.body.matchAll(/>ci\/unit</g)].length, 1);
+      assert.match(checks.body, /ci\/unit[\s\S]*Passed[\s\S]*Checks complete/);
+      assert.doesNotMatch(checks.body, /First run/);
+
+      const catalog = `${privateRepo}/settings/issues`;
+      redirected(await owner.post(catalog, { action: "create_label", name: "review-required" }));
+      redirected(await owner.post(catalog, { action: "create_milestone", name: "delivery-window" }));
+      assert.equal((await owner.post(catalog, { action: "create_label", name: "REVIEW-REQUIRED" })).status, 409);
+      const thread = await viewer.post(`${privateRepo}/issues/new`, { title: "Protected classification", body: "before edit" });
+      redirected(thread);
+      const edit = `${thread.location}/edit`;
+      const form = await viewer.get(edit);
+      const label_id = form.body.match(/name="label_id" value="(\d+)"/)?.[1];
+      const milestone_id = form.body.match(/<option value="(\d+)"[^>]*>delivery-window/)?.[1];
+      const assignee_id = form.body.match(/<option value="(\d+)"[^>]*>suiteviewer/)?.[1];
+      assert.ok(label_id && milestone_id && assignee_id);
+      const fields = { title: "Protected classification", body: "private-body-needle", label_id, milestone_id, assignee_id, classify: "1" };
+      assert.equal((await viewer.post(edit, { ...fields, label_id: "9999999" })).status, 400);
+      redirected(await viewer.post(edit, fields));
+      const detail = await viewer.get(thread.location);
+      assert.match(detail.body, /review-required[\s\S]*delivery-window[\s\S]*href="\/suiteviewer"/);
+      assert.match((await viewer.get("/issues?q=private-body-needle")).body, /Protected classification/);
+      assert.doesNotMatch((await outsider.get("/issues?q=private-body-needle")).body, /Protected classification/);
+      redirected(await owner.post(`${thread.location}/comments`, { body: "private-comment-needle" }));
+      assert.match((await viewer.get(`${privateRepo}/issues?q=private-comment-needle`)).body, /Protected classification/);
+      const inbox = await viewer.get("/user/notifications");
+      const notification = inbox.body.match(/notification-title-(\d+)"[^>]*>Protected classification/)?.[1];
+      assert.ok(notification);
+      assert.equal((await outsider.post(`/user/notifications/${notification}/read`, {})).status, 404);
+      redirected(await viewer.post(`/user/notifications/${notification}/read`, {}));
+      assert.doesNotMatch((await viewer.get("/user/notifications")).body, new RegExp(`/user/notifications/${notification}/read"`));
+
+      redirected(await owner.post(`${access}/revoke`, { username: "suiteviewer" }));
+      assert.equal((await viewer.get(privateRepo)).status, 404);
+      assert.equal((await viewer.request(`${privateRef}git-upload-pack`, auth(readerToken))).status, 404);
+      assert.equal((await viewer.request(`${privateRef}git-receive-pack`, auth(readerToken))).status, 404);
+      assert.equal((await viewer.post(`/user/notifications/${notification}/read`, {})).status, 404);
+      assert.doesNotMatch((await viewer.get("/user/notifications")).body, /Protected classification/);
+      assert.doesNotMatch((await viewer.get("/explore/repos?q=private-vault")).body, /href="\/suiteowner\/private-vault/);
+    });
+
+    await t.test("renames, transfers and forks preserve Git data with canonical access", async () => {
+      redirected(await owner.post("/repo/create", { name: "move-fixture" }));
+      const old = "/suiteowner/move-fixture";
+      const renamed = "/suiteowner/moved-fixture";
+      redirected(await owner.post(`${old}/settings/lifecycle`, { action: "rename", name: "moved-fixture" }));
+      assert.match((await owner.get(old)).body, /\/suiteowner\/moved-fixture\/commits/);
+      const reserved = await owner.post("/repo/create", { name: "MOVE-fixture" });
+      assert.notEqual(reserved.status, 302);
+      assert.equal((await new Client().request(`${old}.git/info/refs?service=git-upload-pack`)).status, 200);
+      redirected(await owner.post(`${renamed}/settings/lifecycle`, { action: "request_transfer", recipient: "suiteviewer" }));
+      const transfers = "/user/settings/transfers";
+      const id = (await viewer.get(transfers)).body.match(/name="transfer_id" value="(\d+)"/)?.[1];
+      assert.ok(id);
+      assert.equal((await owner.post(transfers, { action: "accept", transfer_id: id })).status, 404);
+      const accepted = await viewer.post(transfers, { action: "accept", transfer_id: id });
+      redirected(accepted);
+      assert.equal(accepted.location, "/suiteviewer/moved-fixture");
+      assert.match((await owner.get(old)).body, /\/suiteviewer\/moved-fixture\/commits/);
+      assert.equal((await owner.get(`${old}/settings`)).status, 403);
+      assert.equal((await new Client().request(`${old}.git/info/refs?service=git-upload-pack`)).status, 200);
+
+      const fork = await viewer.post("/suiteowner/history/fork", { name: "fork-fixture" });
+      redirected(fork);
+      assert.equal(fork.location, "/suiteviewer/fork-fixture");
+      assert.match((await viewer.get(`${fork.location}/refs`)).body, /feature\/readme/);
+      const rejected = await viewer.post("/user/settings/repository-import", { name: "unsafe-import", source_url: "http://127.0.0.1/repo.git" });
+      assert.equal(rejected.status, 400);
+      assert.equal((await viewer.get("/suiteviewer/unsafe-import")).status, 404);
+    });
+
+    await t.test("account deletion rejects owners and revokes every session and token", async () => {
+      const account = await signup("deletefixture");
+      const other = await login("deletefixture");
+      redirected(other.result);
+      const deletion = "/user/settings/delete";
+      const fields = { confirm: "deletefixture", current_password: password };
+      const result = await account.post("/user/settings/tokens", { name: "deleted token", scope: "read" });
+      const token = result.body.match(/\bshard_[a-f0-9]{64}\b/)?.[0];
+      assert.ok(token);
+      assert.equal((await account.post(deletion, { ...fields, confirm: "other" })).status, 400);
+      assert.equal((await account.post(deletion, { ...fields, current_password: "wrong" })).status, 403);
+      assert.equal((await account.post(deletion, fields, { csrf: false })).status, 403);
+      assert.equal((await owner.post(deletion, { confirm: "suiteowner", current_password: password })).status, 409);
+      redirected(await account.post(deletion, fields));
+      assert.match((await other.client.get("/user/settings")).location, /^\/user\/login/);
+      assert.equal((await new Client().request(`${privateRepo}.git/info/refs?service=git-upload-pack`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })).status, 401);
+      assert.notEqual((await login("deletefixture")).result.status, 302);
     });
 
     await t.test("repository pagination preserves search and excludes private results", async () => {
@@ -498,6 +787,120 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       redirected((await login("suiteowner", "new-local-password")).result);
     });
 
+    await t.test("simulated verification and reset emails consume a link exactly once", async () => {
+      const account = await signup("recoveryfixture");
+      const recipient = "recoveryfixture@example.test";
+      const explorer = `${base}/cdn-cgi/local/explorer/api/local/email/sending`;
+      const outbox = async () => {
+        const response = await fetch(explorer);
+        assert.equal(response.status, 200);
+        return (await response.json()).result;
+      };
+      async function receivedLink(subject, path) {
+        const deadline = Date.now() + 5_000;
+        for (;;) {
+          const item = (await outbox()).find((message) => message.subject === subject && message.to.includes(recipient));
+          if (item) {
+            const response = await fetch(`${explorer}?email_id=${encodeURIComponent(item.messageId)}`);
+            assert.equal(response.status, 200);
+            const { text } = (await response.json()).result;
+            const link = new URL(text.match(/https:\/\/[^\s]+/)?.[0]);
+            assert.equal(link.origin, "https://forge.example.test");
+            assert.equal(link.pathname, path);
+            const token = link.searchParams.get("token");
+            assert.match(token, /^[a-f0-9]{64}$/);
+            return { token, path: link.pathname + link.search };
+          }
+          assert.ok(Date.now() < deadline, `No simulated email with subject ${subject}`);
+          await new Promise((done) => setTimeout(done, 30));
+        }
+      }
+      const verify = "/user/verify_email";
+      const reset = "/user/reset_password";
+      const guest = new Client();
+      await guest.get("/user/forgot_password");
+      const unknown = await guest.post("/user/forgot_password", { email: "missing@example.test" });
+      const unverified = await guest.post("/user/forgot_password", { email: recipient });
+      assert.equal(unknown.body, unverified.body);
+      redirected(await account.post("/user/settings/email/verify", {}));
+      const emailLink = await receivedLink("Verify email", verify);
+      const first = await guest.get(emailLink.path);
+      const second = await guest.get(emailLink.path);
+      assert.equal(first.status, 200);
+      assert.equal(second.status, 200);
+      assert.equal(first.headers.get("referrer-policy"), "strict-origin");
+      assert.equal((await guest.post(verify, { token: emailLink.token }, { csrf: false })).status, 403);
+      assert.equal((await guest.post(verify, { token: emailLink.token })).status, 200);
+      assert.equal((await guest.post(verify, { token: emailLink.token })).status, 400);
+      assert.match((await account.get("/user/settings")).body, /Email address verified/);
+      const requested = await guest.post("/user/forgot_password", { email: recipient });
+      assert.equal(requested.body, unknown.body);
+      const resetLink = await receivedLink("Reset password", reset);
+      await guest.get(resetLink.path);
+      const newPassword = "reset-local-secret";
+      const fields = { token: resetLink.token, password: newPassword, password_confirm: newPassword };
+      assert.equal((await guest.post(reset, fields)).status, 200);
+      assert.equal((await guest.post(reset, fields)).status, 400);
+      assert.match((await account.get("/user/settings")).location, /^\/user\/login/);
+      assert.notEqual((await login("recoveryfixture", password)).result.status, 302);
+      redirected((await login("recoveryfixture", newPassword)).result);
+    });
+
+    await t.test("signed webhooks retry the same event and respect repository scope", async () => {
+      const account = await login("expiredfixture");
+      redirected(account.result);
+      await account.client.get("/user/settings");
+      const opened = await account.client.post("/expiredfixture/webhook-fixture/issues/new", {
+        title: "Webhook test issue",
+      });
+      redirected(opened);
+      const tick = async () => {
+        const result = await fetch(`${base}/__scheduled?cron=${encodeURIComponent("* * * * *")}`);
+        assert.equal(result.status, 200);
+        await result.text();
+      };
+      const stored = async () => JSON.parse(await cli(["d1", "execute", "shard", "--local", "--persist-to", persistence,
+        "--json", "--command", "SELECT d.state, d.attempts, d.last_status FROM webhook_deliveries d JOIN repos r ON r.id=d.repo_id WHERE r.artifacts_repo='webhook-regression-repo'"]))[0].results;
+      await tick();
+      assert.deepEqual(await stored(), [{ state: "pending", attempts: 1, last_status: 503 }]);
+      await cli(["d1", "execute", "shard", "--local", "--persist-to", persistence, "--command",
+        "UPDATE webhook_deliveries SET next_attempt_at=0 WHERE repo_id=(SELECT id FROM repos WHERE artifacts_repo='webhook-regression-repo')"]);
+      await tick();
+      assert.deepEqual(await stored(), [{ state: "sent", attempts: 2, last_status: 204 }]);
+      await tick();
+      assert.equal(deliveries.length, 2);
+      assert.deepEqual(deliveries[0], deliveries[1]);
+      const event = deliveries[0];
+      assert.equal(event.method, "POST");
+      assert.equal(event.path, "/hooks/shard");
+      assert.equal(event.signature, `sha256=${createHmac("sha256", webhookSecret).update(event.body).digest("hex")}`);
+      const payload = JSON.parse(event.body);
+      assert.equal(String(payload.event_id), event.id);
+      assert.equal(payload.repo, "webhook-regression-repo");
+      assert.equal(payload.action, "opened");
+    });
+
+    await t.test("request limiting is scoped by source and supplies a correlation ID", async () => {
+      const headers = { "CF-Connecting-IP": "192.0.2.15", "Accept-Language": "zh-CN" };
+      const guest = new Client();
+      let limited;
+      const { limit } = config.ratelimits.find((binding) => binding.name === "REQUEST_LIMITER").simple;
+      // The simulator aligns its counters to wall-clock windows. Allow the
+      // full quota on both sides of a rollover before requiring a rejection.
+      for (let index = 0; index <= 2 * limit; index++) {
+        const result = await guest.request("/user/settings/language", { headers });
+        if (result.status === 429) {
+          limited = result;
+          break;
+        }
+      }
+      assert.ok(limited, "the local binding should enforce its limit");
+      assert.equal(limited.headers.get("retry-after"), "60");
+      assert.equal(limited.headers.get("content-language"), "zh-Hans");
+      assert.match(limited.headers.get("x-request-id"), /^[A-Za-z0-9-]{16,64}$/);
+      assert.equal((await guest.request("/user/settings/language", { headers: { "CF-Connecting-IP": "192.0.2.16" } })).status, 200);
+    });
+
     await t.test("scheduled maintenance removes expired credentials", async () => {
       const response = await fetch(`${base}/__scheduled?cron=0+3+*+*+*`);
       assert.equal(response.status, 200);
@@ -512,6 +915,11 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
     });
   } finally {
     await worker?.stop();
+    if (receiver.listening) {
+      receiver.close();
+      receiver.closeAllConnections();
+      await once(receiver, "close");
+    }
     await rm(temporary, { recursive: true, force: true });
   }
 });

@@ -1,0 +1,15 @@
+{% if can_review %}
+  <form class="form card" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/pulls/{{ issue.number }}/reviews">
+    {% include "csrf.html" %}
+    {% include "pull_snapshot_fields.html" %}
+    <h2 class="side-card__title">{{ chrome.locale.t(crate::i18n::DiscussionText::Review) }}</h2>
+    <div class="field">
+      <label for="review-body">{{ chrome.locale.t(crate::i18n::DiscussionText::Comment) }}</label>
+      <textarea class="textarea" id="review-body" name="body" maxlength="8192"></textarea>
+    </div>
+    <div class="form__actions">
+      <button class="btn btn--primary" type="submit" name="decision" value="approved">{{ chrome.locale.t(crate::i18n::DiscussionText::Approve) }}</button>
+      <button class="btn btn--ghost" type="submit" name="decision" value="changes_requested">{{ chrome.locale.t(crate::i18n::DiscussionText::RequestChanges) }}</button>
+    </div>
+  </form>
+{% endif %}

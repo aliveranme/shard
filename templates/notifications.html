@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page">
+  <div class="page-head">
+    <h1 class="page-title">{{ chrome.locale.t(crate::i18n::NotificationText::Notifications) }}</h1>
+    {% if has_unread %}
+    <form method="post" action="/user/notifications/read-all{% if pagination.page > 1 %}?page={{ pagination.page }}{% endif %}">
+      {% include "csrf.html" %}
+      <button class="btn btn--ghost btn--sm" type="submit">{{ chrome.locale.t(crate::i18n::NotificationText::MarkAllRead) }}</button>
+    </form>
+    {% endif %}
+  </div>
+  {% if notifications.is_empty() %}
+  <div class="card empty">
+    <p class="empty__title">{% if pagination.page == 1 %}{{ chrome.locale.t(crate::i18n::NotificationText::Empty) }}{% else %}{{ chrome.locale.t(crate::i18n::NotificationText::PageEmpty) }}{% endif %}</p>
+  </div>
+  {% else %}
+  <div class="list" role="list">
+    {% for item in notifications %}
+    <div class="list__row" role="listitem">
+      <div class="list__main">
+        <div class="list__title">
+          <a id="notification-title-{{ item.id }}" href="/{{ item.owner }}/{{ item.repo }}/{% if item.kind == "pull" %}pulls{% else %}issues{% endif %}/{{ item.number }}">{{ item.title }}</a>
+        </div>
+        <div class="list__meta">{{ item.owner }}/{{ item.repo }} #{{ item.number }} · {{ item.activity(chrome.locale) }} · <time datetime="{{ item.date }}">{{ item.date.relative(chrome.locale) }}</time></div>
+        {% if item.read_at.is_none() %}<span class="badge badge--open">{{ chrome.locale.t(crate::i18n::NotificationText::Unread) }}</span>{% endif %}
+      </div>
+      {% if item.read_at.is_none() %}
+      <form method="post" action="/user/notifications/{{ item.id }}/read{% if pagination.page > 1 %}?page={{ pagination.page }}{% endif %}">
+        {% include "csrf.html" %}
+        <button class="btn btn--ghost btn--sm" type="submit" aria-describedby="notification-title-{{ item.id }}">{{ chrome.locale.t(crate::i18n::NotificationText::MarkRead) }}</button>
+      </form>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% include "pagination.html" %}
+</div>
+{% endblock %}

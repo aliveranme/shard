@@ -19,7 +19,7 @@ catalog! {
         HostedOn => "Self-hosted on Cloudflare Workers, D1 and Artifacts", "基于 Cloudflare Workers、D1 与 Artifacts 自托管";
         Language => "Language", "语言";
         Search => "Search", "搜索";
-        SearchByTitle => "Search by title", "按标题搜索";
+        SearchDiscussion => "Search titles, descriptions and comments", "搜索标题、描述和评论";
         Private => "Private", "私有";
         Public => "Public", "公开";
         Open => "Open", "开启";
@@ -49,6 +49,7 @@ catalog! {
         FormExpired => "This form has expired. Reload the page and try again.", "此表单已过期，请刷新页面后重试。";
         UnreadableForm => "The submitted form could not be read.", "无法读取提交的表单。";
         WorkerError => "Something went wrong. The request was logged.", "服务发生错误，请求已记录。";
+        RateLimit => "Too many requests. Try again in a minute.", "请求过于频繁。请在一分钟后重试。";
     }
 }
 

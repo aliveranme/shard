@@ -3,17 +3,18 @@
 //! Shard never stores objects itself: it authenticates the git client, mints a
 //! short-lived Artifacts repo token and streams the request to the repository's
 //! Artifacts remote. Clone URLs stay on the forge domain.
-use super::common::not_found;
+use super::common::{RepoRole, not_found, repo_role};
 use crate::artifacts::Artifacts;
 use crate::auth;
 use crate::ctx::AppState;
 use crate::db;
-use crate::i18n::CommonText;
+use crate::i18n::{CollaboratorText, CommonText};
 use crate::util;
 use worker::*;
 
 #[derive(serde::Deserialize)]
 struct GitRepo {
+    id: i64,
     owner_id: i64,
     artifacts_repo: String,
     artifacts_remote: String,
@@ -32,7 +33,7 @@ pub async fn receive_pack(req: Request, ctx: RouteContext<AppState>) -> Result<R
     proxy(req, ctx, "git-receive-pack").await
 }
 
-async fn proxy(mut req: Request, ctx: RouteContext<AppState>, service: &str) -> Result<Response> {
+async fn proxy(req: Request, ctx: RouteContext<AppState>, service: &str) -> Result<Response> {
     let state = &ctx.data;
     let owner = ctx.param("owner").cloned().unwrap_or_default();
     let raw_repo = ctx.param("repo").cloned().unwrap_or_default();
@@ -43,46 +44,36 @@ async fn proxy(mut req: Request, ctx: RouteContext<AppState>, service: &str) -> 
     let database = state.db()?;
     let repo: Option<GitRepo> = db::first(
         &database,
-        "SELECT r.owner_id, r.artifacts_repo, r.artifacts_remote, r.visibility
-           FROM repos r JOIN users u ON u.id = r.owner_id
-          WHERE u.username = ? COLLATE NOCASE AND r.name = ? COLLATE NOCASE",
+        "SELECT r.id, r.owner_id, r.artifacts_repo, r.artifacts_remote, r.visibility
+           FROM repo_paths p JOIN users pu ON pu.id = p.owner_id JOIN repos r ON r.id = p.repo_id
+          WHERE pu.username = ? COLLATE NOCASE AND p.name = ? COLLATE NOCASE",
         &[util::js_text(&owner), util::js_text(repo_name)],
     )
     .await?;
     let Some(repo) = repo else {
-        return Ok(Response::builder()
-            .with_status(404)
-            .with_header("Cache-Control", "no-store")?
-            .empty());
+        return hidden_repo();
     };
 
-    let query = req
-        .url()
-        .ok()
-        .and_then(|u| u.query().map(str::to_string))
-        .unwrap_or_default();
-
+    let request_url = req.url()?;
+    let query = request_url.query().unwrap_or_default();
+    // A push starts with a receive-pack advertisement, which also requires write access.
+    let write = service == "git-receive-pack"
+        || (service == "info/refs"
+            && request_url.query_pairs().any(|(key, value)| {
+                key == "service" && value == "git-receive-pack"
+            }));
+    let private = repo.visibility != "public";
     let identity = auth::git_identity(&state.env, &req).await?;
-    // A push starts with GET info/refs?service=git-receive-pack; Artifacts
-    // requires write scope for that advertisement too, not just the pack POST.
-    let write = service == "git-receive-pack" || query.contains("service=git-receive-pack");
-    if write {
-        let allowed = match &identity {
-            Some(id) => {
-                id.scope == "write" && (id.user_id == repo.owner_id || id.is_admin == 1)
-            }
-            None => false,
+    if write || private {
+        let Some(id) = identity else {
+            return unauthorized(state.locale.t(CollaboratorText::GitCredentials));
         };
-        if !allowed {
-            return unauthorized("Pushing requires a shard access token with write scope.");
+        let role = repo_role(&database, repo.id, repo.owner_id, id.user_id, id.is_admin).await?;
+        if private && role.is_none() {
+            return hidden_repo();
         }
-    } else if repo.visibility != "public" {
-        let allowed = match &identity {
-            Some(id) => id.user_id == repo.owner_id,
-            None => false,
-        };
-        if !allowed {
-            return unauthorized("This repository is private.");
+        if write && (role != Some(RepoRole::Write) || id.scope != "write") {
+            return unauthorized(state.locale.t(CollaboratorText::GitWriteRequired));
         }
     }
 
@@ -112,7 +103,7 @@ async fn proxy(mut req: Request, ctx: RouteContext<AppState>, service: &str) -> 
     let mut url = format!("{}/{}", remote.trim_end_matches('/'), service);
     if !query.is_empty() {
         url.push('?');
-        url.push_str(&query);
+        url.push_str(query);
     }
 
     let headers = Headers::new();
@@ -123,9 +114,10 @@ async fn proxy(mut req: Request, ctx: RouteContext<AppState>, service: &str) -> 
     }
     headers.set("Authorization", &format!("Bearer {token}"))?;
 
-    let body = if matches!(req.method(), Method::Post) {
-        let bytes = req.bytes().await?;
-        Some(js_sys::Uint8Array::from(bytes.as_slice()).into())
+    let method = req.method();
+    // Forward the original Workers stream without copying pack data into Wasm.
+    let body = if method == Method::Post {
+        req.inner().body().map(Into::into)
     } else {
         None
     };
@@ -133,7 +125,8 @@ async fn proxy(mut req: Request, ctx: RouteContext<AppState>, service: &str) -> 
     let init = RequestInit {
         body,
         headers,
-        method: req.method(),
+        method,
+        redirect: RequestRedirect::Manual,
         ..Default::default()
     };
     let outbound = match Request::new_with_init(&url, &init) {
@@ -158,6 +151,9 @@ async fn proxy(mut req: Request, ctx: RouteContext<AppState>, service: &str) -> 
             response_headers.set(name, &value)?;
         }
     }
+    if private {
+        response_headers.set("Cache-Control", "no-store")?;
+    }
     let stream = upstream.stream()?;
     Ok(Response::from_stream(stream)?
         .with_status(status)
@@ -169,9 +165,17 @@ fn upstream_error(stage: &str, error: &Error) -> Result<Response> {
     Response::error(format!("{stage}: {error}"), 502)
 }
 
+fn hidden_repo() -> Result<Response> {
+    Ok(Response::builder()
+        .with_status(404)
+        .with_header("Cache-Control", "no-store")?
+        .empty())
+}
+
 fn unauthorized(message: &str) -> Result<Response> {
     let headers = Headers::new();
     headers.set("WWW-Authenticate", "Basic realm=\"shard\"")?;
+    headers.set("Cache-Control", "no-store")?;
     Ok(Response::error(message, 401)?.with_headers(headers))
 }
 

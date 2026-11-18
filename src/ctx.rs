@@ -6,6 +6,7 @@ use worker::*;
 #[derive(Clone)]
 pub struct AppState {
     pub env: Env,
+    pub worker_ctx: Rc<Context>,
     pub user: Option<User>,
     pub locale: Locale,
     pub language_preference: LanguagePreference,

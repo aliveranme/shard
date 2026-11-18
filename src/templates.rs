@@ -2,6 +2,7 @@ use crate::ctx::AppState;
 use crate::i18n::Locale;
 use crate::models::{Issue, Pull, Repo, Ts};
 use crate::pagination::Pagination;
+use crate::pull_diff::{ChangedFile, FileDiff};
 use askama::Template;
 use worker::*;
 
@@ -118,7 +119,6 @@ pub struct GlobalIssueRow {
     pub state: String,
 }
 
-#[derive(Clone)]
 pub struct DiscussionRow {
     pub id: i64,
     pub author: Option<String>,
@@ -127,12 +127,26 @@ pub struct DiscussionRow {
     pub html: String,
     pub action: String,
     pub is_comment: bool,
+    pub review: Option<ReviewContext>,
 }
 
-#[derive(Clone)]
-pub struct ChangedRow {
+pub struct ReviewContext {
+    pub base: String,
+    pub head: String,
+    pub line: Option<ReviewLine>,
+}
+
+pub struct ReviewLine {
     pub path: String,
-    pub status: &'static str,
+    pub url_path: String,
+    pub side: String,
+    pub line: i64,
+}
+
+pub struct FilePreview {
+    pub path: String,
+    pub modes: Option<(&'static str, &'static str)>,
+    pub diff: FileDiff,
 }
 
 #[derive(Clone)]
@@ -143,6 +157,7 @@ pub struct PullView {
     pub base_commit: Option<String>,
     pub merged: bool,
     pub merged_at: Option<Ts>,
+    pub merge_commit: Option<String>,
 }
 
 impl PullView {
@@ -154,6 +169,7 @@ impl PullView {
             base_commit: pull.base_commit.clone(),
             merged: pull.merged == 1,
             merged_at: pull.merged_at,
+            merge_commit: pull.merge_commit.clone(),
         }
     }
 }
@@ -303,8 +319,14 @@ pub struct IssuePage {
     pub discussion: Vec<DiscussionRow>,
     pub pagination: Pagination,
     pub pull: Option<PullView>,
-    pub changed: Vec<ChangedRow>,
+    pub changed: Vec<ChangedFile>,
+    pub preview: Option<FilePreview>,
+    pub preview_missing: bool,
     pub diff_error: Option<&'static str>,
+    pub metadata: Option<crate::issue_metadata::IssueMetadata>,
+    pub can_review: bool,
+    pub can_comment_on_diff: bool,
+    pub can_verify_merge: bool,
     pub can_edit: bool,
     pub is_owner: bool,
 }
@@ -352,14 +374,14 @@ pub fn initial(name: &str) -> String {
 
 #[derive(Template)]
 #[template(path = "error.html")]
-pub struct ErrorPage {
-    pub chrome: Chrome,
+pub struct ErrorPage<'a> {
+    pub chrome: &'a Chrome,
     pub title: String,
     pub status: u16,
     pub message: &'static str,
 }
 
-pub fn error_response(chrome: Chrome, status: u16, message: &'static str) -> Result<Response> {
+pub fn error_response(chrome: &Chrome, status: u16, message: &'static str) -> Result<Response> {
     let page = ErrorPage {
         title: format!("{status}"),
         chrome,

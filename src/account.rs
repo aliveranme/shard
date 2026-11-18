@@ -43,6 +43,8 @@ pub struct AccountPage {
     pub chrome: Chrome,
     pub title: String,
     pub email: String,
+    pub email_verified: bool,
+    pub mail_configured: bool,
     pub success: Option<&'static str>,
     pub error: Option<&'static str>,
 }

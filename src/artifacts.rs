@@ -5,7 +5,6 @@
 //! data; no JS handle escapes this module.
 use js_sys::{Array, Function, Object, Promise, Reflect, Uint8Array};
 use serde_json::Value;
-use std::collections::BTreeMap;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use worker::*;
@@ -32,12 +31,12 @@ pub struct TreeEntry {
     pub is_dir: bool,
     pub hash: String,
     pub size: Option<u64>,
+    pub mode: &'static str,
 }
 
-#[derive(Debug, Clone)]
-pub struct ChangedFile {
-    pub path: String,
-    pub status: &'static str,
+pub enum BlobRead {
+    Bytes(Vec<u8>),
+    TooLarge,
 }
 
 pub struct Artifacts {
@@ -148,7 +147,7 @@ impl RepoHandle {
         let serde_json::Value::Array(items) = json else {
             return Ok(Vec::new());
         };
-        Ok(items.iter().filter_map(parse_commit).collect())
+        Ok(items.iter().filter_map(|item| parse_commit(item, false)).collect())
     }
 
     pub async fn read_file(&self, git_ref: &str, path: &str) -> Result<Option<Vec<u8>>> {
@@ -167,128 +166,101 @@ impl RepoHandle {
     }
 
     pub async fn read_commit(&self, hash: &str) -> Result<Option<Commit>> {
+        let Some(data) = self.read_commit_data(hash).await? else { return Ok(None) };
+        let commit = parse_commit(&data, true).filter(|commit| commit.hash == hash)
+            .ok_or_else(|| Error::RustError("Artifacts returned mismatched commit metadata".into()))?;
+        Ok(Some(commit))
+    }
+
+    async fn read_commit_data(&self, hash: &str) -> Result<Option<Value>> {
         let value = call_async(&self.obj, "readCommit", &[JsValue::from_str(hash)]).await?;
         if value.is_null() || value.is_undefined() {
             return Ok(None);
         }
-        Ok(parse_commit(&to_json(&value)?))
+        Ok(Some(to_json(&value)?))
+    }
+
+    pub async fn commit_parents(&self, hash: &str) -> Result<Option<Vec<String>>> {
+        let Some(mut data) = self.read_commit_data(hash).await? else { return Ok(None) };
+        if data.get("hash").and_then(Value::as_str) != Some(hash) {
+            return Err(Error::RustError("Artifacts returned mismatched commit metadata".into()));
+        }
+        let parents = std::mem::take(&mut data["parents"]);
+        let parents = serde_json::from_value::<Vec<String>>(parents)
+            .map_err(|_| Error::RustError("Git commit parent list is unavailable".into()))?;
+        if parents.iter().any(|id| !is_object_id(id)) {
+            return Err(Error::RustError("Invalid Git commit parent".into()));
+        }
+        Ok(Some(parents))
     }
 
     pub async fn read_tree(&self, hash: &str) -> Result<Vec<TreeEntry>> {
+        self.read_tree_bounded(hash, u32::MAX).await?.ok_or_else(|| {
+            Error::RustError("Git tree exceeds the entry limit".into())
+        })
+    }
+
+    /// `None` means the budget is exhausted. Missing objects are errors.
+    pub async fn read_tree_bounded(&self, hash: &str, limit: u32) -> Result<Option<Vec<TreeEntry>>> {
         let value = call_async(&self.obj, "readTree", &[JsValue::from_str(hash)]).await?;
-        if value.is_null() || value.is_undefined() {
-            return Ok(Vec::new());
+        if !Array::is_array(&value) {
+            return Err(Error::RustError("Git tree is missing or invalid".into()));
         }
-        let json = to_json(&value)?;
-        let serde_json::Value::Array(items) = json else {
-            return Ok(Vec::new());
-        };
-        Ok(items
-            .iter()
-            .filter_map(|item| {
-                let name = item.get("name")?.as_str()?.to_string();
-                let mode = item
-                    .get("mode")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                let kind = item
-                    .get("type")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                let hash = item
-                    .get("hash")
-                    .or_else(|| item.get("sha"))
-                    .or_else(|| item.get("id"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                Some(TreeEntry {
-                    name,
-                    is_dir: kind == "tree" || mode.starts_with("04") || mode == "40000",
-                    hash,
-                    size: item
-                        .get("size")
-                        .and_then(|v| v.as_u64()),
-                })
-            })
-            .collect())
+        let items: Array = value.unchecked_into();
+        if items.length() > limit {
+            return Ok(None);
+        }
+        let mut entries = Vec::with_capacity(items.length() as usize);
+        for item in items.iter() {
+            let name = field_string(&item, &["name"])
+                .filter(|name| !name.is_empty() && !name.contains('/') && name != "." && name != "..");
+            let mode = field_string(&item, &["mode"]).and_then(|mode| match mode.as_str() {
+                "040000" | "40000" => Some("040000"),
+                "100644" => Some("100644"),
+                "100755" => Some("100755"),
+                "120000" => Some("120000"),
+                "160000" => Some("160000"),
+                _ => None,
+            });
+            let hash = field_string(&item, &["hash", "sha", "id"]).filter(|id| is_object_id(id));
+            let (Some(name), Some(mode), Some(hash)) = (name, mode, hash) else {
+                return Err(Error::RustError("Invalid Git tree entry".into()));
+            };
+            entries.push(TreeEntry {
+                name,
+                is_dir: mode == "040000",
+                mode,
+                hash,
+                size: Reflect::get(&item, &JsValue::from_str("size"))
+                    .ok().and_then(|value| value.as_f64()).map(|size| size as u64),
+            });
+        }
+        Ok(Some(entries))
+    }
+
+    pub async fn read_blob_bounded(&self, hash: &str, limit: usize) -> Result<BlobRead> {
+        let blob = call_async(&self.obj, "readBlob", &[JsValue::from_str(hash)]).await?;
+        if blob.is_null() || blob.is_undefined() {
+            return Err(Error::RustError("Git blob is missing".into()));
+        }
+        let size = Reflect::get(&blob, &JsValue::from_str("size"))
+            .map_err(js_error)?.as_f64()
+            .ok_or_else(|| Error::RustError("Git blob size is unavailable".into()))?;
+        if size > limit as f64 {
+            return Ok(BlobRead::TooLarge);
+        }
+        let buffer = call_async(&blob, "arrayBuffer", &[]).await?;
+        Ok(BlobRead::Bytes(Uint8Array::new(&buffer).to_vec()))
     }
 
     pub async fn head_commit(&self, git_ref: &str) -> Result<Option<Commit>> {
         Ok(self.log(git_ref, 1).await?.into_iter().next())
     }
 
-    /// File-level diff between two refs. Artifacts has no diff API, so this
-    /// walks both trees and compares object ids. Depth and entry counts are
-    /// bounded to keep a single request within Workers limits.
-    pub async fn changed_files(&self, base_ref: &str, head_ref: &str) -> Result<Vec<ChangedFile>> {
-        let base = self.head_commit(base_ref).await?;
-        let head = self.head_commit(head_ref).await?;
-        let (Some(base), Some(head)) = (base, head) else {
-            return Ok(Vec::new());
-        };
-        if base.tree.is_none() || head.tree.is_none() || base.hash == head.hash {
-            return Ok(Vec::new());
-        }
-
-        let mut base_files = BTreeMap::new();
-        let mut head_files = BTreeMap::new();
-        fill_tree(self, base.tree.as_deref().unwrap(), "", 0, &mut base_files).await?;
-        fill_tree(self, head.tree.as_deref().unwrap(), "", 0, &mut head_files).await?;
-
-        let mut changed = Vec::new();
-        for (path, hash) in &head_files {
-            match base_files.get(path) {
-                None => changed.push(ChangedFile {
-                    path: path.clone(),
-                    status: "added",
-                }),
-                Some(old) if old != hash => changed.push(ChangedFile {
-                    path: path.clone(),
-                    status: "modified",
-                }),
-                Some(_) => {}
-            }
-        }
-        for path in base_files.keys() {
-            if !head_files.contains_key(path) {
-                changed.push(ChangedFile {
-                    path: path.clone(),
-                    status: "deleted",
-                });
-            }
-        }
-        changed.sort_by(|a, b| a.path.cmp(&b.path));
-        Ok(changed)
-    }
 }
 
-async fn fill_tree(
-    repo: &RepoHandle,
-    tree_hash: &str,
-    prefix: &str,
-    depth: usize,
-    out: &mut BTreeMap<String, String>,
-) -> Result<()> {
-    if depth > 12 || out.len() > 2000 || tree_hash.is_empty() {
-        return Ok(());
-    }
-    for entry in repo.read_tree(tree_hash).await? {
-        let path = if prefix.is_empty() {
-            entry.name.clone()
-        } else {
-            format!("{prefix}/{}", entry.name)
-        };
-        if entry.is_dir {
-            // Recursion through an async fn needs boxing.
-            Box::pin(fill_tree(repo, &entry.hash, &path, depth + 1, out)).await?;
-        } else {
-            out.insert(path, entry.hash);
-        }
-    }
-    Ok(())
+pub(crate) fn is_object_id(hash: &str) -> bool {
+    hash.len() == 40 && hash.bytes().all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
 async fn call_async(obj: &JsValue, method: &str, args: &[JsValue]) -> Result<JsValue> {
@@ -330,7 +302,7 @@ fn to_json(value: &JsValue) -> Result<Value> {
         .map_err(|e| Error::RustError(format!("invalid Artifacts JSON: {e}")))
 }
 
-fn parse_commit(value: &Value) -> Option<Commit> {
+fn parse_commit(value: &Value, full_message: bool) -> Option<Commit> {
     let hash = value
         .get("hash")
         .or_else(|| value.get("sha"))
@@ -342,11 +314,8 @@ fn parse_commit(value: &Value) -> Option<Commit> {
         .get("message")
         .or_else(|| value.get("summary"))
         .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .to_string();
+        .unwrap_or_default();
+    let message = if full_message { message } else { message.lines().next().unwrap_or_default() };
     let author = value.get("author").and_then(|a| {
         if let Some(name) = a.as_str() {
             Some(name.to_string())
@@ -376,7 +345,7 @@ fn parse_commit(value: &Value) -> Option<Commit> {
     Some(Commit {
         hash,
         tree,
-        message,
+        message: message.to_string(),
         author: author.unwrap_or_else(|| "unknown".into()),
         timestamp,
     })

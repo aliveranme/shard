@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page">
+  <div class="page-head">
+    <h1 class="page-title">{{ chrome.locale.t(crate::i18n::LifecycleText::Copies) }}</h1>
+    <a class="btn btn--primary" href="/user/settings/repository-import">{{ chrome.locale.t(crate::i18n::LifecycleText::Import) }}</a>
+  </div>
+  <div class="settings-main">
+    {% for job in copies %}
+    <div class="card">
+      <h2 class="card__title"><a href="/user/settings/repository-copies/{{ job.id }}">{{ job.name }}</a></h2>
+      <p class="card__sub">{% if job.kind == "fork" %}{{ chrome.locale.t(crate::i18n::LifecycleText::Fork) }}{% else %}{{ chrome.locale.t(crate::i18n::LifecycleText::Import) }}{% endif %}</p>
+    </div>
+    {% else %}
+    <div class="card card--warm"><p class="card__sub">{{ chrome.locale.t(crate::i18n::LifecycleText::CopiesEmpty) }}</p></div>
+    {% endfor %}
+    {% include "pagination.html" %}
+  </div>
+</div>
+{% endblock %}

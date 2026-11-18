@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block content %}
+{% let repo_nav_branch = branch_url %}
+{% include "repo_header.html" %}
+<div class="page">
+  <div class="page-head">
+    <h1 class="page-title">{{ chrome.locale.t(crate::i18n::RepoObjectText::Commit) }}</h1>
+  </div>
+  <div class="pull-banner">
+    <code>{{ commit.hash }}</code>
+    <span>{{ chrome.locale.t(crate::i18n::RepoObjectText::Author) }}: {{ commit.author }}{% if let Some(date) = date %} · {{ date.relative(chrome.locale) }}{% endif %}</span>
+  </div>
+  <div class="pull-banner">
+    {% if parents.is_empty() %}
+      <span>{{ chrome.locale.t(crate::i18n::RepoObjectText::RootCommit) }}</span>
+    {% else %}
+      <span>{{ chrome.locale.t(crate::i18n::RepoObjectText::Parents) }}</span>
+      {% for parent in parents %}
+        <a href="/{{ repo.owner_name }}/{{ repo.name }}/commit/{{ parent }}?branch={{ branch_url }}"><code>{{ parent }}</code></a>
+      {% endfor %}
+    {% endif %}
+  </div>
+  <div class="pull-banner">
+    <a class="btn btn--ghost btn--sm" href="/{{ repo.owner_name }}/{{ repo.name }}?branch={{ commit.hash }}">{{ chrome.locale.t(crate::i18n::RepoObjectText::BrowseSnapshot) }}</a>
+    <a class="btn btn--ghost btn--sm" href="/{{ repo.owner_name }}/{{ repo.name }}/archive/{{ commit.hash }}">{{ chrome.locale.t(crate::i18n::RepoObjectText::DownloadSource) }}</a>
+  </div>
+  <section class="code-panel" aria-labelledby="commit-message">
+    <div class="code-panel__bar" id="commit-message">{{ chrome.locale.t(crate::i18n::RepoObjectText::Message) }}</div>
+    <pre>{{ commit.message }}</pre>
+  </section>
+  {% include "commit_checks.html" %}
+</div>
+{% endblock %}

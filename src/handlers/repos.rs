@@ -1,4 +1,4 @@
-use super::common::{can_admin, load_repo, not_found, page_title, visible_repo};
+use super::common::{can_admin, not_found, page_title, visible_repo};
 use crate::artifacts::{Artifacts, Commit, RepoHandle, TreeEntry};
 use crate::ctx::AppState;
 use crate::crypto;
@@ -6,6 +6,7 @@ use crate::db;
 use crate::i18n::{CommonText, RepoText};
 use crate::models::Ts;
 use crate::pagination::{query_url, Pagination, PAGE_SIZE};
+use crate::refs::{self, Inventory, RefsError, RefsPage};
 use crate::templates::{
     render, Chrome, CommitRow, CommitsPage, Crumb, FilePage, FileRow, NewRepoPage, RepoCodePage,
     SettingsPage,
@@ -60,7 +61,13 @@ pub async fn create(_req: Request, ctx: RouteContext<AppState>) -> Result<Respon
     }
 
     let database = state.db()?;
-    if load_repo(&state, &user.username, &name).await?.is_some() {
+    #[derive(serde::Deserialize)]
+    struct ReservedPath { taken: i64 }
+    let reserved = db::first::<ReservedPath>(&database,
+        "SELECT 1 AS taken FROM repo_paths WHERE owner_id = ? AND name = ? COLLATE NOCASE",
+        &[util::js_int(user.id), util::js_text(&name)],
+    ).await?;
+    if reserved.is_some_and(|path| path.taken == 1) {
         return invalid(RepoText::DuplicateName);
     }
 
@@ -118,7 +125,7 @@ fn repository_not_found(state: &AppState) -> Result<Response> {
 
 fn storage_error(state: &AppState, operation: &str, error: Error) -> Result<Response> {
     let message = log_failure(operation, error, RepoText::StorageUnavailable);
-    crate::templates::error_response(Chrome::new(state), 500, state.locale.t(message))
+    crate::templates::error_response(&Chrome::new(state), 500, state.locale.t(message))
 }
 
 fn branch_choices(default: &str, current: &str) -> Vec<String> {
@@ -144,6 +151,36 @@ fn requested_path(ctx: &RouteContext<AppState>) -> Option<Cow<'_, str>> {
 
 pub async fn view(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     tree(req, ctx).await
+}
+
+pub async fn references(_req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
+    let state = &ctx.data;
+    let owner = ctx.param("owner").map(String::as_str).unwrap_or_default();
+    let name = ctx.param("repo").map(String::as_str).unwrap_or_default();
+    let Some(repo) = visible_repo(state, owner, name).await? else {
+        return repository_not_found(state);
+    };
+    let loaded = match storage_handle(state, &repo.artifacts_repo).await {
+        Ok(handle) => refs::load(&handle).await,
+        Err(_) => Err(RefsError::Unavailable),
+    };
+    let (inventory, notice, status) = match loaded {
+        Ok(inventory) => (inventory, None, 200),
+        Err(RefsError::Limit) => (Inventory::default(), Some(RepoText::RefsLimit), 200),
+        Err(RefsError::Unavailable) => {
+            (Inventory::default(), Some(RepoText::StorageUnavailable), 502)
+        }
+    };
+    let page = RefsPage {
+        chrome: Chrome::new(state),
+        title: page_title(&[&repo.full_name(), state.locale.t(RepoText::BranchesAndTags)]),
+        is_owner: can_admin(state, &repo),
+        repo,
+        tab: "refs",
+        inventory,
+        notice: notice.map(|key| state.locale.t(key)),
+    };
+    Ok(render(&page)?.with_status(status))
 }
 
 pub async fn tree(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
@@ -292,7 +329,7 @@ pub async fn commits(req: Request, ctx: RouteContext<AppState>) -> Result<Respon
     let branch = util::query_param(&req, "branch").unwrap_or_else(|| repo.default_branch.clone());
     let start = util::query_param(&req, "start").map(|hash| hash.to_ascii_lowercase());
     if start.as_ref().is_some_and(|hash| hash.len() != 40 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit())) {
-        return crate::templates::error_response(Chrome::new(&state), 400, state.locale.t(RepoText::InvalidCursor));
+        return crate::templates::error_response(&Chrome::new(&state), 400, state.locale.t(RepoText::InvalidCursor));
     }
     let is_owner = can_admin(&state, &repo);
     let handle = match storage_handle(&state, &repo.artifacts_repo).await {
@@ -413,7 +450,7 @@ pub async fn delete(_req: Request, ctx: RouteContext<AppState>) -> Result<Respon
     let state = ctx.data.clone();
     let owner = ctx.param("owner").cloned().unwrap_or_default();
     let name = ctx.param("repo").cloned().unwrap_or_default();
-    let Some(repo) = load_repo(&state, &owner, &name).await? else {
+    let Some(repo) = visible_repo(&state, &owner, &name).await? else {
         return repository_not_found(&state);
     };
     if !can_admin(&state, &repo) {

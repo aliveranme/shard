@@ -1,4 +1,4 @@
-use super::common::{REPO_COLUMNS, page_title};
+use super::common::{REPO_COLUMNS, VISIBLE_REPO_SQL, page_title, viewer_params};
 use crate::ctx::AppState;
 use crate::db;
 use crate::i18n::{CommonText, WebText};
@@ -12,17 +12,22 @@ use worker::*;
 
 pub async fn home(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = ctx.data.clone();
-    let viewer = state.user_id().unwrap_or(-1);
+    let [viewer_id, viewer_admin] = viewer_params(&state);
     let request_page = PageRequest::new(&req, "page");
     let database = state.db()?;
     let mut repos: Vec<Repo> = db::all(
         &database,
         &format!(
             "SELECT {REPO_COLUMNS} FROM repos r JOIN users u ON u.id = r.owner_id
-             WHERE r.visibility = 'public' OR r.owner_id = ?
+             WHERE {VISIBLE_REPO_SQL}
              ORDER BY r.updated_at DESC, r.id DESC LIMIT ? OFFSET ?"
         ),
-        &[util::js_int(viewer), util::js_int((PAGE_SIZE + 1) as i64), util::js_int(request_page.offset())],
+        &[
+            viewer_id,
+            viewer_admin,
+            util::js_int((PAGE_SIZE + 1) as i64),
+            util::js_int(request_page.offset()),
+        ],
     )
     .await?;
     let pagination = request_page.finish(&req, &mut repos, None)?;
@@ -39,6 +44,7 @@ pub async fn home(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
 
 pub async fn explore(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = ctx.data.clone();
+    let [viewer_id, viewer_admin] = viewer_params(&state);
     let query = util::query_param(&req, "q").unwrap_or_default();
     let request_page = PageRequest::new(&req, "page");
     let database = state.db()?;
@@ -47,11 +53,12 @@ pub async fn explore(req: Request, ctx: RouteContext<AppState>) -> Result<Respon
         &database,
         &format!(
             "SELECT {REPO_COLUMNS} FROM repos r JOIN users u ON u.id = r.owner_id
-             WHERE r.visibility = 'public'
+             WHERE {VISIBLE_REPO_SQL}
                AND (? = '' OR r.name LIKE ? OR r.description LIKE ? OR u.username LIKE ?)
              ORDER BY r.updated_at DESC, r.id DESC LIMIT ? OFFSET ?"
         ),
         &[
+            viewer_id, viewer_admin,
             util::js_text(query.trim()), util::js_text(&like),
             util::js_text(&like), util::js_text(&like),
             util::js_int((PAGE_SIZE + 1) as i64), util::js_int(request_page.offset()),
@@ -89,16 +96,22 @@ pub async fn profile(req: Request, ctx: RouteContext<AppState>) -> Result<Respon
     let Some(user) = user else {
         return super::common::not_found(&state, state.locale.t(WebText::UserNotFound));
     };
-    let viewer = state.user_id().unwrap_or(-1);
+    let [viewer_id, viewer_admin] = viewer_params(&state);
     let request_page = PageRequest::new(&req, "page");
     let mut repos: Vec<Repo> = db::all(
         &database,
         &format!(
             "SELECT {REPO_COLUMNS} FROM repos r JOIN users u ON u.id = r.owner_id
-             WHERE r.owner_id = ? AND (r.visibility = 'public' OR r.owner_id = ?)
+             WHERE {VISIBLE_REPO_SQL} AND r.owner_id = ?
              ORDER BY r.updated_at DESC, r.id DESC LIMIT ? OFFSET ?"
         ),
-        &[util::js_int(user.id), util::js_int(viewer), util::js_int((PAGE_SIZE + 1) as i64), util::js_int(request_page.offset())],
+        &[
+            viewer_id,
+            viewer_admin,
+            util::js_int(user.id),
+            util::js_int((PAGE_SIZE + 1) as i64),
+            util::js_int(request_page.offset()),
+        ],
     )
     .await?;
     let pagination = request_page.finish(&req, &mut repos, None)?;
@@ -108,7 +121,7 @@ pub async fn profile(req: Request, ctx: RouteContext<AppState>) -> Result<Respon
         name: user.username.clone(),
         joined: user.created_at,
         repos: repos.iter().map(RepoRow::from_repo).collect(),
-        is_self: viewer == user.id,
+        is_self: state.user_id() == Some(user.id),
         pagination,
     };
     render(&page)
@@ -140,9 +153,10 @@ async fn global_list(
     kind: &str,
 ) -> Result<Response> {
     let state = ctx.data.clone();
-    let Some(user) = state.user.as_ref() else {
+    if state.user.is_none() {
         return util::redirect(if kind == "pull" { "/user/login?next=/pulls" } else { "/user/login?next=/issues" });
-    };
+    }
+    let [viewer_id, viewer_admin] = viewer_params(&state);
     let state_filter = match util::query_param(&req, "state").as_deref() {
         Some("closed") => "closed",
         Some("all") => "all",
@@ -154,19 +168,23 @@ async fn global_list(
     let database = state.db()?;
     let mut rows: Vec<GlobalRow> = db::all(
         &database,
-        "SELECT i.number, i.title, i.created_at, i.kind, i.state, u.username AS author_name,
-                r.name AS repo_name, o.username AS repo_owner
-           FROM issues i
-           JOIN repos r ON r.id = i.repo_id
-           JOIN users o ON o.id = r.owner_id
-           LEFT JOIN users u ON u.id = i.author_id
-          WHERE i.kind = ? AND (? = 'all' OR i.state = ?)
-            AND (r.owner_id = ? OR r.visibility = 'public')
-            AND (? = '' OR i.title LIKE ?)
-          ORDER BY i.updated_at DESC, i.id DESC LIMIT ? OFFSET ?",
+        &format!(
+            "SELECT i.number, i.title, i.created_at, i.kind, i.state, u.username AS author_name,
+                    r.name AS repo_name, o.username AS repo_owner
+               FROM issues i
+               JOIN repos r ON r.id = i.repo_id
+               JOIN users o ON o.id = r.owner_id
+               LEFT JOIN users u ON u.id = i.author_id
+              WHERE {VISIBLE_REPO_SQL}
+                AND i.kind = ? AND (? = 'all' OR i.state = ?)
+                AND (?6 = '' OR i.title LIKE ?7 OR i.body LIKE ?7
+                     OR EXISTS (SELECT 1 FROM comments c WHERE c.issue_id = i.id AND c.body LIKE ?7))
+              ORDER BY i.updated_at DESC, i.id DESC LIMIT ? OFFSET ?"
+        ),
         &[
+            viewer_id, viewer_admin,
             util::js_text(kind), util::js_text(state_filter), util::js_text(state_filter),
-            util::js_int(user.id), util::js_text(query.trim()), util::js_text(&like),
+            util::js_text(query.trim()), util::js_text(&like),
             util::js_int((PAGE_SIZE + 1) as i64), util::js_int(request_page.offset()),
         ],
     )

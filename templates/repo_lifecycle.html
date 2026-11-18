@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page">
+  <div class="page-head">
+    <div>
+      <h1 class="page-title">{{ chrome.locale.t(crate::i18n::LifecycleText::RepositoryLifecycle) }}</h1>
+      <p class="page-sub"><a href="/{{ repo.owner_name }}/{{ repo.name }}">{{ repo.full_name() }}</a></p>
+    </div>
+  </div>
+  {% if let Some(message) = error %}<div class="alert alert--error" role="alert">{{ message }}</div>{% endif %}
+  <div class="settings-layout">
+    <nav class="settings-nav" aria-label="{{ chrome.locale.t(crate::i18n::RepoText::RepositorySettings) }}">
+      <a href="/{{ repo.owner_name }}/{{ repo.name }}/settings">{{ chrome.locale.t(crate::i18n::LifecycleText::BackToRepositorySettings) }}</a>
+      <a href="#rename">{{ chrome.locale.t(crate::i18n::LifecycleText::Rename) }}</a>
+      <a href="#transfer">{{ chrome.locale.t(crate::i18n::LifecycleText::Transfer) }}</a>
+    </nav>
+    <div class="settings-main">
+      <form id="rename" class="form card" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/settings/lifecycle">
+        {% include "csrf.html" %}
+        <h2 class="card__title">{{ chrome.locale.t(crate::i18n::LifecycleText::Rename) }}</h2>
+        <p class="card__sub">{{ chrome.locale.t(crate::i18n::LifecycleText::RenameHelp) }}</p>
+        {% if pending.is_some() %}
+        <p class="card__sub">{{ chrome.locale.t(crate::i18n::LifecycleText::PendingTransferBlocksRename) }}</p>
+        {% else %}
+        <div class="field">
+          <label for="name">{{ chrome.locale.t(crate::i18n::RepoText::RepositoryName) }}</label>
+          <input class="input" id="name" name="name" value="{{ repo.name }}" maxlength="100" required>
+          <span class="help">{{ chrome.locale.t(crate::i18n::RepoText::NameHelp) }}</span>
+        </div>
+        <div class="form__actions"><button class="btn btn--primary" type="submit" name="action" value="rename">{{ chrome.locale.t(crate::i18n::LifecycleText::Rename) }}</button></div>
+        {% endif %}
+      </form>
+      <form id="transfer" class="form card" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/settings/lifecycle">
+        {% include "csrf.html" %}
+        <h2 class="card__title">{{ chrome.locale.t(crate::i18n::LifecycleText::Transfer) }}</h2>
+        <p class="card__sub">{{ chrome.locale.t(crate::i18n::LifecycleText::TransferHelp) }}</p>
+        {% if let Some(request) = pending %}
+        <input type="hidden" name="transfer_id" value="{{ request.id }}">
+        <p class="card__sub" role="status">{{ chrome.locale.t(crate::i18n::LifecycleText::TransferPending) }} <strong>{{ request.recipient }}</strong></p>
+        <div class="form__actions"><button class="btn btn--ghost" type="submit" name="action" value="cancel_transfer">{{ chrome.locale.t(crate::i18n::LifecycleText::CancelTransfer) }}</button></div>
+        {% else %}
+        <div class="field">
+          <label for="recipient">{{ chrome.locale.t(crate::i18n::LifecycleText::Recipient) }}</label>
+          <input class="input" id="recipient" name="recipient" maxlength="100" required>
+        </div>
+        <div class="form__actions"><button class="btn btn--primary" type="submit" name="action" value="request_transfer">{{ chrome.locale.t(crate::i18n::LifecycleText::RequestTransfer) }}</button></div>
+        {% endif %}
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}
