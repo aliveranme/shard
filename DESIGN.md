@@ -169,8 +169,10 @@ available column and can be selected as text.
 
 Use 8px controls, 12px cards and 16px outer panels. Two zero-blur rings with
 0.5px and 1.5px spreads define panel edges. A darker ring indicates interaction,
-with a separate blue keyboard focus outline. Soft drop shadow belongs to the
-mobile menu. Internal dividers use the shared subtle border color.
+with a separate blue keyboard focus outline. Soft drop shadow belongs to
+floating menus. Native selects use a themed picker where `base-select` is
+supported and the system picker elsewhere. Internal dividers use the shared
+subtle border color.
 
 Interaction feedback takes 150ms, menu, status and reference list reveals take
 200ms, and the homepage entrance and diff-line cue take 360ms. Reduced motion

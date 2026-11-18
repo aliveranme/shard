@@ -607,6 +607,48 @@ a.list__row:hover { background-color: var(--hover); text-decoration: none; }
 .input:hover, .select:hover, .textarea:hover { background-color: var(--inset); }
 .input:focus, .select:focus, .textarea:focus { box-shadow: var(--active-ring); }
 .select { padding-inline-end: 32px; }
+
+@supports (appearance: base-select) and selector(::picker(select)) {
+  .select, .select::picker(select) { appearance: base-select; }
+  .select {
+    align-items: center;
+    gap: 8px;
+    min-inline-size: 0;
+    padding-inline-end: 12px;
+  }
+  .select:open { background-color: var(--inset); box-shadow: var(--active-ring); }
+  .select::picker-icon {
+    flex: none;
+    color: var(--muted);
+    transition: rotate var(--motion-feedback) var(--ease-out);
+  }
+  .select:open::picker-icon { rotate: 0.5turn; }
+  .select::picker(select) {
+    max-inline-size: calc(100vi - 2 * var(--gutter));
+    max-block-size: min(20rem, 50dvb);
+    margin-block: 4px;
+    padding: 4px;
+    border: 0;
+    border-radius: var(--radius-card);
+    background-color: var(--surface);
+    color: var(--ink);
+    box-shadow: var(--shadow-floating);
+  }
+  .select option {
+    align-items: center;
+    gap: 8px;
+    min-block-size: 36px;
+    padding: 4px 8px;
+    border-radius: var(--radius-control);
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .select option::checkmark { order: 1; margin-inline-start: auto; color: var(--action); }
+  .select option:checked { background-color: var(--selected); }
+  .select option:not(:disabled):is(:hover, :focus-visible) { background-color: var(--hover); }
+  .select option:focus-visible { outline-offset: -2px; }
+}
+
 .textarea { min-height: 140px; resize: vertical; }
 
 .checkbox {
@@ -1184,4 +1226,5 @@ a.file-row:hover { background-color: var(--hover); text-decoration: none; }
       .code-panel, .diff-scroll, .search, .btn--ghost, .input, .select, .textarea) {
     border: 1px solid;
   }
+  .select::picker(select) { border: 1px solid CanvasText; }
 }
