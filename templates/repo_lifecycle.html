@@ -13,6 +13,7 @@
       <a href="/{{ repo.owner_name }}/{{ repo.name }}/settings">{{ chrome.locale.t(crate::i18n::LifecycleText::BackToRepositorySettings) }}</a>
       <a href="#rename">{{ chrome.locale.t(crate::i18n::LifecycleText::Rename) }}</a>
       <a href="#transfer">{{ chrome.locale.t(crate::i18n::LifecycleText::Transfer) }}</a>
+      <a href="/{{ repo.owner_name }}/{{ repo.name }}/settings/metadata-import">{{ chrome.locale.t(crate::i18n::LifecycleText::MetadataImport) }}</a>
     </nav>
     <div class="settings-main">
       <form id="rename" class="form card" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/settings/lifecycle">

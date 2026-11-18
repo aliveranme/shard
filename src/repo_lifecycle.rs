@@ -3,12 +3,14 @@ use crate::handlers::common::{not_found, page_title, visible_repo};
 use crate::git_storage::{CopyError, GitBackend, GitStorage};
 use crate::i18n::{CommonText, LifecycleText as Text, RepoText};
 use crate::models::Repo;
+use crate::native_git::ImportCredential;
 use crate::pagination::{PageRequest, Pagination, PAGE_SIZE};
 use crate::templates::{render, Chrome};
 use crate::util::{form_bool, form_value, js_int, js_text, now, redirect, valid_slug};
 use crate::{crypto, db};
 use askama::Template;
 use serde::Deserialize;
+use worker::d1::D1Database;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::{future_to_promise, JsFuture};
 use worker::*;
@@ -16,6 +18,9 @@ use worker::*;
 const TRANSFERS: &str = "/user/settings/transfers";
 const IMPORT: &str = "/user/settings/repository-import";
 const COPIES: &str = "/user/settings/repository-copies";
+const COPY_CHECK_LIMIT: i64 = 8;
+const COPY_CHECK_INTERVAL: i64 = 30;
+const COPY_START_GRACE: i64 = 300;
 
 #[derive(Deserialize)]
 struct Identity {
@@ -56,22 +61,22 @@ struct TransfersPage {
     error: Option<&'static str>,
 }
 
-fn login(path: &str) -> Result<Response> {
+pub(crate) fn login(path: &str) -> Result<Response> {
     redirect(&format!("/user/login?next={}", crate::util::url_path(path)))
 }
 
-fn repo_path(ctx: &RouteContext<AppState>) -> (&str, &str) {
+pub(crate) fn repo_path(ctx: &RouteContext<AppState>) -> (&str, &str) {
     (
         ctx.param("owner").map_or("", String::as_str),
         ctx.param("repo").map_or("", String::as_str),
     )
 }
 
-fn repository_not_found(state: &AppState) -> Result<Response> {
+pub(crate) fn repository_not_found(state: &AppState) -> Result<Response> {
     not_found(state, state.locale.t(CommonText::RepositoryNotFound))
 }
 
-async fn owned_repo(ctx: &RouteContext<AppState>) -> Result<Option<Repo>> {
+pub(crate) async fn owned_repo(ctx: &RouteContext<AppState>) -> Result<Option<Repo>> {
     let (owner, name) = repo_path(ctx);
     Ok(visible_repo(&ctx.data, owner, name).await?.filter(|repo| {
         ctx.data.user_id() == Some(repo.owner_id)
@@ -322,7 +327,7 @@ struct CopyJob {
     repo_id: Option<i64>,
 }
 
-const COPY_SELECT: &str = "SELECT id, name, artifacts_repo AS storage_id, git_backend, kind, state, created_at, repo_id FROM repo_copies c";
+const COPY_COLUMNS: &str = "id, name, artifacts_repo AS storage_id, git_backend, kind, state, created_at, repo_id";
 
 #[derive(Template)]
 #[template(path = "repo_copy_form.html")]
@@ -422,10 +427,14 @@ pub async fn import(_req: Request, ctx: RouteContext<AppState>) -> Result<Respon
     let Some(source_url) = public_https(source_url.trim()) else {
         return render_copy_form(state, None, destination, "", Some((Text::InvalidSource, 400)));
     };
-    start_copy(state, None, destination, source_url.as_str()).await
+    let credential = match Credentials::from_form(form) {
+        Ok(credential) if credential.is_none() || source_url.port().is_none() => credential,
+        _ => return render_copy_form(state, None, destination, "", Some((Text::InvalidImportCredential, 400))),
+    };
+    start_copy(state, None, destination, source_url.as_str(), credential).await
 }
 
-fn public_https(raw: &str) -> Option<Url> {
+pub(crate) fn public_https(raw: &str) -> Option<Url> {
     let (scheme, rest) = raw.split_once("://")?;
     let authority = rest.split('/').next()?;
     if raw.len() > 2048
@@ -437,10 +446,18 @@ fn public_https(raw: &str) -> Option<Url> {
         return None;
     }
     let url = Url::parse(raw).ok()?;
-    let host = url.domain()?.trim_end_matches('.');
+    let host = url.domain()?;
     let (domain, suffix) = host.rsplit_once('.')?;
     // Accept public DNS-style names. The Git provider applies its upstream policy.
     if domain.is_empty()
+        || host.len() > 253
+        || !host.split('.').all(|label| {
+            (1..=63).contains(&label.len())
+                && label.as_bytes()[0].is_ascii_alphanumeric()
+                && label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
+                && label.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+        || url.as_str().len() > 2048
         || matches!(suffix, "localhost" | "local" | "localdomain" | "internal" | "lan" | "onion" | "home" | "arpa")
         || !suffix.bytes().any(|byte| byte.is_ascii_alphabetic())
         || !url.username().is_empty()
@@ -452,6 +469,42 @@ fn public_https(raw: &str) -> Option<Url> {
         return None;
     }
     Some(url)
+}
+
+enum Credentials {
+    Basic { username: String, password: String },
+    Bearer(String),
+}
+
+impl Credentials {
+    fn from_form(form: &FormData) -> std::result::Result<Option<Self>, ()> {
+        let username = form_value(form, "source_username");
+        let password = form_value(form, "source_password");
+        let token = form_value(form, "source_token");
+        match (username, password, token) {
+            (None, None, None) => Ok(None),
+            (Some(username), Some(password), None)
+                if username.len() <= 128 && !username.contains(':')
+                    && !username.chars().any(char::is_control)
+                    && password.len() <= 1024 && !password.chars().any(char::is_control) =>
+            {
+                Ok(Some(Self::Basic { username, password }))
+            }
+            (None, None, Some(token))
+                if token.len() <= 1024 && token.bytes().all(|byte| (b'!'..=b'~').contains(&byte)) =>
+            {
+                Ok(Some(Self::Bearer(token)))
+            }
+            _ => Err(()),
+        }
+    }
+
+    fn for_origin(&self) -> ImportCredential<'_> {
+        match self {
+            Self::Basic { username, password } => ImportCredential::Basic { username, password },
+            Self::Bearer(token) => ImportCredential::Bearer { token },
+        }
+    }
 }
 
 pub async fn fork_form(_req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
@@ -480,25 +533,36 @@ pub async fn fork(_req: Request, ctx: RouteContext<AppState>) -> Result<Response
     let Some(repo) = visible_repo(state, owner, name).await? else {
         return repository_not_found(state);
     };
-    start_copy(state, Some(&repo), Destination::from_form(state.form()?), "").await
+    start_copy(state, Some(&repo), Destination::from_form(state.form()?), "", None).await
 }
 
 async fn start_copy(
     state: &AppState,
     source: Option<&Repo>,
-    destination: Destination,
+    mut destination: Destination,
     source_url: &str,
+    credential: Option<Credentials>,
 ) -> Result<Response> {
     let Some(owner_id) = state.user_id() else {
         return login(IMPORT);
     };
-    if !valid_slug(&destination.name) {
-        return render_copy_form(state, source, destination, source_url, Some((Text::InvalidName, 400)));
+    let authenticated_import = credential.is_some();
+    let form_url = if authenticated_import { "" } else { source_url };
+    if authenticated_import {
+        destination.private = true;
     }
-    let backend = source.map_or_else(|| GitBackend::selected(&state.env), |repo| Ok(repo.git_backend));
+    if !valid_slug(&destination.name) {
+        return render_copy_form(state, source, destination, form_url, Some((Text::InvalidName, 400)));
+    }
+    let backend = if authenticated_import {
+        Ok(GitBackend::Native)
+    } else {
+        source.map_or_else(|| GitBackend::selected(&state.env), |repo| Ok(repo.git_backend))
+    };
     let storage = backend.and_then(|backend| Ok((backend, GitStorage::from_env(&state.env, backend)?)));
     let Ok((backend, storage)) = storage else {
-        return render_copy_form(state, source, destination, source_url, Some((Text::CopyUnknown, 503)));
+        let error = if authenticated_import { Text::ImportNativeRequired } else { Text::CopyUnknown };
+        return render_copy_form(state, source, destination, form_url, Some((error, 503)));
     };
     let storage_id = format!("shard-copy-{}", &crypto::random_token()?[..32]);
     let database = state.db()?;
@@ -513,7 +577,7 @@ async fn start_copy(
              SELECT 1 FROM repos s JOIN users u ON u.id = ?1 WHERE s.id = ?7
                AND s.git_backend = ?9
                AND (s.visibility = 'public' OR s.owner_id = ?1 OR u.is_admin = 1 OR EXISTS (
-                 SELECT 1 FROM repo_collaborators rc WHERE rc.repo_id = s.id AND rc.user_id = ?1
+                 SELECT 1 FROM repo_member_roles rc WHERE rc.repo_id = s.id AND rc.user_id = ?1
                ))
            ))
          RETURNING id",
@@ -536,14 +600,20 @@ async fn start_copy(
                 return repository_not_found(state);
             }
         }
-        return render_copy_form(state, source, destination, source_url, Some((Text::NameTaken, 409)));
+        return render_copy_form(state, source, destination, form_url, Some((Text::NameTaken, 409)));
     };
     let id = inserted.id;
     let status_path = format!("{COPIES}/{id}");
     let source_repo = source.map(|repo| repo.storage_id.clone());
     let source_url = source_url.to_owned();
     let submission = future_to_promise(async move {
-        let result = storage.start_copy(&storage_id, &destination.description, source_repo.as_deref(), &source_url).await;
+        let result = match (credential, &storage) {
+            (Some(credential), GitStorage::Native(origin)) => {
+                origin.start_copy_with_credential(&storage_id, None, &source_url, Some(&credential.for_origin())).await
+            }
+            (None, _) => storage.start_copy(&storage_id, &destination.description, source_repo.as_deref(), &source_url).await,
+            (Some(_), _) => Err(CopyError::Rejected),
+        };
         let next = match result.err() {
             // Another repo owns this opaque identity. Never inspect or delete it.
             Some(CopyError::Collision) => "failed",
@@ -556,7 +626,7 @@ async fn start_copy(
             &[js_text(next), js_int(id)],
         )
         .await
-        .map_err(|error| js_text(&error.to_string()))?;
+        .map_err(|_| JsValue::NULL)?;
         Ok(JsValue::UNDEFINED)
     });
     // Keep recording the provider outcome if the initiating client disconnects.
@@ -573,7 +643,7 @@ async fn start_copy(
     let Some(job) = load_copy(state, id).await? else {
         return copy_not_found(state);
     };
-    reconcile_copy(state, &job).await?;
+    reconcile_copy(&state.env, &state.db()?, &job).await?;
     if let Some(url) = load_copy(state, id).await?.and_then(|job| ready_path(state, &job)) {
         return redirect(&url);
     }
@@ -586,7 +656,7 @@ async fn load_copy(state: &AppState, id: i64) -> Result<Option<CopyJob>> {
     };
     db::first(
         &state.db()?,
-        &format!("{COPY_SELECT} WHERE c.id = ? AND c.owner_id = ?"),
+        &format!("SELECT {COPY_COLUMNS} FROM repo_copies WHERE id = ? AND owner_id = ?"),
         &[js_int(id), js_int(owner_id)],
     )
     .await
@@ -638,7 +708,7 @@ pub async fn copies(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
     let page = PageRequest::new(&req, "page");
     let mut copies = db::all(
         &state.db()?,
-        &format!("{COPY_SELECT} WHERE c.owner_id = ? AND c.state <> 'ready' ORDER BY c.id DESC LIMIT ? OFFSET ?"),
+        &format!("SELECT {COPY_COLUMNS} FROM repo_copies WHERE owner_id = ? AND state <> 'ready' ORDER BY id DESC LIMIT ? OFFSET ?"),
         &[js_int(owner_id), js_int(PAGE_SIZE as i64 + 1), js_int(page.offset())],
     )
     .await?;
@@ -672,7 +742,7 @@ async fn copy_status_page(ctx: RouteContext<AppState>, poll: bool) -> Result<Res
         return copy_not_found(state);
     };
     if poll {
-        let unknown = reconcile_copy(state, &job).await?;
+        let unknown = reconcile_copy(&state.env, &state.db()?, &job).await?;
         let Some(job) = load_copy(state, id).await? else {
             return copy_not_found(state);
         };
@@ -681,18 +751,48 @@ async fn copy_status_page(ctx: RouteContext<AppState>, poll: bool) -> Result<Res
     copy_response(state, job, false)
 }
 
+/// Poll a bounded rotation. Claiming a check advances even jobs whose storage is unavailable.
+pub(crate) async fn reconcile_pending(env: &Env) -> Result<()> {
+    let database = env.d1("DB")?;
+    let checked_at = now();
+    let jobs: Vec<CopyJob> = db::all(
+        &database,
+        &format!(
+            "UPDATE repo_copies SET last_checked_at = ?1
+             WHERE id IN (
+                SELECT id FROM repo_copies
+                 WHERE state IN ('starting', 'pending', 'discard')
+                   AND (last_checked_at IS NULL OR last_checked_at <= ?2)
+                 ORDER BY COALESCE(last_checked_at, created_at), id LIMIT ?3
+             ) RETURNING {COPY_COLUMNS}"
+        ),
+        &[js_int(checked_at), js_int(checked_at - COPY_CHECK_INTERVAL), js_int(COPY_CHECK_LIMIT)],
+    )
+    .await?;
+    let mut failed = false;
+    for job in jobs {
+        if reconcile_copy(env, &database, &job).await.is_err() {
+            failed = true;
+            console_error!("Unable to reconcile Git copy {}", job.id);
+        }
+    }
+    if failed {
+        return Err(Error::RustError("Git copy reconciliation failed".into()));
+    }
+    Ok(())
+}
+
 /// Returns true when storage could not confirm the operation's current state.
-async fn reconcile_copy(state: &AppState, job: &CopyJob) -> Result<bool> {
+async fn reconcile_copy(env: &Env, database: &D1Database, job: &CopyJob) -> Result<bool> {
     if matches!(job.state.as_str(), "failed" | "ready") {
         return Ok(false);
     }
-    let Ok(storage) = GitStorage::from_env(&state.env, job.git_backend) else {
+    let Ok(storage) = GitStorage::from_env(env, job.git_backend) else {
         return Ok(true);
     };
-    let database = state.db()?;
     let id = [js_int(job.id)];
     if job.state == "discard" {
-        return clean_copy(state, &storage, job).await;
+        return clean_copy(database, &storage, job).await;
     }
 
     // An interrupted start can be recovered by the opaque storage ID.
@@ -700,17 +800,15 @@ async fn reconcile_copy(state: &AppState, job: &CopyJob) -> Result<bool> {
     let starting = job.state == "starting";
     match storage.copy_info(&job.storage_id).await {
         Err(error) => match error {
-            CopyError::Missing if starting => {
-                return Ok(now().saturating_sub(job.created_at) >= 30);
+            CopyError::Missing if now().saturating_sub(job.created_at) >= COPY_START_GRACE => {
+                db::run(
+                    database,
+                    "UPDATE repo_copies SET state = 'failed' WHERE id = ? AND state = ?",
+                    &[js_int(job.id), js_text(&job.state)],
+                )
+                .await?;
             }
-            CopyError::Missing => {
-                db::run(&database, "UPDATE repo_copies SET state = 'failed' WHERE id = ? AND state = 'pending'", &id).await?;
-            }
-            CopyError::Pending => {
-                if starting {
-                    db::run(&database, "UPDATE repo_copies SET state = 'pending' WHERE id = ? AND state = 'starting'", &id).await?;
-                }
-            }
+            CopyError::Missing | CopyError::Pending => {}
             _ => return Ok(true),
         },
         Ok(info) => {
@@ -718,10 +816,10 @@ async fn reconcile_copy(state: &AppState, job: &CopyJob) -> Result<bool> {
                 return Ok(true);
             }
             if starting {
-                db::run(&database, "UPDATE repo_copies SET state = 'pending' WHERE id = ? AND state = 'starting'", &id).await?;
+                db::run(database, "UPDATE repo_copies SET state = 'pending' WHERE id = ? AND state = 'starting'", &id).await?;
             }
             db::run(
-                &database,
+                database,
                 "INSERT INTO repos (owner_id, name, description, default_branch, artifacts_repo, artifacts_remote,
                                     visibility, forked_from, created_at, updated_at, private_fork, git_backend)
                  SELECT c.owner_id, c.name, c.description, ?2, c.artifacts_repo, ?3,
@@ -735,26 +833,26 @@ async fn reconcile_copy(state: &AppState, job: &CopyJob) -> Result<bool> {
             .await?;
             // Claim cleanup only if publication did not occur and access was lost.
             let discard = db::first::<Identity>(
-                &database,
+                database,
                 "UPDATE repo_copies SET state = 'discard' WHERE id = ? AND state = 'pending'
                    AND id IN (SELECT id FROM repo_copy_access WHERE allowed = 0) RETURNING id",
                 &id,
             )
             .await?;
             if discard.is_some() {
-                return clean_copy(state, &storage, job).await;
+                return clean_copy(database, &storage, job).await;
             }
         }
     }
     Ok(false)
 }
 
-async fn clean_copy(state: &AppState, storage: &GitStorage, job: &CopyJob) -> Result<bool> {
+async fn clean_copy(database: &D1Database, storage: &GitStorage, job: &CopyJob) -> Result<bool> {
     if storage.delete(&job.storage_id).await.is_err() {
         return Ok(true);
     }
     db::run(
-        &state.db()?,
+        database,
         "UPDATE repo_copies SET state = 'failed' WHERE id = ? AND state = 'discard'",
         &[js_int(job.id)],
     )

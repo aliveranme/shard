@@ -17,6 +17,74 @@ struct Creation<'a> {
     kind: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     source: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    credential: Option<&'a ImportCredential<'a>>,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub(crate) enum ImportCredential<'a> {
+    Basic { username: &'a str, password: &'a str },
+    Bearer { token: &'a str },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum WriteError {
+    Missing,
+    Stale,
+    Conflict,
+    Rejected,
+    Unsupported,
+    Unavailable,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RefWrite<'a> {
+    reference: &'a str,
+    new_oid: &'a str,
+    old_oid: &'a str,
+}
+
+#[derive(Serialize)]
+struct HeadWrite<'a> {
+    reference: &'a str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MergeInputs<'a> {
+    reference: &'a str,
+    base_oid: &'a str,
+    head_oid: &'a str,
+}
+
+#[derive(Serialize)]
+struct MergeWrite<'a> {
+    #[serde(flatten)]
+    inputs: MergeInputs<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct RemoteRepo<'a> {
+    pub(crate) remote: &'a str,
+    pub(crate) token: &'a str,
+}
+
+#[derive(Serialize)]
+struct RemoteMerge<'a> {
+    #[serde(flatten)]
+    inputs: MergeInputs<'a>,
+    target: &'a RemoteRepo<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<&'a RemoteRepo<'a>>,
+}
+
+#[derive(Deserialize)]
+struct MergeResult {
+    oid: String,
 }
 
 #[derive(Deserialize)]
@@ -72,16 +140,27 @@ impl NativeGit {
         if !valid_id(id) {
             return Err(Error::RustError("Invalid native Git repository ID".into()));
         }
-        let mut init = RequestInit { method, ..Default::default() };
-        if let Some(creation) = creation {
-            init.headers.set("Content-Type", "application/json")?;
-            init.body = Some(serde_json::to_string(&creation)?.into());
-        }
+        let init = match creation {
+            Some(creation) => json_post(&creation)?,
+            None => RequestInit { method, ..Default::default() },
+        };
         self.send(&format!("{}/v1/repos/{id}", self.origin), init).await
     }
 
+    async fn write(&self, path: &str, payload: &impl Serialize) -> std::result::Result<Response, WriteError> {
+        let init = json_post(payload).map_err(|_| WriteError::Unavailable)?;
+        self.send(&format!("{}{path}", self.origin), init).await.map_err(|_| WriteError::Unavailable)
+    }
+
+    pub(crate) async fn merge_remote(
+        &self, reference: &str, base_oid: &str, head_oid: &str, target: &RemoteRepo<'_>, source: Option<&RemoteRepo<'_>>,
+    ) -> std::result::Result<String, WriteError> {
+        let payload = RemoteMerge { inputs: MergeInputs { reference, base_oid, head_oid }, target, source };
+        merge_result(self.write("/v1/artifacts/merge", &payload).await?).await
+    }
+
     pub(crate) async fn create(&self, id: &str) -> Result<CreatedRepo> {
-        let response = self.control(id, Method::Post, Some(Creation { kind: "create", source: None })).await?;
+        let response = self.control(id, Method::Post, Some(Creation { kind: "create", source: None, credential: None })).await?;
         if response.status_code() != 201 {
             return Err(unexpected(response));
         }
@@ -97,9 +176,15 @@ impl NativeGit {
     }
 
     pub(crate) async fn start_copy(&self, id: &str, source: Option<&str>, url: &str) -> std::result::Result<(), CopyError> {
+        self.start_copy_with_credential(id, source, url, None).await
+    }
+
+    pub(crate) async fn start_copy_with_credential(
+        &self, id: &str, source: Option<&str>, url: &str, credential: Option<&ImportCredential<'_>>,
+    ) -> std::result::Result<(), CopyError> {
         let creation = match source {
-            Some(source) => Creation { kind: "fork", source: Some(source) },
-            None => Creation { kind: "import", source: Some(url) },
+            Some(source) => Creation { kind: "fork", source: Some(source), credential },
+            None => Creation { kind: "import", source: Some(url), credential },
         };
         let response = self.control(id, Method::Post, Some(creation)).await.map_err(|_| CopyError::Unknown)?;
         match response.status_code() {
@@ -125,6 +210,27 @@ impl NativeRepo {
         let mut url = Url::parse(&format!("{}/v1/repos/{}/{endpoint}", self.client.origin, self.id))?;
         url.query_pairs_mut().extend_pairs(params.iter().copied());
         self.client.send(url.as_str(), RequestInit::default()).await
+    }
+
+    async fn write(&self, endpoint: &str, payload: &impl Serialize) -> std::result::Result<Response, WriteError> {
+        self.client.write(&format!("/v1/repos/{}/{endpoint}", self.id), payload).await
+    }
+
+    pub(crate) async fn write_ref(
+        &self, reference: &str, new_oid: &str, old_oid: &str,
+    ) -> std::result::Result<(), WriteError> {
+        write_status(self.write("ref", &RefWrite { reference, new_oid, old_oid }).await?)
+    }
+
+    pub(crate) async fn set_head(&self, reference: &str) -> std::result::Result<(), WriteError> {
+        write_status(self.write("head", &HeadWrite { reference }).await?)
+    }
+
+    pub(crate) async fn merge(
+        &self, reference: &str, base_oid: &str, head_oid: &str, source_id: Option<&str>,
+    ) -> std::result::Result<String, WriteError> {
+        let payload = MergeWrite { inputs: MergeInputs { reference, base_oid, head_oid }, source: source_id };
+        merge_result(self.write("merge", &payload).await?).await
     }
 
     pub(crate) async fn log(&self, reference: &str, limit: u32) -> Result<Vec<Commit>> {
@@ -208,6 +314,48 @@ impl NativeRepo {
         }
         self.client.send(&url, init).await
     }
+}
+
+fn json_post(payload: &impl Serialize) -> Result<RequestInit> {
+    let init = RequestInit {
+        method: Method::Post,
+        body: Some(serde_json::to_string(payload)?.into()),
+        ..Default::default()
+    };
+    init.headers.set("Content-Type", "application/json")?;
+    Ok(init)
+}
+
+fn write_error(response: Response) -> WriteError {
+    let status = response.status_code();
+    discard(response);
+    match status {
+        404 => WriteError::Missing,
+        409 => WriteError::Conflict,
+        412 => WriteError::Stale,
+        422 => WriteError::Rejected,
+        501 => WriteError::Unsupported,
+        _ => WriteError::Unavailable,
+    }
+}
+
+fn write_status(response: Response) -> std::result::Result<(), WriteError> {
+    if response.status_code() != 204 {
+        return Err(write_error(response));
+    }
+    discard(response);
+    Ok(())
+}
+
+async fn merge_result(mut response: Response) -> std::result::Result<String, WriteError> {
+    if response.status_code() != 200 {
+        return Err(write_error(response));
+    }
+    let result: MergeResult = response.json().await.map_err(|_| WriteError::Unavailable)?;
+    if !is_object_id(&result.oid) || result.oid.bytes().all(|byte| byte == b'0') {
+        return Err(WriteError::Unavailable);
+    }
+    Ok(result.oid)
 }
 
 fn invalid_origin() -> Error {

@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page settings-main">
+  <header class="page-head">
+    <div>
+      <h1 class="page-title">{{ chrome.locale.t(crate::i18n::LifecycleText::MetadataImport) }}</h1>
+      <p class="page-sub"><a href="/{{ repo.owner_name }}/{{ repo.name }}">{{ repo.full_name() }}</a></p>
+    </div>
+  </header>
+  {% if let Some(message) = error %}<p class="alert alert--error" role="alert">{{ message }}</p>{% endif %}
+  {% if let Some(message) = success %}<p class="alert alert--success" role="status">{{ message }}</p>{% endif %}
+  <form class="form card card--narrow" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/settings/metadata-import" enctype="multipart/form-data">
+    {% include "csrf.html" %}
+    <p class="card__sub">{{ chrome.locale.t(crate::i18n::LifecycleText::MetadataHelp) }}</p>
+    {% if let Some(url) = source %}
+    <p class="card__sub">{{ chrome.locale.t(crate::i18n::LifecycleText::MetadataSource) }} <code class="refs-row__hash">{{ url }}</code></p>
+    {% endif %}
+    <div class="field">
+      <label for="bundle">{{ chrome.locale.t(crate::i18n::LifecycleText::MetadataBundle) }}</label>
+      <textarea class="textarea mono" id="bundle" name="bundle" maxlength="262144" required spellcheck="false" dir="ltr" aria-describedby="bundle-limits"></textarea>
+      <span class="help" id="bundle-limits">{{ chrome.locale.t(crate::i18n::LifecycleText::MetadataLimits) }}</span>
+    </div>
+    <div class="form__actions">
+      <button class="btn btn--primary" type="submit">{{ chrome.locale.t(crate::i18n::LifecycleText::MetadataImport) }}</button>
+      <a class="btn btn--ghost" href="/{{ repo.owner_name }}/{{ repo.name }}/settings/lifecycle">{{ chrome.locale.t(crate::i18n::LifecycleText::BackToRepositorySettings) }}</a>
+    </div>
+  </form>
+  <details class="card card--narrow">
+    <summary>{{ chrome.locale.t(crate::i18n::LifecycleText::MetadataFormat) }}</summary>
+    <div class="markup">
+      <p>{{ chrome.locale.t(crate::i18n::LifecycleText::MetadataSourceFields) }}</p>
+      <p>{{ chrome.locale.t(crate::i18n::LifecycleText::MetadataThreadFields) }}</p>
+      <p>{{ chrome.locale.t(crate::i18n::LifecycleText::MetadataPullFields) }}</p>
+      <p>{{ chrome.locale.t(crate::i18n::LifecycleText::MetadataReleaseFields) }}</p>
+      <p>{{ chrome.locale.t(crate::i18n::LifecycleText::MetadataHistory) }}</p>
+    </div>
+    <div class="code-panel">
+      <pre tabindex="0"><code>{
+  "version": 1,
+  "source": {"url": "https://example.org/owner/project.git", "private": false},
+  "threads": [
+    {
+      "number": 1,
+      "title": "Fix the build",
+      "body": "The build fails after updating the toolchain.",
+      "state": "open",
+      "created_at": 1700000000,
+      "updated_at": 1700000000
+    },
+    {
+      "number": 2,
+      "title": "Update the build configuration",
+      "state": "merged",
+      "created_at": 1700000000,
+      "updated_at": 1700000200,
+      "closed_at": 1700000200,
+      "pull": {
+        "base_branch": "main",
+        "head_branch": "build-fix",
+        "merged_at": 1700000200,
+        "merge_commit": "dddddddddddddddddddddddddddddddddddddddd",
+        "snapshot": {
+          "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "head_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "merge_base": "cccccccccccccccccccccccccccccccccccccccc"
+        }
+      }
+    }
+  ],
+  "releases": [
+    {
+      "tag": "v1.0.0",
+      "commit": "dddddddddddddddddddddddddddddddddddddddd",
+      "title": "Version 1.0.0",
+      "notes": "Updated the build configuration.",
+      "created_at": 1700000300,
+      "published_at": 1700000400
+    }
+  ]
+}</code></pre>
+    </div>
+  </details>
+</div>
+{% endblock %}

@@ -18,6 +18,19 @@
       <label for="source-url">{{ chrome.locale.t(crate::i18n::LifecycleText::SourceUrl) }}</label>
       <input class="input" id="source-url" name="source_url" type="url" value="{{ source_url }}" maxlength="2048" required>
     </div>
+    <p class="card__sub" id="source-credentials-help">{{ chrome.locale.t(crate::i18n::LifecycleText::ImportCredentialHelp) }}</p>
+    <div class="field">
+      <label for="source-username">{{ chrome.locale.t(crate::i18n::LifecycleText::SourceUsername) }}</label>
+      <input class="input" id="source-username" name="source_username" maxlength="128" autocomplete="off" aria-describedby="source-credentials-help">
+    </div>
+    <div class="field">
+      <label for="source-password">{{ chrome.locale.t(crate::i18n::LifecycleText::SourcePassword) }}</label>
+      <input class="input" id="source-password" name="source_password" type="password" maxlength="1024" autocomplete="new-password" aria-describedby="source-credentials-help">
+    </div>
+    <div class="field">
+      <label for="source-token">{{ chrome.locale.t(crate::i18n::LifecycleText::SourceToken) }}</label>
+      <input class="input" id="source-token" name="source_token" type="password" maxlength="1024" autocomplete="new-password" aria-describedby="source-credentials-help">
+    </div>
     {% endif %}
     <div class="field">
       <label for="name">{{ chrome.locale.t(crate::i18n::RepoText::RepositoryName) }}</label>
