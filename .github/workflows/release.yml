@@ -1,0 +1,100 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.ref_name }}
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Validate version tag
+        shell: bash
+        run: |
+          number='(0|[1-9][0-9]*)'
+          identifier="($number|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+          if [[ ! "$RELEASE_TAG" =~ ^v$number\.$number\.$number(-$identifier(\.$identifier)*)?$ ]]; then
+            echo 'Use vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-PRERELEASE.' >&2
+            exit 1
+          fi
+      - uses: jdx/mise-action@v5
+      - run: mise run setup
+      - run: mise run check
+      - run: mise run test
+      - name: Package prebuilt Worker
+        shell: bash
+        run: |
+          package_name="shard-${RELEASE_TAG}-worker"
+          export PACKAGE_DIR="$RUNNER_TEMP/$package_name"
+          mkdir -p "$PACKAGE_DIR" "$RUNNER_TEMP/release"
+          cp -R build static migrations "$PACKAGE_DIR/"
+          mise exec -- node <<'JS'
+          const { writeFileSync } = require('node:fs');
+          const { join } = require('node:path');
+          const { rawConfig } = require('wrangler').experimental_readRawConfig({ config: 'wrangler.jsonc' });
+          delete rawConfig.$schema;
+          delete rawConfig.build;
+          writeFileSync(join(process.env.PACKAGE_DIR, 'wrangler.json'), JSON.stringify(rawConfig, null, 2) + '\n');
+          JS
+          mise exec -- node node_modules/wrangler/bin/wrangler.js deploy --config "$PACKAGE_DIR/wrangler.json" --dry-run --outdir "$RUNNER_TEMP/bundled"
+          cd "$RUNNER_TEMP/release"
+          tar -C "$RUNNER_TEMP" -czf "$package_name.tar.gz" "$package_name"
+          sha256sum "$package_name.tar.gz" > "$package_name.tar.gz.sha256"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: shard-worker-release
+          path: ${{ runner.temp }}/release/*
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
+
+  publish:
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: shard-worker-release
+          path: ${{ runner.temp }}/release
+      - name: Publish GitHub Release
+        working-directory: ${{ runner.temp }}/release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          package_name="shard-${RELEASE_TAG}-worker.tar.gz"
+          sha256sum --check "$package_name.sha256"
+          draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null || true)
+          if [[ "$draft" == false ]]; then
+            exit 0
+          fi
+          flags=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            flags+=(--prerelease --latest=false)
+          fi
+          if [[ "$draft" != true ]]; then
+            gh release create "$RELEASE_TAG" --draft --verify-tag --generate-notes "${flags[@]}"
+          fi
+          gh release upload "$RELEASE_TAG" "$package_name" "$package_name.sha256" --clobber
+          gh release edit "$RELEASE_TAG" --draft=false "${flags[@]}"

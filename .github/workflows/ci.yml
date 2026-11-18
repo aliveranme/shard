@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: ['**']
   pull_request:
 
 permissions:
@@ -14,8 +15,10 @@ jobs:
     env:
       WRANGLER_SEND_METRICS: "false"
     steps:
-      - uses: actions/checkout@v4
-      - uses: jdx/mise-action@v3
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@v5
       - run: mise run setup
       - run: mise run check
       - run: mise run test

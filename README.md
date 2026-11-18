@@ -185,6 +185,26 @@ The Artifacts binding uses Wrangler's local simulator (git 2.32+ must be on
 `cargo check --target wasm32-unknown-unknown` type-checks; `mise run build`
 produces `build/index.js`.
 
+## Project releases
+
+Pushing a tag such as `v0.1.0` or `v0.1.0-rc.1` runs the release workflow. It
+checks the Worker, runs the isolated Git and HTTP tests, and attaches a
+prebuilt Worker archive and SHA-256 checksum to the GitHub release.
+Suffixes such as `-rc.1` mark prereleases. The workflow runs Wrangler's dry
+run against the archive before publishing it.
+
+To deploy the prebuilt archive, verify its checksum and extract it. Use the
+pinned Node version from [`.node-version`](.node-version) and set the D1 name
+and ID in the extracted `wrangler.json`, following the
+[local checkout setup](#deploy-from-a-local-checkout). From the extracted directory:
+
+```sh
+npx --yes wrangler@4.164.0 d1 migrations apply DB --remote
+npx --yes wrangler@4.164.0 deploy
+```
+
+[Release workflow](.github/workflows/release.yml) · [GitHub Releases](https://github.com/aliveranme/shard/releases)
+
 ## URL shape
 
 Branch names contain slashes, so branches are a query parameter:
