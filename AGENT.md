@@ -25,9 +25,10 @@ Enforce repository visibility and ownership in handlers and SQL, not just templa
 
 Use the pinned mise toolchain. Standard commands:
 
-- `mise run setup`: install dependencies and the wasm target (first setup only).
+- `mise run setup` installs the pinned Rust target, IDE tools and dependencies.
 - `mise run db:migrate`: apply local D1 migrations.
 - `mise run check`: type-check the wasm Worker.
+- `mise run lint` runs Clippy for the wasm Worker. `mise run fmt` runs rustfmt.
 - `mise run build`: produce the Worker bundle.
 - `mise run dev`: run the local simulator at `http://localhost:8787`.
 - `mise run test`: run the HTTP regression suite against an isolated local simulator.

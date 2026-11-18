@@ -9,11 +9,12 @@ CARGO_TERM_COLOR = "always"
 WRANGLER_SEND_METRICS = "false"
 
 [tasks.setup]
-description = "Install the wasm target, worker-build and project dependencies"
+description = "Install the pinned Rust toolchain components, worker-build and Node dependencies"
 run = """
 rustup target add wasm32-unknown-unknown
+rustup component add rust-analyzer rust-src rustfmt clippy
 cargo install worker-build --version 0.9.0 --locked
-cargo fetch
+cargo fetch --locked
 npm ci --no-audit --no-fund
 """
 
@@ -36,7 +37,11 @@ wrangler deploy
 
 [tasks.check]
 description = "Type-check the Worker for wasm32"
-run = "cargo check --target wasm32-unknown-unknown"
+run = "cargo check --locked --target wasm32-unknown-unknown"
+
+[tasks.lint]
+description = "Run Clippy for the wasm Worker"
+run = "cargo clippy --locked --target wasm32-unknown-unknown"
 
 [tasks.test]
 description = "Build and run isolated local HTTP regression tests"

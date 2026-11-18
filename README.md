@@ -41,13 +41,19 @@ wrangler.jsonc      bindings: DB (D1), ARTIFACTS, ASSETS
 ## Local development
 
 ```sh
-mise install          # rust 1.100, node 26.13, wrangler 4.164
-mise run setup        # wasm target, worker-build 0.9, cargo/npm deps
+mise install          # Rust, Node and Wrangler versions pinned by the project
+mise run setup        # WebAssembly target, IDE tools, worker-build and dependencies
 mise run db:migrate   # apply migrations to the local D1
 mise run dev          # wrangler dev on http://localhost:8787
 ```
 
-Run `mise run check` to type-check the Worker and `mise run test` to build and run
+`rust-toolchain.toml` selects the same Rust version for shells and IDEs. Setup
+installs rust-analyzer, Rust sources, rustfmt and Clippy for that toolchain. With
+an editor using rust-analyzer, open the repository root and set its Cargo target
+to `wasm32-unknown-unknown` to match the Worker build.
+
+Run `mise run check` to type-check the Worker, `mise run lint` to run Clippy,
+and `mise run test` to build and run
 the HTTP regression suite. Tests start their own local simulator, apply all
 migrations in a temporary directory, and remove it afterward. They never use
 your development database or a deployed service. `npm test` runs the same suite
