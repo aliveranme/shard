@@ -25,6 +25,7 @@ mod notifications;
 mod repo;
 mod repo_objects;
 mod web;
+mod webhooks;
 
 pub use account::AccountText;
 pub use checks::CheckText;
@@ -37,6 +38,7 @@ pub use notifications::{NotificationAction, NotificationText};
 pub use repo::RepoText;
 pub use repo_objects::RepoObjectText;
 pub use web::WebText;
+pub use webhooks::WebhookText;
 
 pub const LANGUAGE_COOKIE: &str = "shard_lang";
 

@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "repo_header.html" %}
+<div class="page">
+  <header class="page-head">
+    <h1 class="page-title">{{ chrome.locale.t(crate::i18n::WebhookText::Webhooks) }}</h1>
+  </header>
+  <div class="settings-layout">
+    <nav class="settings-nav" aria-label="{{ chrome.locale.t(crate::i18n::RepoText::RepositorySettings) }}">
+      <a href="/{{ repo.owner_name }}/{{ repo.name }}/settings">{{ chrome.locale.t(crate::i18n::RepoText::RepositorySettings) }}</a>
+      <a href="/{{ repo.owner_name }}/{{ repo.name }}/settings/webhooks" aria-current="page">{{ chrome.locale.t(crate::i18n::WebhookText::Webhooks) }}</a>
+    </nav>
+    <div class="settings-main">
+      {% if let Some(message) = error %}
+        <p class="alert alert--error" role="alert">{{ message }}</p>
+      {% endif %}
+      {% if can_create %}
+        <form class="form card" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/settings/webhooks">
+          {% include "csrf.html" %}
+          <div>
+            <h2 class="card__title">{{ chrome.locale.t(crate::i18n::WebhookText::Add) }}</h2>
+            <p class="card__sub">{{ chrome.locale.t(crate::i18n::WebhookText::EventHelp) }}</p>
+          </div>
+          <div class="field">
+            <label for="webhook-endpoint">{{ chrome.locale.t(crate::i18n::WebhookText::Endpoint) }}</label>
+            <input class="input" type="url" id="webhook-endpoint" name="endpoint" maxlength="2048" aria-describedby="webhook-endpoint-help" required>
+            <span class="help" id="webhook-endpoint-help">{{ chrome.locale.t(crate::i18n::WebhookText::EndpointHelp) }}</span>
+          </div>
+          <div class="field">
+            <label for="webhook-label">{{ chrome.locale.t(crate::i18n::WebhookText::Label) }}</label>
+            <input class="input" id="webhook-label" name="label" maxlength="100">
+          </div>
+          <div class="field">
+            <label for="webhook-secret">{{ chrome.locale.t(crate::i18n::WebhookText::Secret) }}</label>
+            <input class="input" type="password" id="webhook-secret" name="secret" autocomplete="new-password" maxlength="1024" aria-describedby="webhook-secret-help" required>
+            <span class="help" id="webhook-secret-help">{{ chrome.locale.t(crate::i18n::WebhookText::SecretHelp) }}</span>
+          </div>
+          <div class="form__actions">
+            <button class="btn btn--primary" type="submit" name="action" value="create">{{ chrome.locale.t(crate::i18n::WebhookText::Add) }}</button>
+          </div>
+        </form>
+      {% else if error.is_none() %}
+        <p class="alert alert--warn" role="status">{{ chrome.locale.t(crate::i18n::WebhookText::KeyUnavailable) }}</p>
+      {% endif %}
+      <section class="form" aria-labelledby="webhook-subscriptions">
+        <h2 class="card__title" id="webhook-subscriptions">{{ chrome.locale.t(crate::i18n::WebhookText::Subscriptions) }}</h2>
+        {% if subscriptions.is_empty() %}
+          <p class="card card--warm">{{ chrome.locale.t(crate::i18n::WebhookText::Empty) }}</p>
+        {% endif %}
+        {% for subscription in subscriptions %}
+          <section class="form card" aria-labelledby="webhook-{{ subscription.id }}">
+            <div>
+              <h3 class="list__title" id="webhook-{{ subscription.id }}">
+                {% if subscription.label.is_empty() %}<bdi>{{ subscription.endpoint_origin }}</bdi>{% else %}<bdi>{{ subscription.label }}</bdi>{% endif %}
+              </h3>
+              {% if !subscription.label.is_empty() %}<p class="list__meta"><bdi>{{ subscription.endpoint_origin }}</bdi></p>{% endif %}
+              <span class="badge">
+                {% if subscription.disabled_at.is_some() %}{{ chrome.locale.t(crate::i18n::WebhookText::Disabled) }}{% else %}{{ chrome.locale.t(crate::i18n::WebhookText::Active) }}{% endif %}
+              </span>
+            </div>
+            <details>
+              <summary>{{ chrome.locale.t(crate::i18n::WebhookText::Recent) }}</summary>
+              {% if subscription.recent.is_empty() %}
+                <p class="list__meta">{{ chrome.locale.t(crate::i18n::WebhookText::NoDeliveries) }}</p>
+              {% else %}
+                <ul role="list">
+                  {% for delivery in subscription.recent %}
+                    <li class="list__row">
+                      <div class="list__main">
+                        <div class="list__title">
+                          {{ chrome.locale.t(delivery.kind_text()) }}
+                          {% if let Some(number) = delivery.issue_number %} #{{ number }}{% endif %}
+                          {% if let Some(name) = delivery.ref_name %} <bdi class="mono">{{ name }}</bdi>{% endif %}
+                        </div>
+                        <div class="list__meta">
+                          {{ chrome.locale.t(crate::i18n::WebhookText::Delivery) }} <code>{{ delivery.id }}</code> ·
+                          {{ chrome.locale.t(crate::i18n::WebhookText::Attempts) }} {{ delivery.attempts }} ·
+                          {{ delivery.created_at.relative(chrome.locale) }}
+                        </div>
+                      </div>
+                      <span class="badge">
+                        {{ chrome.locale.t(delivery.state_text()) }}
+                        {% if let Some(status) = delivery.last_status %} · HTTP {{ status }}{% endif %}
+                      </span>
+                    </li>
+                  {% endfor %}
+                </ul>
+              {% endif %}
+            </details>
+            {% if subscription.disabled_at.is_none() %}
+              <form method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/settings/webhooks">
+                {% include "csrf.html" %}
+                <input type="hidden" name="subscription_id" value="{{ subscription.id }}">
+                <button class="btn btn--ghost btn--sm" type="submit" name="action" value="disable">{{ chrome.locale.t(crate::i18n::WebhookText::Disable) }}</button>
+              </form>
+            {% endif %}
+            <details>
+              <summary class="btn btn--ghost btn--sm">{{ chrome.locale.t(crate::i18n::WebhookText::Remove) }}</summary>
+              <form class="form" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/settings/webhooks">
+                {% include "csrf.html" %}
+                <input type="hidden" name="subscription_id" value="{{ subscription.id }}">
+                <p class="help">{{ chrome.locale.t(crate::i18n::WebhookText::DeleteHelp) }}</p>
+                <div class="form__actions">
+                  <button class="btn btn--danger btn--sm" type="submit" name="action" value="delete">{{ chrome.locale.t(crate::i18n::WebhookText::Delete) }}</button>
+                </div>
+              </form>
+            </details>
+          </section>
+        {% endfor %}
+      </section>
+    </div>
+  </div>
+</div>
+{% endblock %}
