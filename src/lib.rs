@@ -7,6 +7,7 @@ use worker::*;
 mod account;
 mod artifacts;
 mod auth;
+mod avatar;
 mod collaborators;
 mod crypto;
 mod ctx;
@@ -33,7 +34,7 @@ mod util;
 mod webhooks;
 
 use ctx::AppState;
-use i18n::{CommonText, LANGUAGE_COOKIE, LanguagePreference, Locale};
+use i18n::{AccountText, CommonText, LANGUAGE_COOKIE, LanguagePreference, Locale};
 
 fn routes(router: Router<AppState>) -> Router<AppState> {
     router
@@ -57,7 +58,10 @@ fn routes(router: Router<AppState>) -> Router<AppState> {
         .get_async("/user/notifications", notifications::inbox)
         .post_async("/user/notifications/:id/read", notifications::read_one)
         .post_async("/user/notifications/read-all", notifications::read_all)
+        .get_async("/user/avatar/:id", avatar::show)
         .get_async("/user/settings", handlers::auth_handlers::account_page)
+        .post_async("/user/settings/avatar", handlers::auth_handlers::update_avatar)
+        .post_async("/user/settings/avatar/remove", handlers::auth_handlers::remove_avatar)
         .post_async("/user/settings/delete", handlers::auth_handlers::delete_account)
         .post_async("/user/settings/email", handlers::auth_handlers::update_email)
         .post_async("/user/settings/email/verify", recovery::request_verification)
@@ -99,6 +103,7 @@ fn routes(router: Router<AppState>) -> Router<AppState> {
         .get_async("/:owner/:repo/src/*path", handlers::repos::tree)
         .get_async("/:owner/:repo/blob/*path", handlers::repos::file)
         .get_async("/:owner/:repo/raw/*path", handlers::repos::raw)
+        .get_async("/:owner/:repo/media/*path", handlers::repos::media)
         .get_async("/:owner/:repo/settings", handlers::repos::settings)
         .post_async("/:owner/:repo/settings", handlers::repos::update_settings)
         .post_async("/:owner/:repo/settings/delete", handlers::repos::delete)
@@ -231,19 +236,27 @@ async fn serve(mut req: Request, env: Env, worker_ctx: Context, request_id: &str
 
     if req.method() == Method::Post && !machine {
         let rejected = if !security::same_origin(&req) {
-            Some((403, CommonText::FormOrigin))
+            Some((403, locale.t(CommonText::FormOrigin)))
         } else {
-            match req.form_data().await {
+            let form = if req.path().trim_end_matches('/') == "/user/settings/avatar" {
+                avatar::read_form(&mut req).await.map_err(|error| match error {
+                    avatar::FormError::Invalid => (400, locale.t(AccountText::AvatarInvalidForm)),
+                    avatar::FormError::TooLarge => (413, locale.t(AccountText::AvatarTooLarge)),
+                })
+            } else {
+                req.form_data().await.map_err(|_| (400, locale.t(CommonText::UnreadableForm)))
+            };
+            match form {
                 Ok(form) if security::valid_form(&form, &state.csrf_token) => {
                     state.form = Some(std::rc::Rc::new(form));
                     None
                 }
-                Ok(_) => Some((403, CommonText::FormExpired)),
-                Err(_) => Some((400, CommonText::UnreadableForm)),
+                Ok(_) => Some((403, locale.t(CommonText::FormExpired))),
+                Err(error) => Some(error),
             }
         };
         if let Some((status, message)) = rejected {
-            let response = templates::error_response(&chrome, status, locale.t(message))?;
+            let response = templates::error_response(&chrome, status, message)?;
             return security::finish(response, &state.csrf_token, previous_csrf.as_deref(), secure, locale);
         }
     }

@@ -69,6 +69,8 @@ For rust-analyzer, set the Cargo target to `wasm32-unknown-unknown`.
 - **Organize work** with searchable issues, labels, milestones, assignees, and
   a permission-aware inbox. Record CI results on commits or receive signed
   issue and review events through webhooks.
+- **Customize your profile** with a public avatar. Upload, replace or remove it
+  in **Account settings**. Avatars appear on profiles and in discussions.
 
 ## Architecture
 
@@ -258,6 +260,35 @@ Batch API, so a normal Git LFS push or checkout cannot transfer the file itself.
 `GIT_LFS_SKIP_SMUDGE=1 git clone "$SHARD_CLONE_URL"` can retrieve the pointers.
 Configure a separate LFS endpoint with `lfs.url` to transfer the actual files.
 [Git LFS server discovery](https://github.com/git-lfs/git-lfs/blob/main/docs/api/server-discovery.md)
+
+## Images and issue references
+
+An avatar can be a PNG, JPEG or WebP image up to 512 KiB and 1024 × 1024 px.
+Shard saves a metadata-free PNG thumbnail up to 128 × 128 px in D1.
+
+README files, Markdown file previews and discussions render Markdown images and
+links. For example:
+
+```markdown
+![Field map](images/site-map.png)
+[Survey notes](docs/survey.md#measurements)
+![Public status](https://assets.example.org/status.png)
+
+<img src="images/site-map.png" alt="Field map" width="320">
+
+See #12, GH-12, and mira/field-journal#34.
+```
+
+Repository-relative URLs in a file use the displayed commit and resolve from that
+file's directory. In a discussion they use the repository root on its default
+branch. A line review uses the saved commit and directory for the reviewed side.
+Repository media uses the same access checks as source files. The browser loads
+external HTTPS images without a referrer. HTML image tags can use `src`, `alt`,
+`title`, `width`, and `height`. Shard escapes other HTML tags and discards other
+attributes from rendered images.
+
+Issue references open the issue or pull request with that number in Shard.
+Paste an HTTPS URL to link directly to a GitHub issue or pull request.
 
 ## Interface language
 

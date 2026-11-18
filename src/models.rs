@@ -45,6 +45,7 @@ pub struct User {
     pub is_admin: i64,
     pub locale: Option<String>,
     pub created_at: Ts,
+    pub avatar_id: Option<i64>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -56,6 +57,7 @@ pub struct UserAuth {
     pub is_admin: i64,
     pub created_at: Ts,
     pub locale: Option<String>,
+    pub avatar_id: Option<i64>,
 }
 
 impl UserAuth {
@@ -67,6 +69,7 @@ impl UserAuth {
             is_admin: self.is_admin,
             created_at: self.created_at,
             locale: self.locale.clone(),
+            avatar_id: self.avatar_id,
         }
     }
 }
@@ -111,6 +114,7 @@ pub struct Issue {
     pub state: String,
     pub author_id: Option<i64>,
     pub author_name: Option<String>,
+    pub author_avatar_id: Option<i64>,
     pub created_at: Ts,
     pub updated_at: Ts,
     pub closed_at: Option<Ts>,

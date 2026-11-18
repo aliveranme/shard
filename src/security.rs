@@ -95,11 +95,15 @@ pub fn finish(
         headers.set("Referrer-Policy", "same-origin")?;
     }
     headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")?;
-    headers.set(
-        "Content-Security-Policy",
-        "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self'",
-    )?;
-    headers.set("Cache-Control", "no-store")?;
+    if headers.get("Content-Security-Policy")?.is_none() {
+        headers.set(
+            "Content-Security-Policy",
+            "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self'",
+        )?;
+    }
+    if headers.get("Cache-Control")?.is_none() {
+        headers.set("Cache-Control", "no-store")?;
+    }
     if secure {
         headers.set("Strict-Transport-Security", "max-age=31536000")?;
     }

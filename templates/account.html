@@ -13,6 +13,31 @@
     <div class="settings-main">
       {% if let Some(message) = success %}<div class="alert alert--success" role="status">{{ message }}</div>{% endif %}
       {% if let Some(message) = error %}<div class="alert alert--error" role="alert">{{ message }}</div>{% endif %}
+      <section class="card" aria-labelledby="avatar-title">
+        <h2 id="avatar-title" class="card__title">{{ chrome.locale.t(crate::i18n::AccountText::Avatar) }}</h2>
+        <p id="avatar-help" class="card__sub">{{ chrome.locale.t(crate::i18n::AccountText::AvatarHelp) }}</p>
+        <div class="avatar-settings">
+          {% let avatar = chrome.avatar %}
+          {% let avatar_class = "avatar--lg" %}
+          {% include "avatar.html" %}
+          <div class="avatar-settings__forms">
+            <form class="form" method="post" action="/user/settings/avatar" enctype="multipart/form-data">
+              {% include "csrf.html" %}
+              <div class="field">
+                <label for="avatar-file">{{ chrome.locale.t(crate::i18n::AccountText::AvatarFile) }}</label>
+                <input class="input" id="avatar-file" type="file" name="avatar" accept="image/png,image/jpeg,image/webp" aria-describedby="avatar-help" required>
+              </div>
+              <button class="btn btn--primary" type="submit">{% if avatar.id.is_some() %}{{ chrome.locale.t(crate::i18n::AccountText::AvatarReplace) }}{% else %}{{ chrome.locale.t(crate::i18n::AccountText::AvatarUpload) }}{% endif %}</button>
+            </form>
+            {% if avatar.id.is_some() %}
+            <form method="post" action="/user/settings/avatar/remove">
+              {% include "csrf.html" %}
+              <button class="btn btn--quiet" type="submit">{{ chrome.locale.t(crate::i18n::AccountText::AvatarRemove) }}</button>
+            </form>
+            {% endif %}
+          </div>
+        </div>
+      </section>
       <div class="card">
         <p class="card__sub">
           {% if email_verified %}{{ chrome.locale.t(crate::i18n::AccountText::EmailVerified) }}{% else %}{{ chrome.locale.t(crate::i18n::AccountText::EmailUnverified) }}{% endif %}

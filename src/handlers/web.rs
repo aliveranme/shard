@@ -5,7 +5,7 @@ use crate::i18n::{CommonText, WebText};
 use crate::models::{Repo, Ts};
 use crate::pagination::{query_url, PageRequest, PAGE_SIZE};
 use crate::templates::{
-    render, Chrome, GlobalIssueRow, GlobalIssuesPage, HomePage, ProfilePage, RepoRow,
+    render, Avatar, Chrome, GlobalIssueRow, GlobalIssuesPage, HomePage, ProfilePage, RepoRow,
 };
 use crate::util;
 use worker::*;
@@ -86,10 +86,13 @@ pub async fn profile(req: Request, ctx: RouteContext<AppState>) -> Result<Respon
         id: i64,
         username: String,
         created_at: Ts,
+        avatar_id: Option<i64>,
     }
     let user: Option<Profile> = db::first(
         &database,
-        "SELECT id, username, created_at FROM users WHERE username = ? COLLATE NOCASE",
+        "SELECT u.id, u.username, u.created_at, av.user_id AS avatar_id
+           FROM users u LEFT JOIN user_avatars av ON av.user_id = u.id
+          WHERE u.username = ? COLLATE NOCASE",
         &[util::js_text(&username)],
     )
     .await?;
@@ -118,6 +121,7 @@ pub async fn profile(req: Request, ctx: RouteContext<AppState>) -> Result<Respon
     let page = ProfilePage {
         chrome: Chrome::new(&state),
         title: page_title(&[&user.username]),
+        avatar: Avatar::new(&user.username, user.avatar_id),
         name: user.username.clone(),
         joined: user.created_at,
         repos: repos.iter().map(RepoRow::from_repo).collect(),

@@ -7,10 +7,23 @@ use askama::Template;
 use worker::*;
 
 #[derive(Clone, Default)]
+pub struct Avatar {
+    pub id: Option<i64>,
+    pub initial: String,
+}
+
+impl Avatar {
+    pub fn new(name: &str, id: Option<i64>) -> Self {
+        let initial = if id.is_none() { initial(name) } else { String::new() };
+        Self { id, initial }
+    }
+}
+
+#[derive(Clone, Default)]
 pub struct Chrome {
     pub signed_in: bool,
     pub user_name: String,
-    pub user_initial: String,
+    pub avatar: Avatar,
     pub csrf_token: String,
     pub locale: Locale,
 }
@@ -21,12 +34,7 @@ impl Chrome {
             Some(u) => Self {
                 signed_in: true,
                 user_name: u.username.clone(),
-                user_initial: u
-                    .username
-                    .chars()
-                    .next()
-                    .map(|c| c.to_uppercase().to_string())
-                    .unwrap_or_default(),
+                avatar: Avatar::new(&u.username, u.avatar_id),
                 csrf_token: state.csrf_token.clone(),
                 locale: state.locale,
             },
@@ -122,7 +130,7 @@ pub struct GlobalIssueRow {
 pub struct DiscussionRow {
     pub id: i64,
     pub author: Option<String>,
-    pub initial: String,
+    pub avatar: Avatar,
     pub date: Ts,
     pub html: String,
     pub action: String,
@@ -191,6 +199,7 @@ pub struct ProfilePage {
     pub chrome: Chrome,
     pub title: String,
     pub name: String,
+    pub avatar: Avatar,
     pub joined: crate::models::Ts,
     pub repos: Vec<RepoRow>,
     pub is_self: bool,
@@ -265,6 +274,8 @@ pub struct FilePage {
     pub path_url: String,
     pub crumbs: Vec<Crumb>,
     pub content: String,
+    pub markdown_html: Option<String>,
+    pub image_url: Option<String>,
     pub is_binary: bool,
     pub truncated: bool,
     pub size: String,
@@ -313,7 +324,7 @@ pub struct IssuePage {
     pub repo: Repo,
     pub tab: String,
     pub issue: Issue,
-    pub author_initial: String,
+    pub author_avatar: Avatar,
     pub body_html: String,
     pub discussion: Vec<DiscussionRow>,
     pub pagination: Pagination,

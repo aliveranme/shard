@@ -23,7 +23,9 @@
       <span>{{ size }}</span>
       <a class="btn btn--ghost btn--sm" href="/{{ repo.owner_name }}/{{ repo.name }}/raw/{{ path_url }}?branch={{ branch_url }}">{{ chrome.locale.t(crate::i18n::RepoText::RawFile) }}</a>
     </div>
-    {% if is_binary %}
+    {% if let Some(image) = image_url %}
+      <img class="repo-image" src="{{ image }}" alt="{% if let Some(file) = crumbs.last() %}{{ file.name }}{% else %}{{ chrome.locale.t(crate::i18n::RepoText::File) }}{% endif %}" decoding="async">
+    {% else if is_binary %}
       <div class="empty">
         <p class="empty__title">{{ chrome.locale.t(crate::i18n::RepoText::BinaryFile) }}</p>
         <p>{{ chrome.locale.t(crate::i18n::RepoText::NoPreview) }}</p>
@@ -31,7 +33,11 @@
       </div>
     {% else %}
       {% if truncated %}<div class="alert alert--warn" style="margin:0;border-radius:0">{{ chrome.locale.t(crate::i18n::RepoText::TruncatedPreview) }}</div>{% endif %}
-      <pre tabindex="0"><code>{{ content }}</code></pre>
+      {% if let Some(markdown) = markdown_html %}
+        <div class="markup">{{ markdown|safe }}</div>
+      {% else %}
+        <pre tabindex="0"><code>{{ content }}</code></pre>
+      {% endif %}
     {% endif %}
   </div>
 </div>

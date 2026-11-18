@@ -1,5 +1,8 @@
 <article class="comment" id="review-{{ entry.id }}">
   <div class="comment__head">
+    {% let avatar = entry.avatar %}
+    {% let avatar_class = "" %}
+    {% include "avatar.html" %}
     <div class="comment__who">
       <strong>{{ entry.author.as_deref().unwrap_or(chrome.locale.t(crate::i18n::CommonText::Ghost)) }}</strong>
       <div class="comment__time">{{ chrome.locale.review_decision(entry.action.as_str()) }} · {{ entry.date.relative(chrome.locale) }}</div>

@@ -19,6 +19,8 @@ const expiredSecret = "shard_expired_regression_credential";
 const expiredSession = "expired-regression-session";
 const legacySecret = "legacy-regression-credential";
 const sha = (value) => createHash("sha256").update(value).digest("hex");
+const fixturePng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAIAAAASFvFNAAAAFElEQVR4nGNcG27DAAZMEIqBgQEAFy0BRO8F2yUAAAAASUVORK5CYII=", "base64");
+const replacementPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAIAAAASFvFNAAAAFElEQVR4nGO0Sq9jAAMmCMXAwAAAFCYBI8t2+TUAAAAASUVORK5CYII=", "base64");
 
 // Each run owns its database, Artifacts namespace state and temporary config.
 // No test writes to .wrangler/state or contacts a deployed Worker.
@@ -261,6 +263,49 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       assert.equal(anonymousChoice.headers.get("content-language"), "en");
     });
 
+    await t.test("avatars require the owning session and support replacement and removal", async () => {
+      const member = await signup("avatarfixture");
+      const profile = "/avatarfixture";
+      const uploadPath = "/user/settings/avatar";
+      const guest = new Client();
+      const upload = (bytes, { csrf = member.csrf, origin = base } = {}) => {
+        const form = new FormData();
+        if (csrf) form.set("csrf_token", csrf);
+        form.set("avatar", new Blob([bytes], { type: "image/png" }), "portrait.png");
+        return member.request(uploadPath, { method: "POST", headers: { Origin: origin }, body: form });
+      };
+      const avatarUrl = (html) => html.match(/src="(\/user\/avatar\/\d+)"/)?.[1];
+      assert.equal(avatarUrl((await guest.get(profile)).body), undefined);
+      assert.equal((await upload(fixturePng, { csrf: "" })).status, 403);
+      assert.equal((await upload(fixturePng, { csrf: viewer.csrf })).status, 403);
+      assert.equal((await upload(fixturePng, { origin: "https://elsewhere.example" })).status, 403);
+      assert.equal((await upload(Buffer.from("Not a PNG"))).status, 400);
+      assert.equal((await upload(Buffer.alloc(600 * 1024))).status, 413);
+      redirected(await upload(fixturePng));
+
+      const image = avatarUrl((await guest.get(profile)).body);
+      assert.ok(image, "public profile includes the uploaded avatar");
+      assert.equal(avatarUrl((await member.get("/user/settings")).body), image);
+      const first = await fetch(new URL(image, base));
+      assert.equal(first.status, 200);
+      assert.equal(first.headers.get("content-type"), "image/png");
+      assert.equal(first.headers.get("x-content-type-options"), "nosniff");
+      const firstBytes = Buffer.from(await first.arrayBuffer());
+      assert.deepEqual(firstBytes.subarray(0, 8), fixturePng.subarray(0, 8));
+
+      redirected(await upload(replacementPng));
+      const second = await fetch(new URL(image, base));
+      assert.equal(second.status, 200);
+      assert.notDeepEqual(Buffer.from(await second.arrayBuffer()), firstBytes);
+      redirected(await member.post(`${uploadPath}/remove`, {}));
+      assert.equal((await guest.get(image)).status, 404);
+      assert.equal(avatarUrl((await guest.get(profile)).body), undefined);
+
+      redirected(await upload(fixturePng));
+      redirected(await member.post("/user/settings/delete", { confirm: "avatarfixture", current_password: password }));
+      assert.equal((await guest.get(image)).status, 404);
+    });
+
     await t.test("private repositories and Git credentials keep their access boundary", async () => {
       const anonymous = new Client();
       assert.equal((await anonymous.get(privateRepo)).status, 404);
@@ -344,7 +389,10 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
         await git("-C", worktree, "-c", "core.hooksPath=", "commit", "--no-verify", "-m", `history-${String(i).padStart(2, "0")}`);
       }
       await git("-C", worktree, "checkout", "-b", "feature/readme");
-      await writeFile(join(worktree, "README.md"), "# Updated branch\n<div>literal text</div>");
+      await writeFile(join(worktree, "README.md"), [
+        "# Updated branch", "<div>literal text</div>", "",
+        "![Local plot](figures/map.png)", "", "[Guide](figures/guide.md) · [Folder](figures/)",
+      ].join("\n"));
       await writeFile(join(worktree, "IMAGE.bin"), Buffer.from([0, 1, 2]));
       const largeFile = "long fixture line\n".repeat(16_000) + "raw-download-tail\n";
       await writeFile(join(worktree, "LARGE.txt"), largeFile);
@@ -352,7 +400,14 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       const folder = join(worktree, "docs and examples");
       await mkdir(folder);
       await writeFile(join(folder, "release%20notes.txt"), "A nested file from the slash branch.\n");
-      await git("-C", worktree, "add", "FEATURE.md", "README.md", "IMAGE.bin", "LARGE.txt", "docs and examples");
+      const figures = join(worktree, "figures");
+      await mkdir(figures);
+      await writeFile(join(figures, "map.png"), fixturePng);
+      await writeFile(join(figures, "guide.md"), [
+        "# Field guide", "", "<IMG", '  SRC="./map.png" alt="Local &amp; remote" width="320">',
+        "", "[Feature](../FEATURE.md)",
+      ].join("\n"));
+      await git("-C", worktree, "add", "FEATURE.md", "README.md", "IMAGE.bin", "LARGE.txt", "docs and examples", "figures");
       await git("-C", worktree, "-c", "core.hooksPath=", "commit", "--no-verify", "-m", "feature note");
       await git("-C", worktree, "remote", "add", "origin", `${base}/suiteowner/history.git`);
       await git("-C", worktree, "push", "origin", "main", "feature/readme");
@@ -421,6 +476,28 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       assert.match(branchPage.body, /<option value="feature\/readme"\s+selected>/);
       assert.match(branchPage.body, /<button[^>]*type="submit">Browse branch<\/button>/);
       assert.match(branchPage.body, /href="\/suiteowner\/history\/blob\/FEATURE.md\?branch=feature%2Freadme"/);
+      const media = branchPage.body.match(/src="([^"]+\/media\/[^"]+)"/)?.[1];
+      assert.ok(media, "the README renders a repository image");
+      assert.equal(new URL(media, base).searchParams.get("branch"), featureCommit);
+      const image = await fetch(new URL(media, base));
+      assert.equal(image.status, 200);
+      assert.equal(image.headers.get("content-type"), "image/png");
+      assert.equal(image.headers.get("cross-origin-resource-policy"), "same-origin");
+      assert.deepEqual(Buffer.from(await image.arrayBuffer()), fixturePng);
+      const guideLink = branchPage.body.match(/href="([^"]+)"[^>]*>Guide<\/a>/)?.[1];
+      assert.ok(guideLink, "the README links to the Markdown file");
+      const guide = await fetch(new URL(guideLink, base));
+      assert.equal(guide.status, 200);
+      const guideBody = await guide.text();
+      assert.match(guideBody, /<h1[^>]*>Field guide<\/h1>/);
+      assert.ok(guideBody.includes(media), "a nested Markdown image resolves from the file's directory");
+      assert.match(guideBody, /<img\b[^>]*alt="Local &amp; remote"[^>]*width="320"/);
+      const folderLink = branchPage.body.match(/href="([^"]+)"[^>]*>Folder<\/a>/)?.[1];
+      assert.ok(folderLink, "the README links to the directory");
+      assert.match((await owner.get(folderLink)).body, /file-row__name mono">map\.png/);
+      const imagePreview = await owner.get(`${history}/blob/figures/map.png?branch=${featureCommit}`);
+      assert.ok(imagePreview.body.includes(media), "image files render an inline preview");
+      assert.equal((await owner.get(`${history}/media/FEATURE.md?branch=${featureCommit}`)).status, 404);
       const treeLink = branchPage.body.match(/href="([^"\n]*\/src\/docs%20and%20examples\?branch=[^"\n]+)"/)?.[1];
       assert.ok(treeLink, "branch page links to the encoded directory");
       const tree = await owner.get(treeLink);
@@ -472,6 +549,10 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       });
       redirected(createdPull);
       const pullUrl = createdPull.location;
+      const number = pullUrl.split("/").at(-1);
+      const issueAlias = await owner.get(`${history}/issues/${number}`);
+      redirected(issueAlias);
+      assert.equal(issueAlias.location, pullUrl);
       const pull = await owner.get(pullUrl);
       assert.match(pull.body, /\?file=FEATURE.md#file-diff/);
       assert.match(pull.body, /\?file=docs%20and%20examples%2Frelease%2520notes.txt#file-diff/);
@@ -632,12 +713,14 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       const seed = join(temporary, "private-seed");
       await git(ownerToken, "init", "--initial-branch=main", seed);
       await writeFile(join(seed, "README.md"), "# Private source\n");
-      await git(ownerToken, "-C", seed, "add", "README.md");
+      await writeFile(join(seed, "map.png"), fixturePng);
+      await git(ownerToken, "-C", seed, "add", "README.md", "map.png");
       await git(ownerToken, "-C", seed, "-c", "core.hooksPath=", "-c", "user.name=Regression",
         "-c", "user.email=git@example.test", "-c", "commit.gpgsign=false", "commit", "-m", "Private fixture");
       await git(ownerToken, "-C", seed, "push", remote, "main");
       const oid = (await git(ownerToken, "-C", seed, "rev-parse", "HEAD")).stdout.trim();
       assert.equal((await outsider.get(`${privateRepo}/archive/${oid}`)).status, 404);
+      assert.equal((await outsider.get(`${privateRepo}/media/map.png?branch=${oid}`)).status, 404);
       const checkPath = `${privateRepo}/commit/${oid}/checks`;
       const checkResult = (client, token, state, summary) => client.request(checkPath, {
         method: "POST",
@@ -650,6 +733,7 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       assert.equal((await outsider.post(access, { username: "suiteviewer", role: "read" })).status, 404);
       redirected(await owner.post(access, { username: "suiteviewer", role: "read" }));
       assert.match((await viewer.get(privateRepo)).body, /Private source/);
+      assert.equal((await viewer.get(`${privateRepo}/media/map.png?branch=${oid}`)).headers.get("content-type"), "image/png");
       assert.equal((await viewer.get(access)).status, 403);
       assert.equal((await viewer.request(`${privateRef}git-receive-pack`, auth(readerToken))).status, 401);
       assert.equal((await checkResult(viewer, readerToken, "pending")).status, 403);
@@ -700,6 +784,7 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
 
       redirected(await owner.post(`${access}/revoke`, { username: "suiteviewer" }));
       assert.equal((await viewer.get(privateRepo)).status, 404);
+      assert.equal((await viewer.get(`${privateRepo}/media/map.png?branch=${oid}`)).status, 404);
       assert.equal((await viewer.request(`${privateRef}git-upload-pack`, auth(readerToken))).status, 404);
       assert.equal((await viewer.request(`${privateRef}git-receive-pack`, auth(readerToken))).status, 404);
       assert.equal((await viewer.post(`/user/notifications/${notification}/read`, {})).status, 404);
@@ -783,7 +868,13 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       for (let i = 0; i < 21; i++) {
         redirected(await owner.post(`${publicRepo}/issues/new`, {
           title: `Pagination issue ${String(i).padStart(2, "0")}`,
-          body: i === 0 ? '<script>alert(1)</script> [unsafe](javascript:alert(1))' : "A real issue body.",
+          body: i === 0 ? '<script>alert(1)</script> [unsafe](javascript:alert(1))'
+            : i === 1 ? [
+              "See #1, GH-1 and suiteowner/private-vault#1.", "",
+              "https://github.com/octocat/Hello-World/issues/7", "",
+              'Inline <img src="https://assets.example.test/diagram.png" alt="External figure" onclick="return false">',
+              "", "`#99999` stays code.",
+            ].join("\n") : "A real issue body.",
         }));
       }
       redirected(await owner.post(`${privateRepo}/issues/new`, { title: "private-issue-marker", body: "Keep private" }));
@@ -802,6 +893,18 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       assert.doesNotMatch(detail.body, /<script>/);
       assert.doesNotMatch(detail.body, /href="javascript:/i);
       assert.match(detail.body, /&lt;script&gt;/);
+      const threaded = await viewer.get(`${publicRepo}/issues/2`);
+      assert.match(threaded.body, /href="\/suiteowner\/project\/issues\/1"[^>]*>#1<\/a>/);
+      assert.match(threaded.body, /href="\/suiteowner\/project\/issues\/1"[^>]*>GH-1<\/a>/);
+      assert.match(threaded.body, /href="\/suiteowner\/private-vault\/issues\/1"[^>]*>suiteowner\/private-vault#1<\/a>/);
+      assert.equal((await viewer.get(`${privateRepo}/issues/1`)).status, 404);
+      assert.match(threaded.body, /href="https:\/\/github\.com\/octocat\/Hello-World\/issues\/7"/);
+      const externalImage = threaded.body.match(/<img[^>]*src="https:\/\/assets\.example\.test\/diagram\.png"[^>]*>/)?.[0];
+      assert.ok(externalImage, "remote Markdown images render in the discussion");
+      assert.match(externalImage, /referrerpolicy="no-referrer"/);
+      assert.doesNotMatch(externalImage, /onclick=/);
+      assert.match(externalImage, /alt="External figure"/);
+      assert.match(threaded.body, /<code>#99999<\/code>/);
     });
 
     await t.test("discussion pagination reaches every comment and rejects wrong-kind mutations", async () => {

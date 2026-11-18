@@ -372,7 +372,7 @@ pub async fn reset_submit(_req: Request, ctx: RouteContext<AppState>) -> Result<
     if signed_out {
         page.chrome.signed_in = false;
         page.chrome.user_name.clear();
-        page.chrome.user_initial.clear();
+        page.chrome.avatar = Default::default();
     }
     page.notice = Some(state.locale.t(AccountText::PasswordReset));
     let mut response = page.response(200)?;

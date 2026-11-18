@@ -1,0 +1,7 @@
+<span class="avatar {{ avatar_class }}" aria-hidden="true">
+  {%- if let Some(id) = avatar.id -%}
+    <img class="avatar__image" src="/user/avatar/{{ id }}" alt="">
+  {%- else -%}
+    {{ avatar.initial }}
+  {%- endif -%}
+</span>

@@ -263,8 +263,11 @@ test("forge native Git over loopback", { timeout: 240_000 }, async (t) => {
       await localGit("checkout", "-b", branch);
       await mkdir(join(worktree, folder));
       await writeFile(join(worktree, folder, filename), notes);
+      const figure = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3"/></svg>';
+      await writeFile(join(worktree, folder, "figure.svg"), figure);
+      await writeFile(join(worktree, "README.md"), `${mainContent}\n![Release figure](release%20notes/figure.svg)\n`);
       await writeFile(join(worktree, "marker.bin"), binary);
-      await localGit("add", folder, "marker.bin");
+      await localGit("add", folder, "marker.bin", "README.md");
       await localGit("commit", "-m", "Add release files", "-m", "Preserve this commit message body.");
       const featureOid = await localGit("rev-parse", "HEAD");
       await localGit("tag", "-a", tag, "-m", "Native Git release");
@@ -285,7 +288,8 @@ test("forge native Git over loopback", { timeout: 240_000 }, async (t) => {
       assert.equal(refs.status, 200);
       assert.ok(refs.body.includes(`branch=${encodeURIComponent(branch)}`));
       assert.ok(refs.body.includes(tag));
-      assert.match(refs.body, new RegExp(`${tagOid}</code></div>\\s*<div[^>]*>[^<]*<code>${featureOid}</code>`));
+      const tagRow = refs.body.match(new RegExp(`<bdi[^>]*>${tag}</bdi>([\\s\\S]*?)</li>`))?.[1];
+      assert.ok(tagRow?.includes(tagOid) && tagRow.includes(featureOid), "the annotated tag shows its object and target");
       const directory = await guest.get(`${project}/src/${encodeURIComponent(folder)}${branchQuery}`);
       assert.equal(directory.status, 200);
       assert.ok(directory.body.includes(`/blob/${textPath}${branchQuery}`), "nested file link preserves path and branch");
@@ -300,6 +304,15 @@ test("forge native Git over loopback", { timeout: 240_000 }, async (t) => {
       assert.equal(binaryRaw.status, 200);
       assert.equal(binaryRaw.headers.get("content-type"), "application/octet-stream");
       assert.deepEqual(Buffer.from(await binaryRaw.arrayBuffer()), binary);
+      const snapshot = await guest.get(`${project}${branchQuery}`);
+      const figureUrl = snapshot.body.match(/src="([^"]+\/media\/[^"]+)" alt="Release figure"/)?.[1];
+      assert.ok(figureUrl, "the native backend renders the README image link");
+      assert.equal(new URL(figureUrl, base).searchParams.get("branch"), featureOid);
+      const image = await request(new URL(figureUrl, base));
+      assert.equal(image.status, 200);
+      assert.equal(image.headers.get("content-type"), "image/svg+xml");
+      assert.match(image.headers.get("content-security-policy"), /^sandbox(?:;|$)/);
+      assert.equal(await image.text(), figure);
       const history = await guest.get(`${project}/commits${branchQuery}`);
       assert.equal(history.status, 200);
       assert.match(history.body, /Add release files[\s\S]*Native Git initial commit/);

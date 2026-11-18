@@ -10,7 +10,9 @@
   {% if chrome.signed_in %}
     <a class="btn btn--ghost btn--sm" href="/new">{{ chrome.locale.t(crate::i18n::CommonText::NewRepository) }}</a>
     <a class="nav__user" href="/user/settings" title="{{ chrome.locale.t(crate::i18n::CommonText::AccountSettings) }}">
-      <span class="avatar avatar--sm" aria-hidden="true">{{ chrome.user_initial }}</span>
+      {% let avatar = chrome.avatar %}
+      {% let avatar_class = "avatar--sm" %}
+      {% include "avatar.html" %}
       <span>{{ chrome.user_name }}</span>
     </a>
     <form method="post" action="/user/logout">

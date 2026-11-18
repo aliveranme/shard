@@ -1,5 +1,6 @@
 use super::common::page_title;
 use crate::auth;
+use crate::avatar::{AvatarImage, UploadError};
 use crate::ctx::AppState;
 use crate::crypto;
 use crate::db;
@@ -253,9 +254,47 @@ pub async fn account_page(req: Request, ctx: RouteContext<AppState>) -> Result<R
         Some("email") => Some(state.locale.t(AccountText::EmailUpdated)),
         Some("password") => Some(state.locale.t(AccountText::PasswordUpdated)),
         Some("verification-requested") => Some(state.locale.t(AccountText::VerificationRequested)),
+        Some("avatar") => Some(state.locale.t(AccountText::AvatarUpdated)),
+        Some("avatar-removed") => Some(state.locale.t(AccountText::AvatarRemoved)),
         _ => None,
     };
     render_account(&state, user.email.clone(), success, None).await
+}
+
+pub async fn update_avatar(_req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
+    let state = &ctx.data;
+    let Some(user) = &state.user else {
+        return util::redirect("/user/login?next=/user/settings");
+    };
+    let image = match AvatarImage::from_form(state.form()?).await {
+        Ok(image) => image,
+        Err(error) => {
+            let (status, message) = match error {
+                UploadError::Missing => (400, AccountText::AvatarMissing),
+                UploadError::Invalid => (400, AccountText::AvatarInvalid),
+                UploadError::TooLarge => (413, AccountText::AvatarTooLarge),
+                UploadError::Dimensions => (413, AccountText::AvatarDimensions),
+            };
+            let response = render_account(state, user.email.clone(), None, Some(state.locale.t(message))).await?;
+            return Ok(response.with_status(status));
+        }
+    };
+    image.save(state, user.id).await?;
+    util::redirect("/user/settings?updated=avatar")
+}
+
+pub async fn remove_avatar(_req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
+    let state = &ctx.data;
+    let Some(user_id) = state.user_id() else {
+        return util::redirect("/user/login?next=/user/settings");
+    };
+    db::run(
+        &state.db()?,
+        "DELETE FROM user_avatars WHERE user_id = ?",
+        &[util::js_int(user_id)],
+    )
+    .await?;
+    util::redirect("/user/settings?updated=avatar-removed")
 }
 
 pub async fn update_email(_req: Request, ctx: RouteContext<AppState>) -> Result<Response> {

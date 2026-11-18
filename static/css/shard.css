@@ -606,6 +606,18 @@ a.list__row:hover { background-color: var(--hover); text-decoration: none; }
 }
 .input:hover, .select:hover, .textarea:hover { background-color: var(--inset); }
 .input:focus, .select:focus, .textarea:focus { box-shadow: var(--active-ring); }
+.input[type="file"] { min-inline-size: 0; color: var(--secondary); }
+.input::file-selector-button {
+  margin-inline-end: 8px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: var(--radius-tag);
+  background-color: var(--inset);
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+}
+.input::file-selector-button:hover { background-color: var(--hover); }
 .select { padding-inline-end: 32px; }
 
 @supports (appearance: base-select) and selector(::picker(select)) {
@@ -841,7 +853,7 @@ a.file-row:hover { background-color: var(--hover); text-decoration: none; }
   color: var(--muted);
   font-size: var(--type-meta);
 }
-.code-panel pre {
+.code-panel > pre {
   margin: 0;
   padding: 16px;
   overflow: auto;
@@ -849,7 +861,7 @@ a.file-row:hover { background-color: var(--hover); text-decoration: none; }
   font-size: var(--type-meta);
   line-height: 1.65;
 }
-.code-panel pre:focus-visible, .repo-instructions pre:focus-visible { outline-offset: -2px; }
+.code-panel > pre:focus-visible, .repo-instructions pre:focus-visible { outline-offset: -2px; }
 
 /* ── Markdown ──────────────────────────────────────────────── */
 
@@ -858,6 +870,7 @@ a.file-row:hover { background-color: var(--hover); text-decoration: none; }
 .markup h1 { font-size: var(--type-title); }
 .markup h2, .markup h3 { font-size: var(--type-section); }
 .markup > :is(h1, h2, h3):not(:first-child) { margin-top: 24px; }
+.code-panel > .markup { padding: 16px; }
 .markup p { color: var(--secondary); }
 .markup ul, .markup ol { margin-bottom: 0; padding-inline-start: 24px; color: var(--secondary); }
 .markup li + li { margin-top: 4px; }
@@ -887,7 +900,14 @@ a.file-row:hover { background-color: var(--hover); text-decoration: none; }
 .markup table { border-collapse: collapse; width: 100%; font-size: var(--type-body); }
 .markup th, .markup td { text-align: start; padding: 8px 12px; border-bottom: 1px solid var(--border); }
 .markup th { background: var(--inset); font-weight: var(--weight-label); }
-.markup img { border-radius: var(--radius-control); }
+.markup img { display: inline-block; height: auto; vertical-align: middle; border-radius: var(--radius-control); }
+.code-panel > .repo-image {
+  max-width: calc(100% - 32px);
+  max-height: min(70dvh, 48rem);
+  margin: 16px auto;
+  border-radius: var(--radius-control);
+  object-fit: contain;
+}
 .markup hr { border: 0; border-top: 1px solid var(--border); margin: 24px 0; }
 
 .readme { margin-top: 16px; }
@@ -950,6 +970,7 @@ a.file-row:hover { background-color: var(--hover); text-decoration: none; }
   flex: none;
   width: 32px;
   height: 32px;
+  overflow: hidden;
   border-radius: 50%;
   background: var(--inset);
   color: var(--secondary);
@@ -959,6 +980,20 @@ a.file-row:hover { background-color: var(--hover); text-decoration: none; }
 }
 .avatar--sm { width: 24px; height: 24px; font-size: var(--type-meta); }
 .avatar--lg { width: 72px; height: 72px; font-size: var(--type-title); }
+.avatar__image { width: 100%; height: 100%; object-fit: cover; }
+.avatar-settings {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-block-start: 16px;
+}
+.avatar-settings__forms {
+  flex: 1 1 14rem;
+  display: grid;
+  min-inline-size: 0;
+  gap: 8px;
+}
 
 .side-card { padding: 16px; min-width: 0; }
 .side-card__title { font-size: var(--type-section); margin-bottom: 12px; }

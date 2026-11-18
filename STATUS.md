@@ -3,7 +3,7 @@
 Living record of what works, what is missing, and how it was verified.
 Update this file whenever a milestone lands or a limitation changes.
 
-**Snapshot:** 2026-11-18 · proportional UI typography and tabular figures · local development
+**Snapshot:** 2026-11-18 · user avatars, themed pickers, and repository media · local development
 
 | Item | Value |
 |---|---|
@@ -19,6 +19,7 @@ Update this file whenever a milestone lands or a limitation changes.
 | Area | Behavior |
 |---|---|
 | Accounts | Registration, login throttling, password-confirmed settings changes, account deletion with an ownership guard, and single-use verification and reset links through the email simulator. Password reset revokes all browser sessions. |
+| Avatars | Account settings accept PNG, JPEG and WebP uploads. The Worker stores one metadata-free PNG thumbnail per user in D1. Profiles, navigation and discussions display it. Removal and account deletion remove the stored image. |
 | Browser security | Session-bound CSRF, same-origin checks, CSP, safe redirects, and origin-only referrers on recovery pages. |
 | Internationalization | Typed English and Simplified Chinese catalogs. Guest language follows the browser cookie or header. Account settings persist across sessions. |
 | Access tokens | Read/write scopes, expiry and revocation, one-time secret display, last usage, and legacy credential compatibility. |
@@ -27,13 +28,15 @@ Update this file whenever a milestone lands or a limitation changes.
 | Web default branch | Settings accept an existing Git branch. Clones follow the Git backend's `HEAD`. |
 | Git transport | Smart HTTP request and response bodies are streamed. Private clone requires a credential, and push also requires write scope and repository write access. |
 | Native Git origin | The `native` Wrangler environment passes Git push, clone, fetch, branch and tag browsing, raw downloads, pull request line diffs, and access revocation. Forked refs and files stay readable after source deletion. |
-| Code browsing | Branch and tag inventory, branch-scoped trees and files, cursor-paginated first-parent history, parent links, and commit-pinned source TAR downloads. File previews read at most 256 KiB, README rendering uses the displayed commit, and raw downloads stream full files. |
+| Code browsing | Branch and tag inventory, branch-scoped trees and files, cursor-paginated first-parent history, parent links, and commit-pinned source TAR downloads. Text previews read at most 256 KiB. README links and images use the displayed commit, and raw downloads stream full files. |
 | Pull requests | Common-ancestor file and line diffs. Authors and writers can explicitly update open comparisons. Review links retain the saved diff and line. Writers can verify integration after pushing a merge. |
 | Issues and search | Edit, label, assign, milestone, close/reopen, and search across titles, bodies, and comments. Paginated discussions preserve actor attribution. |
+| Markdown | READMEs, Markdown files and discussions render repository-relative and HTTPS images, including filtered HTML image tags. Git media inherits repository permissions. Issue and pull numbers are linked with `#12`, `GH-12` and `owner/repo#12` syntax. |
 | Notifications and integrations | Permission-aware inbox, one current CI result per commit and context, and signed webhook retries using stable event IDs. |
 | Maintenance | Per-source limits, `X-Request-ID` correlation, and daily removal of expired sessions, tokens, throttle windows, and email links. |
 | Backups | Rehearsed D1 export and restore into isolated persistence and Git bundle restore with matching refs and object IDs. |
 | UI and development | The shared theme follows system appearance. Geist and Shard Han set proportional UI text with tabular figures. JetBrains Mono sets code and Git identifiers, with two-cell Han glyphs in code. Buttons and form controls use calibrated font metrics. The refs grid marks default branches and wraps full annotated-tag object IDs on narrow screens. |
+| Select controls | Themed pickers use native form and keyboard behavior. Browsers without `base-select` use their system picker. |
 
 ## Remaining work and prerequisites
 
@@ -115,6 +118,7 @@ Architecture decisions and provider evidence are recorded in [PLAN.md](PLAN.md).
 | 2026-11-18 | `mise run build` and Chromium at 1365px, 820px, 390px and 320px | Verified repository search, branch selection, file preview, a submitted line comment and its historical link, the keyboard-operated mobile menu, saved Chinese language preferences and reduced motion. Confirmed a palette override recolors the page logo. |
 | 2026-11-18 | `mise run build`, B-end template audit, and Chromium at 1365px, 1089px, 820px, 390px and 320px | Verified system appearance and reduced motion, the 40-unit dark weight offset, local font rendering, responsive refs and settings, empty states, an annotated tag, a long slash branch and keyboard navigation. Narrow home, code, file, review and login pages fit, with long diffs scrolling internally. |
 | 2026-11-18 | `mise run build`, FontTools, B-end template audit and Chromium at 1365px and 320px | Verified proportional UI text, distinct code and path fonts, equal advances for digits 0–9, and the 40-unit dark weight offset. Home, language settings, repository, file and refs pages fit the tested widths. In 3× captures, the visible text of 12 English and Simplified Chinese buttons, fields, tabs and badges centered within 1.1 CSS px of their controls. |
+| 2026-11-18 | `mise run build`, both local Git backends, B-end template audit, and Chromium at 1365px and 390px | All 27 HTTP and Git tests passed. Verified avatar replacement, removal and account deletion, commit-pinned image links, and private media access after a grant and revocation. Chromium verified upload, branch picker selection and Escape, HTML image rendering, and a reference to a pull request. The external HTTPS image used an isolated browser response. |
 
 ## How to update
 

@@ -1,7 +1,20 @@
 catalog! {
     AccountText {
         Account => "Account", "账号";
-        AccountIntro => "Manage your email and password.", "管理邮箱和密码。";
+        AccountIntro => "Manage your public avatar, email and password.", "管理公开头像、邮箱和密码。";
+        Avatar => "Profile avatar", "个人头像";
+        AvatarHelp => "Your avatar is public. Choose a PNG, JPEG or WebP image up to 512 KiB and 1024 × 1024 pixels.", "头像公开可见。请选择不超过 512 KiB、尺寸不超过 1024 × 1024 像素的 PNG、JPEG 或 WebP 图片。";
+        AvatarFile => "Image file", "图片文件";
+        AvatarUpload => "Upload avatar", "上传头像";
+        AvatarReplace => "Replace avatar", "更换头像";
+        AvatarRemove => "Remove avatar", "移除头像";
+        AvatarUpdated => "Your avatar has been updated.", "头像已更新。";
+        AvatarRemoved => "Your avatar has been removed.", "头像已移除。";
+        AvatarMissing => "Choose an image file to upload.", "请选择要上传的图片文件。";
+        AvatarInvalid => "Choose a valid PNG, JPEG or WebP image.", "请选择有效的 PNG、JPEG 或 WebP 图片。";
+        AvatarInvalidForm => "The avatar upload could not be read. Select the image and try again.", "无法读取上传的头像。请选择图片后重试。";
+        AvatarTooLarge => "The avatar upload is too large. Choose an image up to 512 KiB.", "上传的头像过大。请选择不超过 512 KiB 的图片。";
+        AvatarDimensions => "Choose an image up to 1024 × 1024 pixels that can be decoded within the upload limits.", "请选择尺寸不超过 1024 × 1024 像素且可在上传限制内解码的图片。";
         EmailAddress => "Email address", "电子邮箱";
         Email => "Email", "邮箱";
         CurrentPassword => "Current password", "当前密码";

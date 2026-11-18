@@ -1,10 +1,11 @@
 use super::common::{can_admin, not_found, page_title, visible_repo};
-use crate::git_storage::{Commit, GitBackend, GitStorage, RepoHandle, TreeEntry};
+use crate::git_storage::{is_object_id, Commit, GitBackend, GitStorage, RepoHandle, TreeEntry};
 use crate::ctx::AppState;
 use crate::crypto;
 use crate::db;
 use crate::i18n::{CommonText, RepoText};
-use crate::models::Ts;
+use crate::markdown;
+use crate::models::{Repo, Ts};
 use crate::pagination::{query_url, Pagination, PAGE_SIZE};
 use crate::refs::{self, Inventory, RefsError, RefsPage};
 use crate::templates::{
@@ -194,23 +195,33 @@ pub async fn tree(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
 
     let loaded = async {
         let handle = RepoHandle::open(&state.env, &repo).await?;
-        let Some((entries, commit)) = load_dir(&handle, &branch, &path).await? else {
+        let Some(entry) = load_browse_entry(&handle, &branch, &path).await? else {
             return Ok(None);
         };
-        let readme = match &commit {
-            Some(commit) if path.is_empty() => load_readme(&handle, &commit.hash).await,
+        let readme = match &entry {
+            BrowseEntry::Directory(_, Some(commit)) if path.is_empty() => {
+                load_readme(&handle, &repo, &commit.hash).await
+            }
             _ => None,
         };
-        Ok(Some((entries, commit, readme)))
+        Ok(Some((entry, readme)))
     }
     .await;
     let (files, last_commit, readme, storage_notice) = match loaded {
-        Ok(Some((entries, commit, readme))) => (
+        Ok(Some((BrowseEntry::Directory(entries, commit), readme))) => (
             entries.into_iter().map(|entry| file_row_at(entry, &path)).collect(),
             commit.map(commit_row),
             readme,
             None,
         ),
+        Ok(Some((BrowseEntry::File, _))) => {
+            let mut location = format!("/{}/{}/blob/{}", repo.owner_name, repo.name, util::url_path(&path));
+            if let Some(query) = req.url()?.query() {
+                location.push('?');
+                location.push_str(query);
+            }
+            return util::redirect(&location);
+        }
         Ok(None) => return not_found(&state, state.locale.t(RepoText::DirectoryNotFound)),
         Err(error) => {
             let message = log_failure("load repository directory", error, RepoText::StorageUnavailable);
@@ -257,25 +268,49 @@ pub async fn file(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
         .unwrap_or_else(|| repo.default_branch.clone());
     let branch_url = util::url_path(&branch);
     let is_owner = can_admin(&state, &repo);
+    let is_image = image_mime(&path).is_some();
+    let is_markdown = extension(&path).is_some_and(|extension| {
+        ["md", "markdown", "mdown", "mkd", "mkdn"].iter()
+            .any(|candidate| extension.eq_ignore_ascii_case(candidate))
+    });
     let preview = async {
         let handle = RepoHandle::open(&state.env, &repo).await?;
-        let Some(file) = handle.read_file(&branch, &path, Some(PREVIEW_BYTES)).await? else {
+        let commit = if (is_image || is_markdown) && !is_object_id(&branch) {
+            handle.head_commit(&branch).await?.map(|commit| commit.hash)
+        } else {
+            None
+        };
+        let reference = commit.as_deref().unwrap_or(&branch);
+        let limit = if is_image { 1 } else { PREVIEW_BYTES };
+        let Some(file) = handle.read_file(reference, &path, Some(limit)).await? else {
             return Ok(None);
         };
         let size = file.size();
-        let bytes = file.bytes(PREVIEW_BYTES).await?;
-        Ok(Some((bytes, size, size > PREVIEW_BYTES as u64)))
+        let bytes = if is_image {
+            file.discard();
+            Vec::new()
+        } else {
+            file.bytes(limit).await?
+        };
+        Ok(Some((bytes, size, commit)))
     }.await;
-    let (bytes, size, truncated) = match preview {
+    let (bytes, size, commit) = match preview {
         Ok(Some(preview)) => preview,
         Ok(None) => return not_found(&state, state.locale.t(RepoText::FileNotFound)),
         Err(error) => return storage_error(&state, "read file preview", error),
     };
     let is_binary = bytes.iter().take(8000).any(|byte| *byte == 0);
-    let content = if is_binary {
-        String::new()
+    let context = markdown::Context::new(&repo, commit.as_deref().unwrap_or(&branch), &path);
+    let image_url = is_image.then(|| context.image_url(&path));
+    let (content, markdown_html) = if is_image || is_binary {
+        (String::new(), None)
     } else {
-        String::from_utf8_lossy(&bytes).into_owned()
+        let text = String::from_utf8_lossy(&bytes);
+        if is_markdown {
+            (String::new(), Some(markdown::render_document(&text, &context)))
+        } else {
+            (text.into_owned(), None)
+        }
     };
     let page = FilePage {
         chrome: Chrome::new(&state),
@@ -286,8 +321,10 @@ pub async fn file(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
         path_url: util::url_path(&path),
         crumbs: crumbs(&path),
         content,
+        markdown_html,
+        image_url,
         is_binary,
-        truncated: truncated && !is_binary,
+        truncated: size > PREVIEW_BYTES as u64 && !is_image && !is_binary,
         size: util::human_size(size),
         is_owner,
     };
@@ -295,6 +332,14 @@ pub async fn file(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
 }
 
 pub async fn raw(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
+    file_response(req, ctx, false).await
+}
+
+pub async fn media(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
+    file_response(req, ctx, true).await
+}
+
+async fn file_response(req: Request, ctx: RouteContext<AppState>, inline_image: bool) -> Result<Response> {
     let state = ctx.data.clone();
     let owner = ctx.param("owner").cloned().unwrap_or_default();
     let name = ctx.param("repo").cloned().unwrap_or_default();
@@ -304,6 +349,19 @@ pub async fn raw(req: Request, ctx: RouteContext<AppState>) -> Result<Response> 
     let Some(path) = requested_path(&ctx) else {
         return not_found(&state, state.locale.t(RepoText::FileNotFound));
     };
+    let mime = if inline_image {
+        let Some(mime) = image_mime(&path) else {
+            return not_found(&state, state.locale.t(RepoText::FileNotFound));
+        };
+        if path.contains('\\') || path.chars().any(char::is_control)
+            || path.split('/').any(|part| matches!(part, "" | "." | ".."))
+        {
+            return not_found(&state, state.locale.t(RepoText::FileNotFound));
+        }
+        mime
+    } else {
+        "application/octet-stream"
+    };
     let branch = util::query_param(&req, "branch")
         .unwrap_or_else(|| repo.default_branch.clone());
     let file = async {
@@ -312,11 +370,19 @@ pub async fn raw(req: Request, ctx: RouteContext<AppState>) -> Result<Response> 
     let file = match file {
         Ok(Some(file)) => file,
         Ok(None) => return not_found(&state, state.locale.t(RepoText::FileNotFound)),
-        Err(error) => return storage_error(&state, "read raw file", error),
+        Err(error) => return storage_error(&state, "stream repository file", error),
     };
     let headers = Headers::new();
-    headers.set("Content-Type", "application/octet-stream")?;
+    headers.set("Content-Type", mime)?;
     headers.set("X-Content-Type-Options", "nosniff")?;
+    if inline_image {
+        headers.set("Content-Disposition", "inline")?;
+        headers.set("Cache-Control", "private, no-store")?;
+        headers.set("Cross-Origin-Resource-Policy", "same-origin")?;
+        headers.set("Referrer-Policy", "no-referrer")?;
+        headers.set("Content-Security-Policy", "sandbox; default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'")?;
+        return Ok(file.into_response()?.with_headers(headers));
+    }
     let filename = path.rsplit('/').next().unwrap_or("file");
     let disposition = if filename.bytes().all(|b| (b' '..=b'~').contains(&b) && !matches!(b, b'"' | b'\\' | b'%')) {
         format!("inline; filename=\"{filename}\"")
@@ -325,6 +391,26 @@ pub async fn raw(req: Request, ctx: RouteContext<AppState>) -> Result<Response> 
     };
     headers.set("Content-Disposition", &disposition)?;
     Ok(file.into_response()?.with_headers(headers))
+}
+
+fn extension(path: &str) -> Option<&str> {
+    path.rsplit('/').next()?.rsplit_once('.').map(|(_, extension)| extension)
+}
+
+fn image_mime(path: &str) -> Option<&'static str> {
+    let extension = extension(path)?;
+    [
+        ("png", "image/png"),
+        ("apng", "image/apng"),
+        ("jpg", "image/jpeg"),
+        ("jpeg", "image/jpeg"),
+        ("gif", "image/gif"),
+        ("webp", "image/webp"),
+        ("avif", "image/avif"),
+        ("bmp", "image/bmp"),
+        ("ico", "image/x-icon"),
+        ("svg", "image/svg+xml"),
+    ].into_iter().find_map(|(suffix, mime)| extension.eq_ignore_ascii_case(suffix).then_some(mime))
 }
 
 pub async fn commits(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
@@ -513,14 +599,15 @@ pub async fn delete(_req: Request, ctx: RouteContext<AppState>) -> Result<Respon
     util::redirect("/")
 }
 
-async fn load_dir(
-    handle: &RepoHandle,
-    branch: &str,
-    path: &str,
-) -> Result<Option<(Vec<TreeEntry>, Option<Commit>)>> {
+enum BrowseEntry {
+    Directory(Vec<TreeEntry>, Option<Commit>),
+    File,
+}
+
+async fn load_browse_entry(handle: &RepoHandle, branch: &str, path: &str) -> Result<Option<BrowseEntry>> {
     let commit = handle.head_commit(branch).await?;
     let Some(mut commit) = commit else {
-        return Ok(path.is_empty().then(|| (Vec::new(), None)));
+        return Ok(path.is_empty().then(|| BrowseEntry::Directory(Vec::new(), None)));
     };
     if commit.tree.is_none() {
         // `log` metadata is intentionally light: the tree id comes from readCommit.
@@ -529,21 +616,23 @@ async fn load_dir(
         }
     }
     let Some(tree) = commit.tree.clone() else {
-        return Ok(path.is_empty().then(|| (Vec::new(), Some(commit))));
+        return Ok(path.is_empty().then(|| BrowseEntry::Directory(Vec::new(), Some(commit))));
     };
     let mut tree = tree;
-    for segment in path.split('/').filter(|s| !s.is_empty()) {
+    let mut segments = path.split('/').filter(|s| !s.is_empty()).peekable();
+    while let Some(segment) = segments.next() {
         let entries = handle.read_tree(&tree).await?;
         match entries.into_iter().find(|e| e.name == segment) {
             Some(entry) if entry.is_dir => tree = entry.hash,
+            Some(_) if segments.peek().is_none() => return Ok(Some(BrowseEntry::File)),
             _ => return Ok(None),
         }
     }
     let entries = handle.read_tree(&tree).await?;
-    Ok(Some((entries, Some(commit))))
+    Ok(Some(BrowseEntry::Directory(entries, Some(commit))))
 }
 
-async fn load_readme(handle: &RepoHandle, commit: &str) -> Option<String> {
+async fn load_readme(handle: &RepoHandle, repo: &Repo, commit: &str) -> Option<String> {
     for candidate in ["README.md", "readme.md", "Readme.md", "README"] {
         let content = match handle.read_file(commit, candidate, Some(PREVIEW_BYTES)).await {
             Ok(Some(file)) if file.size() <= PREVIEW_BYTES as u64 => file.bytes(PREVIEW_BYTES).await,
@@ -557,7 +646,7 @@ async fn load_readme(handle: &RepoHandle, commit: &str) -> Option<String> {
         match content {
             Ok(bytes) => {
                 if let Ok(text) = String::from_utf8(bytes) {
-                    return Some(crate::markdown::render(&text));
+                    return Some(markdown::render_document(&text, &markdown::Context::new(repo, commit, candidate)));
                 }
             }
             Err(error) => console_log!("repository: read {candidate}: {error}"),

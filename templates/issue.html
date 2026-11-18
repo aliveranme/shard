@@ -84,7 +84,9 @@
     <div class="issue-main">
       <article class="comment">
         <div class="comment__head">
-          <span class="avatar" aria-hidden="true">{{ author_initial }}</span>
+          {% let avatar = author_avatar %}
+          {% let avatar_class = "" %}
+          {% include "avatar.html" %}
           <div class="comment__who">
             <strong>{{ author }}</strong>
             <div class="comment__time">{{ chrome.locale.opened_when(issue.created_at) }}</div>
@@ -100,7 +102,9 @@
         {% if entry.is_comment %}
           <article class="comment" id="comment-{{ entry.id }}">
             <div class="comment__head">
-              <span class="avatar" aria-hidden="true">{{ entry.initial }}</span>
+              {% let avatar = entry.avatar %}
+              {% let avatar_class = "" %}
+              {% include "avatar.html" %}
               <div class="comment__who">
                 <strong>{{ entry.author.as_deref().unwrap_or(chrome.locale.t(crate::i18n::CommonText::Ghost)) }}</strong>
                 <div class="comment__time" title="{{ entry.date }}">{{ entry.date.relative(chrome.locale) }}</div>

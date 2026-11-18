@@ -295,9 +295,11 @@ async fn detail(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result
         &database,
         "SELECT i.id, i.repo_id, i.number, i.kind, i.title, i.state, i.body,
                 i.author_id, u.username AS author_name, i.created_at, i.updated_at, i.closed_at,
+                av.user_id AS author_avatar_id,
                 (SELECT COUNT(*) FROM comments c WHERE c.issue_id = i.id) AS comment_count
            FROM issues i LEFT JOIN users u ON u.id = i.author_id
-          WHERE i.repo_id = ? AND i.number = ? AND i.kind = ?",
+           LEFT JOIN user_avatars av ON av.user_id = u.id
+          WHERE i.repo_id = ? AND i.number = ? AND (?3 = 'issue' OR i.kind = ?3)",
         &[
             util::js_int(repo.id),
             util::js_int(number),
@@ -308,21 +310,31 @@ async fn detail(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result
     let Some(issue) = issue else {
         return not_found(&state, state.locale.t(CommonText::NotFound));
     };
+    if kind == "issue" && issue.is_pull() {
+        let mut location = format!("/{}/{}/pulls/{number}", repo.owner_name, repo.name);
+        if let Some(query) = req.url()?.query() {
+            location.push('?');
+            location.push_str(query);
+        }
+        return util::redirect(&location);
+    }
 
 
     let request_page = PageRequest::new(&req, "comments_page");
     let mut entries: Vec<DiscussionEntry> = db::all(
         &database,
         "SELECT c.id AS id, c.body, 'comment' AS kind, c.created_at AS created_at, u.username AS author_name, 0 AS item_order,
-                NULL AS base, NULL AS head, NULL AS comparison_version, NULL AS path, NULL AS side, NULL AS line
-           FROM comments c LEFT JOIN users u ON u.id = c.author_id WHERE c.issue_id = ?1
+                av.user_id AS avatar_id, NULL AS base, NULL AS head, NULL AS comparison_version, NULL AS path, NULL AS side, NULL AS line
+           FROM comments c LEFT JOIN users u ON u.id = c.author_id
+           LEFT JOIN user_avatars av ON av.user_id = u.id WHERE c.issue_id = ?1
          UNION ALL
-         SELECT e.id, '', e.event, e.created_at, u.username, 1, NULL, NULL, NULL, NULL, NULL, NULL
+         SELECT e.id, '', e.event, e.created_at, u.username, 1, NULL, NULL, NULL, NULL, NULL, NULL, NULL
            FROM issue_events e LEFT JOIN users u ON u.id = e.actor_id WHERE e.issue_id = ?1
          UNION ALL
-         SELECT p.id, p.body, p.decision, p.created_at, u.username, 2,
+         SELECT p.id, p.body, p.decision, p.created_at, u.username, 2, av.user_id,
                 COALESCE(p.merge_base, p.base_commit), p.head_commit, p.comparison_version, p.path, p.side, p.line
-           FROM pull_reviews p LEFT JOIN users u ON u.id = p.actor_id WHERE p.issue_id = ?1
+           FROM pull_reviews p LEFT JOIN users u ON u.id = p.actor_id
+           LEFT JOIN user_avatars av ON av.user_id = u.id WHERE p.issue_id = ?1
          ORDER BY created_at ASC, item_order ASC, id ASC LIMIT ?2 OFFSET ?3",
         &[
             util::js_int(issue.id),
@@ -447,11 +459,12 @@ async fn detail(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result
     let page = IssuePage {
         chrome: Chrome::new(&state),
         title: page_title(&[&repo.full_name(), &format!("#{number}")]),
-        author_initial: crate::templates::initial(
+        author_avatar: crate::templates::Avatar::new(
             issue.author_name.as_deref().unwrap_or(locale.t(CommonText::Ghost)),
+            issue.author_avatar_id,
         ),
-        body_html: markdown::render(&issue.body),
-        discussion: entries.into_iter().map(|entry| entry.into_row(locale)).collect(),
+        body_html: markdown::render(&issue.body, &markdown::Context::new(&repo, &repo.default_branch, "")),
+        discussion: entries.into_iter().map(|entry| entry.into_row(locale, &repo)).collect(),
         pagination,
         pull,
         changed,
@@ -595,6 +608,7 @@ struct DiscussionEntry {
     body: String,
     kind: String,
     author_name: Option<String>,
+    avatar_id: Option<i64>,
     created_at: Ts,
     base: Option<String>,
     head: Option<String>,
@@ -605,7 +619,7 @@ struct DiscussionEntry {
 }
 
 impl DiscussionEntry {
-    fn into_row(self, locale: Locale) -> DiscussionRow {
+    fn into_row(self, locale: Locale, repo: &Repo) -> DiscussionRow {
         let is_comment = self.kind == "comment";
         let review = self.base.zip(self.head).zip(self.comparison_version).map(|((base, head), version)| ReviewContext {
             base, head, version,
@@ -616,16 +630,33 @@ impl DiscussionEntry {
                 _ => None,
             },
         });
+        let html = if is_comment || (review.is_some() && self.kind != "merge_verified") {
+            let (reference, path) = review.as_ref().and_then(|review| {
+                let line = review.line.as_ref()?;
+                let reference = match line.side.as_str() {
+                    "old" => &review.base,
+                    "new" => &review.head,
+                    _ => return None,
+                };
+                is_object_id(reference).then_some((reference.as_str(), line.path.as_str()))
+            }).unwrap_or((&repo.default_branch, ""));
+            markdown::render(&self.body, &markdown::Context::new(repo, reference, path))
+        } else {
+            String::new()
+        };
         DiscussionRow {
             id: self.id,
-            initial: if is_comment {
-                crate::templates::initial(self.author_name.as_deref().unwrap_or(locale.t(CommonText::Ghost)))
+            avatar: if is_comment || review.is_some() {
+                crate::templates::Avatar::new(
+                    self.author_name.as_deref().unwrap_or(locale.t(CommonText::Ghost)),
+                    self.avatar_id,
+                )
             } else {
-                String::new()
+                Default::default()
             },
             author: self.author_name,
             date: self.created_at,
-            html: if is_comment || (review.is_some() && self.kind != "merge_verified") { markdown::render(&self.body) } else { String::new() },
+            html,
             action: self.kind,
             is_comment,
             review,
