@@ -3,7 +3,7 @@
 Living record of what works, what is missing, and how it was verified.
 Update this file whenever a milestone lands or a limitation changes.
 
-**Snapshot:** 2026-11-18 · page transitions, control motion, and responsive alignment · local development
+**Snapshot:** 2026-11-19 · repository collaboration and Git workflows · local development
 
 | Item | Value |
 |---|---|
@@ -11,7 +11,7 @@ Update this file whenever a milestone lands or a limitation changes.
 | Tooling | Node 26.13.1, Wrangler 4.164.0, mise |
 | Storage | D1 with Cloudflare Artifacts by default or an authenticated native Git origin. Both environments use a private R2 bucket for LFS objects. |
 | UI | Server-rendered Askama templates using `static/css/theme.css` and `static/css/shard.css` |
-| Deployment | Deploy to Cloudflare and Wrangler scripts are configured. Production verification is pending. |
+| Deployment | Both Wrangler environments passed a dry run. Live staging verification is pending. |
 | Source | [aliveranme/shard](https://github.com/aliveranme/shard) |
 
 ## Verified locally
@@ -23,18 +23,19 @@ Update this file whenever a milestone lands or a limitation changes.
 | Browser security | Session-bound CSRF, same-origin checks, CSP, safe redirects, and origin-only referrers on recovery pages. |
 | Internationalization | Typed English and Simplified Chinese catalogs. Guest language follows the browser cookie or header. Account settings persist across sessions. |
 | Access tokens | Read/write scopes, expiry and revocation, one-time secret display, last usage, and legacy credential compatibility. |
-| Repository access | Owners grant read or write access. Private visibility is enforced for Web, Git, search, downloads, and notification reads. Revocation removes access on subsequent requests. |
-| Repository lifecycle | Rename and accepted transfers preserve existing Web and Git routes. Forks preserve Git refs. The import form rejects sources outside its public HTTPS URL policy. |
-| Web default branch | Settings accept an existing Git branch. Clones follow the Git backend's `HEAD`. |
+| Repository access | Owners and organization teams grant read or write access. Web, Git, search, downloads and notification reads enforce current grants. Revocation removes access on subsequent requests. |
+| Repository lifecycle | Rename and accepted transfers preserve Web and Git routes. Forks preserve Git refs. The native origin imports private sources over Basic or Bearer HTTPS and publishes them privately. The minute cron reconciles pending copies. Portable metadata import applies each bundle atomically. |
+| Default branch and refs | Settings update the branch selected by new clones through Shard. Owners can create branches and lightweight tags from commit IDs, and delete individual refs after confirming their names. |
 | Git transport | Smart HTTP request and response bodies are streamed. Private clone requires a credential, and push also requires write scope and repository write access. |
 | Git LFS | Both Git backends transfer objects through the authenticated Batch and basic transfer API. R2 verifies the SHA-256 and size before serving a repository-scoped object. |
 | Native Git origin | The native environment supports Git push, clone, fetch, ref browsing, raw downloads, pull request diffs and access revocation. Forked refs and files stay readable after source deletion. Authenticated origin controls set HEAD, update refs against an expected tip, merge reviewed commits and import private HTTPS repositories. |
 | Code browsing | Branch and tag inventory, branch-scoped trees and files, cursor-paginated first-parent history, parent links, and commit-pinned source TAR downloads. Text previews read at most 256 KiB. README links and images use the displayed commit, and raw downloads stream full files. |
-| Pull requests | Common-ancestor file and line diffs. Authors and writers can explicitly update open comparisons. Review links retain the saved diff and line. Writers can verify integration after pushing a merge. |
-| Issues and search | Edit, label, assign, milestone, close/reopen, and search across titles, bodies, and comments. Paginated discussions preserve actor attribution. |
+| Pull requests | Common-ancestor diffs support source and target branches in distinct repositories. Accepted branch pushes schedule refreshes. Reviews retain the saved comparison and line. Protected branches require the configured approvals and checks. The queue advanced an Artifacts branch by fast-forward and created a two-parent merge from a fork on the native origin. |
+| Issues and search | Issue lists filter by state, label, assignee, milestone and discussion text. Repository search finds paths, text and commit messages on a saved snapshot and reports scan limits. |
 | Markdown | READMEs, Markdown files and discussions render repository-relative and HTTPS images, including filtered HTML image tags. Git media inherits repository permissions. Issue and pull numbers are linked with `#12`, `GH-12` and `owner/repo#12` syntax. |
-| Notifications and integrations | Permission-aware inbox, one current CI result per commit and context, and signed webhook retries using stable event IDs. |
-| Maintenance | Per-source limits, `X-Request-ID` correlation, and daily removal of expired sessions, tokens, throttle windows, and email links. |
+| Forge workflows | Writers draft and publish commit-pinned releases from Git tags. Owners manage issue templates. Users can add issue reactions, watch repositories and list their stars. |
+| Notifications and integrations | The inbox enforces repository access. A CI context has one current result per commit, shown on commit details and reviewed pull requests. Owners can manage signed repository webhooks. Git ref events carry before and after IDs, and retries preserve the event ID, delivery ID, body and signature. |
+| Maintenance | Per-source limits, `X-Request-ID` correlation, and daily removal of expired sessions, tokens, throttle windows, and email links. The minute cron waits for copy reconciliation, comparison refresh, merge queue processing and webhook delivery. |
 | Backups | Rehearsed D1 export and restore into isolated persistence and Git bundle restore with matching refs and object IDs. |
 | UI and development | The shared theme follows system appearance. Geist and Shard Han set proportional UI text with tabular figures. JetBrains Mono sets code and Git identifiers, with two-cell Han glyphs in code. Buttons and form controls use calibrated font metrics. The refs grid marks default branches and wraps full annotated-tag object IDs on narrow screens. |
 | Select controls | Themed pickers use native form and keyboard behavior. Browsers without `base-select` use their system picker. |
@@ -44,20 +45,19 @@ Update this file whenever a milestone lands or a limitation changes.
 
 | Area | Requirement |
 |---|---|
-| Deployment | Artifacts staging needs Workers Paid and an Artifacts namespace. Native staging needs an HTTPS Git origin and a persistent volume. Hosted builds, production Git operations, public imports, scheduled delivery and restore still need staging verification. |
+| Deployment | Artifacts staging needs Workers Paid and its own namespace. Native staging needs an HTTPS Git origin and persistent storage. Use separate D1 and R2 instances and verify hosted Git operations, import, scheduled delivery and backup restore with live bindings. |
 | Email | An onboarded sending domain, an `EMAIL` binding, and an available mailbox to verify real delivery. |
-| Merge automation | Web merges, protected refs and merge queues need a component that can update a validated target ref atomically. Current merge verification relies on reachable commit IDs. |
-| Repository search | Code and commit search require a bounded permission-aware index. A push event subscription can drive ingestion, with staging needed to exercise push delivery. |
-| Forge workflows | Organizations, teams, releases, issue templates, reactions, and watch/star controls. |
-| Git protocol | Verify shallow and partial clones on Artifacts. Shard's Git HTTPS remote does not expose an LFS Batch API. Verify production Artifacts separately. |
-| Operations | Public deployment metrics, webhook retention, token-list pagination, and further CSP tightening after moving inline styles. |
+| Web merges | Divergent and cross-repository Artifacts merges need the configured native Git bridge. Divergent merges require Git 2.38+. Mixed-backend Web merges require manual integration. |
+| Repository search | Scans one selected snapshot with explicit limits. A persistent index and whole-history search remain outside the current search scope. |
+| Git protocol | Artifacts switches through Shard to the classic advertisement when HEAD is overridden. Production partial clone and fetch compatibility require verification. Provider-side updates that bypass Shard need separate event ingestion. |
+| Operations | Live metrics, R2 backup and restore, token-list pagination, and further CSP tightening after moving inline styles. |
 
 Architecture decisions and provider evidence are recorded in [PLAN.md](PLAN.md).
 
 ## Cloudflare Artifacts constraints (verified 2026-11-17)
 
 - Workers binding: namespace `create/get/list/import/delete`; repo `info/createToken/listTokens/revokeToken/fork/log/readCommit/readTree/readBlob/readFile`.
-- Object and history reads use the binding. Shard performs ref discovery through Git HTTPS and records merges verified against Git ancestry.
+- Shard uses the binding for object and history reads and Git HTTPS for ref discovery and supported ref mutations. The optional native bridge handles Artifacts merges that need new Git objects.
 - Commit metadata uses `treeHash`, `authoredAt`, `committedAt`; tree entries are `{ name, mode, type, hash }`.
 - Git tokens: Bearer, or Basic with the token secret before `?expires=`; write scope required for `git-receive-pack` including its `info/refs` advertisement.
 - Artifacts requires Workers Paid; local simulator requires Wrangler ≥ 4.163 and Git ≥ 2.32.
@@ -122,6 +122,12 @@ Architecture decisions and provider evidence are recorded in [PLAN.md](PLAN.md).
 | 2026-11-18 | `mise run build`, FontTools, B-end template audit and Chromium at 1365px and 320px | Verified proportional UI text, distinct code and path fonts, equal advances for digits 0–9, and the 40-unit dark weight offset. Home, language settings, repository, file and refs pages fit the tested widths. In 3× captures, the visible text of 12 English and Simplified Chinese buttons, fields, tabs and badges centered within 1.1 CSS px of their controls. |
 | 2026-11-18 | `mise run build`, both local Git backends, B-end template audit, and Chromium at 1365px and 390px | All 27 HTTP and Git tests passed. Verified avatar replacement, removal and account deletion, commit-pinned image links, and private media access after a grant and revocation. Chromium verified upload, branch picker selection and Escape, HTML image rendering, and a reference to a pull request. The external HTTPS image used an isolated browser response. |
 | 2026-11-18 | `mise run build`, `mise exec -- npm test`, B-end template audit, and Chromium at 1365px, 820px, 390px and 320px | All 27 HTTP and Git tests passed, including native Git SVG media with sandbox CSP. Chromium verified the 200ms page transition, keyboard menu and picker opening and closing, English language save, and reduced-motion behavior. Tested pages fit the viewport, with repository tabs visible and list badges and hashes aligned. |
+| 2026-11-18 | Isolated HTTPS Git source and authenticated native origin | Basic and Bearer imports preserved the commit and file, created private repositories and refused an upstream redirect. |
+| 2026-11-18 | Chromium at 1365px and 390px | Filtered a Git ref, queued a protected merge, created a tag, applied an issue template while preserving the title, reacted to an issue and rendered two uploaded commit avatars. The tested pages fit the viewport in light and dark modes. |
+| 2026-11-19 | Isolated Artifacts queue and webhook regression | Rejected a direct push to a protected branch. Failed CI kept the target unchanged, and successful CI advanced it to the reviewed commit. A tag event retried with the same body, signature and IDs, and disabling the subscription stopped delivery. Fork and repository creation succeeded after the queue ran. |
+| 2026-11-19 | Native Git bridge with an Artifacts-shaped Smart HTTP remote | Merged a divergent fork with both parents and both file changes. A changed target returned 412 and a conflicting merge returned 409 with the target ref intact. |
+| 2026-11-19 | Wrangler dry run, both environments | Both resolved D1, R2, rate limiting and assets. The default environment also resolved Artifacts. |
+| 2026-11-19 | `mise run build` and both loopback regression suites | The Worker built successfully and all 29 tests passed. The Git proxy reads through HTTP EOF after the final packet so the Artifacts origin can finish updating its refs before later Git operations. |
 
 ## How to update
 

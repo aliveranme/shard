@@ -1,14 +1,15 @@
 use super::common::{can_admin, forbidden, not_found, page_title, visible_repo};
-use super::common::can_write;
-use crate::git_storage::{is_object_id, RepoHandle};
+use super::common::{can_write, visible_repo_by_id};
+use crate::git_storage::is_object_id;
 use crate::ctx::AppState;
 use crate::db;
-use crate::i18n::{CommonText, DiscussionText, Locale};
+use crate::i18n::{CommonText, DiscussionText, Locale, RepoFeatureText};
 use crate::markdown;
-use crate::models::{Issue, Pull, PullSnapshot, Repo, Ts};
+use crate::models::{Issue, PullSnapshot, Repo, Ts};
 use crate::pagination::{query_url, PageRequest, PAGE_SIZE};
 use crate::pull_base;
 use crate::pull_diff::{self, Comparison, FileDiff};
+use crate::repo_features;
 use crate::templates::{
     render, Chrome, DiscussionRow, FilePreview, IssueNewPage, IssuePage, IssueRow, IssuesPage, PullView,
     ReviewContext, ReviewLine,
@@ -127,8 +128,11 @@ async fn new_form(_req: Request, ctx: RouteContext<AppState>, kind: &str) -> Res
         title_value: String::new(),
         body_value: String::new(),
         base_value: repo.default_branch.clone(),
+        source_value: String::new(),
         head_value: String::new(),
         branches: vec![repo.default_branch.clone()],
+        issue_templates: if kind == "issue" { repo_features::issue_template_choices(&state, repo.id).await? } else { Vec::new() },
+        selected_issue_template: None,
         repo,
         is_owner,
     };
@@ -154,61 +158,102 @@ async fn create(_req: Request, ctx: RouteContext<AppState>, kind: &str) -> Resul
         return util::redirect("/user/login");
     };
     let form = state.form()?;
-    let title = util::form_value(form, "title").unwrap_or_default();
-    let body = util::form_value(form, "body").unwrap_or_default();
+    let mut title = util::form_value(form, "title").unwrap_or_default();
+    let mut body = util::form_value(form, "body").unwrap_or_default();
     let base_branch = util::form_value(form, "base_branch")
         .unwrap_or_else(|| repo.default_branch.clone());
     let head_branch = util::form_value(form, "head_branch").unwrap_or_default();
+    let source_value = util::form_value(form, "source_repo").unwrap_or_default();
+    let source_path = source_value.trim();
+
+    let apply = kind == "issue" && util::form_value(form, "apply_issue_template").as_deref() == Some("1");
+    let template_value = util::form_value(form, "issue_template").filter(|value| !value.is_empty());
+    let selected_issue_template = template_value.as_ref().and_then(|value| value.parse::<i64>().ok());
+    let mut template_missing = false;
+    if apply && template_value.is_some() {
+        let defaults = match selected_issue_template {
+            Some(id) if (1..=9_007_199_254_740_991).contains(&id) => repo_features::issue_template_defaults(&state, repo.id, id).await?,
+            _ => None,
+        };
+        match defaults {
+            Some(defaults) => {
+                if title.trim().is_empty() { title = defaults.title; }
+                if body.trim().is_empty() { body = defaults.body; }
+            }
+            None => template_missing = true,
+        }
+    }
 
     let is_owner = can_admin(&state, &repo);
     let locale = state.locale;
-    let invalid = |message: String| -> Result<Response> {
+    let render_form = async |error: Option<String>| -> Result<Response> {
         let page = IssueNewPage {
             chrome: Chrome::new(&state),
             title: new_title(locale, &repo, kind),
             tab: if kind == "pull" { "pulls" } else { "issues" }.into(),
             is_pull: kind == "pull",
-            error: Some(message),
+            error,
             title_value: title.clone(),
             body_value: body.clone(),
             base_value: base_branch.clone(),
+            source_value: source_value.clone(),
             head_value: head_branch.clone(),
-            branches: vec![repo.default_branch.clone()],
+            branches: if source_path.is_empty() { vec![repo.default_branch.clone()] } else { Vec::new() },
+            issue_templates: if kind == "issue" { repo_features::issue_template_choices(&state, repo.id).await? } else { Vec::new() },
+            selected_issue_template,
             repo: repo.clone(),
             is_owner,
         };
         render(&page)
     };
+    let invalid = async |message: String| render_form(Some(message)).await;
+    if apply {
+        return render_form(template_missing.then(|| locale.t(RepoFeatureText::MissingIssueTemplate).into())).await;
+    }
 
     if title.trim().is_empty() {
-        return invalid(locale.t(DiscussionText::TitleRequired).into());
+        return invalid(locale.t(DiscussionText::TitleRequired).into()).await;
     }
-    if kind == "pull" {
-        if head_branch.trim().is_empty() {
-            return invalid(locale.t(DiscussionText::ChooseHeadBranch).into());
-        }
-        if head_branch == base_branch {
-            return invalid(locale.t(DiscussionText::BranchesMustDiffer).into());
-        }
+    if kind == "pull" && head_branch.trim().is_empty() {
+        return invalid(locale.t(DiscussionText::ChooseHeadBranch).into()).await;
     }
 
     let snapshot = if kind == "pull" {
-        let handle = match RepoHandle::open(&state.env, &repo).await {
+        let source_repo;
+        let source = if source_path.is_empty() {
+            &repo
+        } else {
+            let Some((source_owner, source_name)) = source_path.split_once('/') else {
+                return invalid(locale.t(DiscussionText::SourceRepositoryUnavailable).into()).await;
+            };
+            source_repo = visible_repo(&state, source_owner, source_name).await?;
+            let Some(source) = source_repo.as_ref() else {
+                return invalid(locale.t(DiscussionText::SourceRepositoryUnavailable).into()).await;
+            };
+            source
+        };
+        if repo.id == source.id && head_branch == base_branch {
+            return invalid(locale.t(DiscussionText::BranchesMustDiffer).into()).await;
+        }
+        if source.is_private() && !repo.is_private() {
+            return invalid(locale.t(DiscussionText::PrivateSourcePublicTarget).into()).await;
+        }
+        let handle = match pull_base::Repositories::open(&state.env, &repo, source).await {
             Ok(handle) => handle,
             Err(error) => {
                 console_log!("pull request setup: could not open Git repository: {error}");
-                return invalid(locale.t(DiscussionText::GitUnavailable).into());
+                return invalid(locale.t(DiscussionText::GitUnavailable).into()).await;
             }
         };
         let (base, head) = match pull_base::branch_tips(&handle, &base_branch, &head_branch).await {
             Ok(tips) => tips,
-            Err(message) => return invalid(locale.t(message).into()),
+            Err(message) => return invalid(locale.t(message).into()).await,
         };
         let merge_base = match pull_base::find(&handle, &base, &head).await {
             Ok(merge_base) => merge_base,
-            Err(error) => return invalid(locale.t(error.message()).into()),
+            Err(error) => return invalid(locale.t(error.message()).into()).await,
         };
-        Some((base, head, merge_base))
+        Some((source.id, base, head, merge_base))
     } else {
         None
     };
@@ -230,19 +275,19 @@ async fn create(_req: Request, ctx: RouteContext<AppState>, kind: &str) -> Resul
             util::js_int(user.id), now.clone(), now, util::js_int(repo.id),
         ])?,
     ];
-    if let Some((base, head, merge_base)) = snapshot {
+    if let Some((source_id, base, head, merge_base)) = snapshot {
         statements.push(database.prepare(
-            "INSERT INTO pulls (issue_id, head_branch, base_branch, head_commit, base_commit, merge_base)
-             SELECT i.id, ?, ?, ?, ?, ? FROM issues i JOIN repos r ON r.id = i.repo_id
+            "INSERT INTO pulls (issue_id, source_repo_id, head_branch, base_branch, head_commit, base_commit, merge_base)
+             SELECT i.id, ?, ?, ?, ?, ?, ? FROM issues i JOIN repos r ON r.id = i.repo_id
               WHERE r.id = ? AND i.number = r.next_issue_number - 1",
         ).bind(&[
-            util::js_text(&head_branch), util::js_text(&base_branch), util::js_text(&head),
+            util::js_int(source_id), util::js_text(&head_branch), util::js_text(&base_branch), util::js_text(&head),
             util::js_text(&base), util::js_text(&merge_base), util::js_int(repo.id),
         ])?);
     }
     let results = database.batch(statements).await?;
     let Some(Number { number }) = results[0].results::<Number>()?.into_iter().next() else {
-        return invalid(locale.t(DiscussionText::AllocateNumberFailed).into());
+        return invalid(locale.t(DiscussionText::AllocateNumberFailed).into()).await;
     };
 
     let path = if kind == "pull" { "pulls" } else { "issues" };
@@ -295,6 +340,35 @@ async fn detail(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result
     }
 
 
+    let pull = if kind == "pull" { crate::pull_review::load_pull(&database, issue.id).await? } else { None };
+    let source_repo;
+    let source = match &pull {
+        Some(pull) if pull.source_repo_id(repo.id) != repo.id => {
+            source_repo = visible_repo_by_id(&state, pull.source_repo_id(repo.id)).await?;
+            source_repo.as_ref()
+        }
+        Some(_) => Some(&repo),
+        None => None,
+    };
+    let comparison_available = source.is_some();
+    let locale = state.locale;
+    let viewed = if let Some(review) = util::query_param(&req, "review").filter(|_| kind == "pull") {
+        let id = review.parse::<i64>().ok().filter(|id| (1..=9_007_199_254_740_991).contains(id));
+        let Some(id) = id.filter(|_| comparison_available) else {
+            return not_found(&state, locale.t(CommonText::NotFound));
+        };
+        let snapshot: Option<PullSnapshot> = db::first(
+            &database,
+            "SELECT head_commit, base_commit, merge_base, comparison_version
+               FROM pull_reviews WHERE issue_id = ? AND id = ?",
+            &[util::js_int(issue.id), util::js_int(id)],
+        ).await?;
+        let Some(snapshot) = snapshot else { return not_found(&state, locale.t(CommonText::NotFound)) };
+        Some((id, snapshot))
+    } else {
+        None
+    };
+
     let request_page = PageRequest::new(&req, "comments_page");
     let mut entries: Vec<DiscussionEntry> = db::all(
         &database,
@@ -309,49 +383,19 @@ async fn detail(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result
          SELECT p.id, p.body, p.decision, p.created_at, u.username, 2, av.user_id,
                 COALESCE(p.merge_base, p.base_commit), p.head_commit, p.comparison_version, p.path, p.side, p.line
            FROM pull_reviews p LEFT JOIN users u ON u.id = p.actor_id
-           LEFT JOIN user_avatars av ON av.user_id = u.id WHERE p.issue_id = ?1
+           LEFT JOIN user_avatars av ON av.user_id = u.id WHERE p.issue_id = ?1 AND ?4 = 1
          ORDER BY created_at ASC, item_order ASC, id ASC LIMIT ?2 OFFSET ?3",
         &[
             util::js_int(issue.id),
             util::js_int((PAGE_SIZE + 1) as i64), util::js_int(request_page.offset()),
+            util::js_int(i64::from(comparison_available)),
         ],
     )
     .await?;
-    let locale = state.locale;
     let pagination = request_page.finish(&req, &mut entries, Some("discussion"))?;
-    let viewed = if kind == "pull" {
-        if let Some(review) = util::query_param(&req, "review") {
-            let id = review.parse::<i64>().ok().filter(|id| (1..=9_007_199_254_740_991).contains(id));
-            let Some(id) = id else { return not_found(&state, locale.t(CommonText::NotFound)) };
-            let snapshot: Option<PullSnapshot> = db::first(
-                &database,
-                "SELECT head_commit, base_commit, merge_base, comparison_version
-                   FROM pull_reviews WHERE issue_id = ? AND id = ?",
-                &[util::js_int(issue.id), util::js_int(id)],
-            ).await?;
-            let Some(snapshot) = snapshot else { return not_found(&state, locale.t(CommonText::NotFound)) };
-            Some((id, snapshot))
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-    let pull: Option<Pull> = if kind == "pull" {
-        db::first(
-            &database,
-            "SELECT issue_id, head_branch, base_branch, head_commit, base_commit, merge_base,
-                    comparison_version, merged, merged_at, merge_commit
-               FROM pulls WHERE issue_id = ?",
-            &[util::js_int(issue.id)],
-        )
-        .await?
-    } else {
-        None
-    };
     let merged = pull.as_ref().is_some_and(|pull| pull.merged != 0);
-    let current_open = pull.is_some() && viewed.is_none() && !merged && issue.is_open();
-    let writer = pull.is_some() && viewed.is_none() && !merged && can_write(&state, &repo).await?;
+    let current_open = comparison_available && viewed.is_none() && !merged && issue.is_open();
+    let writer = comparison_available && viewed.is_none() && !merged && can_write(&state, &repo).await?;
     let author = state.user_id().is_some_and(|id| Some(id) == issue.author_id);
     let mut comparison_notice = None;
     let mut can_refresh_comparison = false;
@@ -360,11 +404,11 @@ async fn detail(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result
     let mut diff_error = None;
     let mut preview = None;
     let mut preview_missing = false;
-    if let Some(pull) = &pull {
+    if let (Some(pull), Some(source)) = (&pull, source) {
         let selected = util::query_param(&req, "file");
         let snapshot = viewed.as_ref().map_or(&pull.snapshot, |(_, snapshot)| snapshot);
         let comparison = async {
-            let handle = RepoHandle::open(&state.env, &repo).await?;
+            let handle = pull_base::Repositories::open(&state.env, &repo, source).await?;
             if current_open {
                 match pull_base::branch_tips(&handle, &pull.base_branch, &pull.head_branch).await {
                     Ok((base, head)) => {
@@ -385,11 +429,11 @@ async fn detail(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result
             let Some((base, head)) = snapshot.diff_tips() else {
                 return Ok(Comparison::MissingSnapshot);
             };
-            let comparison = pull_diff::compare(&handle, base, head).await?;
+            let comparison = pull_diff::compare(&handle.target, handle.source(), base, head).await?;
             if let (Comparison::Complete(files), Some(path)) = (&comparison, selected) {
                 if let Ok(index) = files.binary_search_by(|file| file.path.cmp(&path)) {
                     let file = &files[index];
-                    let diff = match file.lines(&handle).await {
+                    let diff = match file.lines(&handle.target, handle.source()).await {
                         Ok(diff) => diff,
                         Err(error) => {
                             console_log!("pull request: Git file comparison failed: {error}");
@@ -412,6 +456,8 @@ async fn detail(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result
                 diff_error = Some(locale.t(DiscussionText::CompareBranchesFailed));
             }
         }
+    } else if pull.is_some() {
+        diff_error = Some(locale.t(DiscussionText::ComparisonUnavailable));
     }
 
     let can_edit = viewed.is_none() && !merged && (author || can_admin(&state, &repo));
@@ -422,9 +468,20 @@ async fn detail(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result
     let can_verify_merge = has_snapshot && writer;
     let can_comment_on_diff = current_open && has_snapshot && state.user.is_some() && diff_error.is_none();
     let can_review = can_comment_on_diff && writer && !author;
+    let merge_workflow = match (&pull, source) {
+        (Some(pull), Some(source)) if viewed.is_none() => match pull.snapshot.head_commit.as_deref().filter(|head| is_object_id(head)) {
+            Some(head) => Some(crate::branch_rules::workflow(&state, &repo, head, issue.id,
+                current_open && writer && has_snapshot && pull.snapshot.merge_base.is_some()
+                    && (!source.is_private() || repo.is_private()),
+            ).await?),
+            None => None,
+        },
+        _ => None,
+    };
     let (viewed_review, historical) = viewed.unzip();
+    let source_name = source.filter(|source| source.id != repo.id).map(Repo::full_name);
     let pull = pull.map(|pull| {
-        let mut model = PullView::from_pull(pull);
+        let mut model = PullView::from_pull(pull, source_name);
         if let Some(snapshot) = historical {
             model.snapshot = snapshot;
         }
@@ -439,9 +496,10 @@ async fn detail(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result
             issue.author_avatar_id,
         ),
         body_html: markdown::render(&issue.body, &markdown::Context::new(&repo, &repo.default_branch, "")),
-        discussion: entries.into_iter().map(|entry| entry.into_row(locale, &repo)).collect(),
+        discussion: entries.into_iter().map(|entry| entry.into_row(locale, &repo, source.unwrap_or(&repo))).collect(),
         pagination,
         pull,
+        comparison_available,
         changed,
         preview,
         preview_missing,
@@ -450,6 +508,8 @@ async fn detail(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result
         comparison_notice,
         can_refresh_comparison,
         metadata: if issue.is_pull() { None } else { Some(crate::issue_metadata::load(&state, &repo, &issue).await?) },
+        reactions: if issue.is_pull() { Vec::new() } else { repo_features::reactions(&state, issue.id).await? },
+        merge_workflow,
         can_review,
         can_comment_on_diff,
         can_verify_merge,
@@ -505,7 +565,7 @@ pub async fn comment(req: Request, ctx: RouteContext<AppState>) -> Result<Respon
     let update = database.prepare("UPDATE issues SET updated_at = ? WHERE id = ?")
         .bind(&[util::js_int(now), util::js_int(issue.id)])?;
     database.batch(vec![insert, update]).await?;
-    redirect_to_discussion(&database, &repo, &issue).await
+    redirect_to_entry(&state, &database, &repo, &issue, None).await
 }
 
 pub async fn set_state(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
@@ -573,7 +633,7 @@ pub async fn set_state(req: Request, ctx: RouteContext<AppState>) -> Result<Resp
         util::js_int(now), util::js_int(issue.id), util::js_text(desired),
     ])?;
     database.batch(vec![event, update]).await?;
-    redirect_to_discussion(&database, &repo, &issue).await
+    redirect_to_entry(&state, &database, &repo, &issue, None).await
 }
 
 
@@ -594,7 +654,7 @@ struct DiscussionEntry {
 }
 
 impl DiscussionEntry {
-    fn into_row(self, locale: Locale, repo: &Repo) -> DiscussionRow {
+    fn into_row(self, locale: Locale, repo: &Repo, source: &Repo) -> DiscussionRow {
         let is_comment = self.kind == "comment";
         let review = self.base.zip(self.head).zip(self.comparison_version).map(|((base, head), version)| ReviewContext {
             base, head, version,
@@ -606,16 +666,16 @@ impl DiscussionEntry {
             },
         });
         let html = if is_comment || (review.is_some() && self.kind != "merge_verified") {
-            let (reference, path) = review.as_ref().and_then(|review| {
+            let (context_repo, reference, path) = review.as_ref().and_then(|review| {
                 let line = review.line.as_ref()?;
-                let reference = match line.side.as_str() {
-                    "old" => &review.base,
-                    "new" => &review.head,
+                let (context_repo, reference) = match line.side.as_str() {
+                    "old" => (repo, &review.base),
+                    "new" => (source, &review.head),
                     _ => return None,
                 };
-                is_object_id(reference).then_some((reference.as_str(), line.path.as_str()))
-            }).unwrap_or((&repo.default_branch, ""));
-            markdown::render(&self.body, &markdown::Context::new(repo, reference, path))
+                is_object_id(reference).then_some((context_repo, reference.as_str(), line.path.as_str()))
+            }).unwrap_or((repo, &repo.default_branch, ""));
+            markdown::render(&self.body, &markdown::Context::new(context_repo, reference, path))
         } else {
             String::new()
         };
@@ -660,19 +720,19 @@ fn route_kind(req: &Request) -> Result<&'static str> {
     }
 }
 
-async fn redirect_to_discussion(database: &worker::d1::D1Database, repo: &Repo, issue: &Issue) -> Result<Response> {
-    redirect_to_entry(database, repo, issue, None).await
-}
-
-pub(crate) async fn redirect_to_entry(database: &worker::d1::D1Database, repo: &Repo, issue: &Issue, review: Option<i64>) -> Result<Response> {
+pub(crate) async fn redirect_to_entry(state: &AppState, database: &worker::d1::D1Database, repo: &Repo, issue: &Issue, review: Option<i64>) -> Result<Response> {
     #[derive(serde::Deserialize)]
     struct Count { n: i64 }
+    let [viewer, admin] = super::common::viewer_params(state);
     let count = db::first::<Count>(
         database,
         "SELECT (SELECT COUNT(*) FROM comments WHERE issue_id = ?1)
               + (SELECT COUNT(*) FROM issue_events WHERE issue_id = ?1)
-              + (SELECT COUNT(*) FROM pull_reviews WHERE issue_id = ?1) AS n",
-        &[util::js_int(issue.id)],
+              + (SELECT COUNT(*) FROM pull_reviews pr JOIN pulls p ON p.issue_id = pr.issue_id
+                   JOIN repos s ON s.id = COALESCE(p.source_repo_id, ?4)
+                 WHERE pr.issue_id = ?1 AND (s.visibility = 'public' OR s.owner_id = ?2 OR ?3 = 1
+                       OR EXISTS (SELECT 1 FROM repo_member_roles m WHERE m.repo_id = s.id AND m.user_id = ?2))) AS n",
+        &[util::js_int(issue.id), viewer, admin, util::js_int(repo.id)],
     ).await?.map(|count| count.n).unwrap_or(0);
     let page = (count.saturating_sub(1).max(0) / PAGE_SIZE as i64 + 1)
         .min(i64::from(crate::pagination::MAX_PAGE));

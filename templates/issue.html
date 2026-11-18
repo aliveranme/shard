@@ -36,6 +36,7 @@
   </div>
 
   {% if let Some(pull) = pull %}
+    {% if comparison_available %}
     <div class="pull-banner pull-banner--comparison" id="pull-comparison">
       <div class="pull-banner__flow">
         <span class="badge badge--count">{{ chrome.locale.comparison_version(pull.snapshot.comparison_version) }}</span>
@@ -44,7 +45,7 @@
           <a href="/{{ repo.owner_name }}/{{ repo.name }}/pulls/{{ issue.number }}#pull-comparison">{{ chrome.locale.t(crate::i18n::DiscussionText::CurrentComparison) }}</a>
         {% endif %}
         <span>{{ chrome.locale.t(crate::i18n::DiscussionText::MergeFrom) }}</span>
-        <code dir="ltr">{{ pull.head_branch }}</code>
+        <code dir="ltr">{% if let Some(name) = pull.source_name %}{{ name }}:{% endif %}{{ pull.head_branch }}</code>
         <span class="muted">{{ chrome.locale.t(crate::i18n::DiscussionText::MergeInto) }}</span>
         <code dir="ltr">{{ pull.base_branch }}</code>
         {% if let Some(merged) = pull.merged_at.as_ref() %}<span class="badge badge--merged">{{ chrome.locale.merged_when(merged) }}</span>{% endif %}
@@ -66,6 +67,7 @@
         </div>
       {% endif %}
     </div>
+    {% endif %}
   {% endif %}
   {% if let Some(message) = comparison_notice %}
     <div class="pull-banner">
@@ -93,6 +95,7 @@
           </div>
         </div>
         <div class="markup">{{ body_html|safe }}</div>
+        {% if !issue.is_pull() %}{% include "issue_reactions.html" %}{% endif %}
       </article>
 
       {% include "pull_diff.html" %}
@@ -176,19 +179,39 @@
             </div>
           {% endif %}
         </div>
-        <div class="card card--warm">
+        <div class="side-card" id="merge">
           <h2 class="side-card__title">{{ chrome.locale.t(crate::i18n::DiscussionText::Merging) }}</h2>
-          <p class="meta">
-            {{ chrome.locale.t(crate::i18n::DiscussionText::MergingHelp) }}
-          </p>
+          {% if let Some(workflow) = merge_workflow %}
+            {% if let Some(status) = workflow.status %}<p role="status">{{ status }}</p>{% endif %}
+            {% if workflow.can_queue || workflow.can_cancel %}
+              <form class="form" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/pulls/{{ issue.number }}/merge">
+                {% include "csrf.html" %}
+                {% include "pull_snapshot_fields.html" %}
+                {% if workflow.can_queue %}
+                  <button class="btn btn--primary btn--sm" name="action" value="queue" type="submit">{{ chrome.locale.t(crate::i18n::BranchText::QueueMerge) }}</button>
+                {% else %}
+                  <button class="btn btn--ghost btn--sm" name="action" value="cancel" type="submit">{{ chrome.locale.t(crate::i18n::BranchText::CancelMerge) }}</button>
+                {% endif %}
+              </form>
+            {% endif %}
+          {% endif %}
           {% if can_verify_merge %}
-          <form method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/pulls/{{ issue.number }}/reviews">
-            {% include "csrf.html" %}
-            {% include "pull_snapshot_fields.html" %}
-            <button class="btn btn--ghost btn--sm" type="submit" name="decision" value="merge_verified">{{ chrome.locale.t(crate::i18n::DiscussionText::VerifyMerge) }}</button>
-          </form>
+            <details>
+              <summary>{{ chrome.locale.t(crate::i18n::DiscussionText::VerifyMerge) }}</summary>
+              <p class="help">{{ chrome.locale.t(crate::i18n::DiscussionText::MergingHelp) }}</p>
+              <form class="form" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/pulls/{{ issue.number }}/reviews">
+                {% include "csrf.html" %}
+                {% include "pull_snapshot_fields.html" %}
+                <button class="btn btn--ghost btn--sm" type="submit" name="decision" value="merge_verified">{{ chrome.locale.t(crate::i18n::DiscussionText::VerifyMerge) }}</button>
+              </form>
+            </details>
           {% endif %}
         </div>
+        {% if let Some(workflow) = merge_workflow %}
+          {% let checks = workflow.checks %}
+          {% let checks_heading = chrome.locale.t(crate::i18n::BranchText::Checks) %}
+          {% include "commit_checks.html" %}
+        {% endif %}
       {% endif %}
     </aside>
   </div>

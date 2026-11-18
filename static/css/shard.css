@@ -560,6 +560,11 @@ a.list__row:hover { background-color: var(--hover); text-decoration: none; }
 .refs-empty { padding: 16px; background: var(--surface-sheen), var(--inset); color: var(--muted); }
 .refs-list { margin: 0; padding: 0; list-style: none; }
 .refs-list > li + li { border-block-start: 1px solid var(--border); }
+.refs-manage { margin-block-end: 24px; }
+.refs-remove { padding: 0 16px 12px 44px; }
+:is(.refs-manage, .refs-remove, .rule-remove, #merge) form { margin-block-start: 12px; }
+.rule-remove, #merge details { margin-block-start: 12px; }
+.rule-remove summary, .refs-remove summary, #merge summary { color: var(--secondary); font-size: var(--type-meta); }
 .refs-row {
   display: grid;
   grid-template-columns: 16px minmax(0, 1fr);

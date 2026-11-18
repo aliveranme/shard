@@ -117,7 +117,7 @@ async function startWorker(temporary, nativeOrigin, token) {
     persist: true, persistTo: persistence, logLevel: "error",
     experimental: {
       disableExperimentalWarning: true, disableDevRegistry: true,
-      forceLocal: true, watch: false, showInteractiveDevSession: false,
+      forceLocal: true, testScheduled: true, watch: false, showInteractiveDevSession: false,
     },
   });
 }
@@ -181,6 +181,11 @@ test("forge native Git over loopback", { timeout: 240_000 }, async (t) => {
 
     worker = await startWorker(temporary, nativeOrigin, token);
     const base = `http://127.0.0.1:${worker.port}`;
+    const tick = async () => {
+      const response = await request(`${base}/__scheduled?cron=${encodeURIComponent("* * * * *")}`);
+      assert.equal(response.status, 200);
+      await response.text();
+    };
     const gitConfig = join(temporary, "gitconfig");
     await writeFile(gitConfig, `[core]
   autocrlf = false
@@ -291,6 +296,20 @@ test("forge native Git over loopback", { timeout: 240_000 }, async (t) => {
       assert.ok(refs.body.includes(tag));
       const tagRow = refs.body.match(new RegExp(`<bdi[^>]*>${tag}</bdi>([\\s\\S]*?)</li>`))?.[1];
       assert.ok(tagRow?.includes(tagOid) && tagRow.includes(featureOid), "the annotated tag shows its object and target");
+      const settingPath = `${project}/settings`;
+      redirected(await owner.post(settingPath, { default_branch: branch }));
+      assert.deepEqual((await git(null, "ls-remote", "--symref", projectRemote, "HEAD")).split(/\r?\n/), [
+        `ref: refs/heads/${branch}\tHEAD`, `${featureOid}\tHEAD`,
+      ]);
+      const cloneChanged = join(temporary, "default-branch-clone");
+      await git(null, "clone", projectRemote, cloneChanged);
+      assert.equal(await git(null, "-C", cloneChanged, "rev-parse", "HEAD"), featureOid);
+      redirected(await owner.post(settingPath, { default_branch: "main" }));
+      const newRef = { action: "create", kind: "heads", name: "web/native", oid: featureOid };
+      redirected(await owner.post(`${project}/refs`, newRef));
+      assert.equal(await git(null, "ls-remote", projectRemote, "refs/heads/web/native"), `${featureOid}\trefs/heads/web/native`);
+      assert.equal((await owner.post(`${project}/refs`, { ...newRef, action: "delete", confirm: "web/native", oid: mainOid })).status, 409);
+      redirected(await owner.post(`${project}/refs`, { ...newRef, action: "delete", confirm: "web/native" }));
       const directory = await guest.get(`${project}/src/${encodeURIComponent(folder)}${branchQuery}`);
       assert.equal(directory.status, 200);
       assert.ok(directory.body.includes(`/blob/${textPath}${branchQuery}`), "nested file link preserves path and branch");
@@ -365,10 +384,11 @@ test("forge native Git over loopback", { timeout: 240_000 }, async (t) => {
       if (copied.location !== fork) {
         assert.match(copied.location, /^\/user\/settings\/repository-copies\/\d+$/);
         const statusPath = copied.location;
-        copied = await viewer.get(statusPath);
-        for (let attempt = 0; copied.status === 202 && attempt < 4; attempt++) {
-          await delay(5_000);
-          copied = await viewer.post(statusPath, {});
+        for (let attempt = 0; attempt < 12; attempt++) {
+          await tick();
+          copied = await viewer.get(statusPath);
+          if (copied.status !== 202) break;
+          await delay(150);
         }
       }
       redirected(copied, fork);
@@ -376,12 +396,62 @@ test("forge native Git over loopback", { timeout: 240_000 }, async (t) => {
       const originalRefs = await git(null, "ls-remote", projectRemote);
       assert.equal(await git(null, "ls-remote", remoteUrl(base, fork)), originalRefs);
 
+      await localGit("checkout", "-b", "target/main", "main");
+      await writeFile(join(worktree, "target-only.txt"), "The base advanced independently.\n");
+      await localGit("add", "target-only.txt");
+      await localGit("commit", "-m", "Advance the native target");
+      const targetTip = await localGit("rev-parse", "HEAD");
+      await git(writeToken, "-C", worktree, "push", projectRemote, "HEAD:refs/heads/main");
+      const cross = await viewer.post(`${project}/pulls/new`, {
+        title: "Review a change from a fork", source_repo: "nativeviewer/project-fork", base_branch: "main", head_branch: branch,
+      });
+      redirected(cross);
+      const before = await owner.get(cross.location);
+      assert.match(before.body, /nativeviewer\/project-fork:feature\/notes/);
+      assert.match(before.body, /Comparison 1/);
+      assert.doesNotMatch(before.body, /target-only\.txt/);
+      await localGit("checkout", branch);
+      await writeFile(join(worktree, "fork-only.txt"), "This change exists only in the fork.\n");
+      await localGit("add", "fork-only.txt");
+      await localGit("commit", "-m", "Update the fork comparison");
+      const forkTip = await localGit("rev-parse", "HEAD");
+      await git(viewerToken, "-C", worktree, "push", remoteUrl(base, fork), branch);
+      let after;
+      for (let attempt = 0; attempt < 10; attempt++) {
+        await tick();
+        after = await owner.get(cross.location);
+        if (after.body.includes("Comparison 2")) break;
+        await delay(75);
+      }
+      assert.match(after.body, /Comparison 2/);
+      assert.match(after.body, /file=fork-only\.txt/);
+      assert.equal((await owner.post(`${cross.location}/reviews`, { decision: "approved", comparison_version: "1" })).status, 409);
+      redirected(await owner.post(`${project}/settings/branches`, { action: "save", branch: "main", approvals: "0", checks: "ci/fork" }));
+      const report = (credential) => guest.send(`${project}/commit/${forkTip}/checks`, {
+        method: "POST", headers: { ...bearer(credential), "Content-Type": "application/json" },
+        body: JSON.stringify({ context: "ci/fork", state: "success" }),
+      });
+      assert.equal((await report(viewerToken)).status, 403);
+      assert.equal((await report(writeToken)).status, 204);
+      assert.match((await owner.get(cross.location)).body, /ci\/fork[\s\S]*Passed/);
+      redirected(await owner.post(`${cross.location}/merge`, { action: "queue", comparison_version: "2" }));
+      for (let attempt = 0; attempt < 10; attempt++) {
+        await tick();
+        after = await owner.get(cross.location);
+        if (after.body.includes("Merged by Shard")) break;
+        await delay(75);
+      }
+      assert.match(after.body, /Merged by Shard/);
+      await git(null, "-C", clone, "fetch", "origin", "main");
+      assert.equal(await git(null, "-C", clone, "show", "-s", "--format=%P", "FETCH_HEAD"), `${targetTip} ${forkTip}`);
+      assert.match(await git(null, "-C", clone, "show", "FETCH_HEAD:fork-only.txt"), /exists only in the fork/);
+
       redirected(await owner.post(`${project}/settings/delete`, { confirm: "project" }), "/");
       assert.equal((await guest.get(project)).status, 404);
       assert.equal((await guest.get(infoRefs(project, "upload"))).status, 404);
       const forkClone = join(temporary, "fork-clone");
       await git(null, "clone", "--branch", branch, remoteUrl(base, fork), forkClone);
-      assert.equal(await git(null, "-C", forkClone, "rev-parse", "HEAD"), featureOid);
+      assert.equal(await git(null, "-C", forkClone, "rev-parse", "HEAD"), forkTip);
       assert.equal(await readFile(join(forkClone, folder, filename), "utf8"), notes);
       assert.deepEqual(await readFile(join(forkClone, "marker.bin")), binary);
     });

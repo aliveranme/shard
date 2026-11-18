@@ -9,6 +9,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { unstable_dev } from "wrangler";
 import { exerciseLfs } from "./lfs.mjs";
 
@@ -25,18 +26,27 @@ const replacementPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAIAAAASFvFN
 
 // Each run owns its database, Artifacts namespace state and temporary config.
 // No test writes to .wrangler/state or contacts a deployed Worker.
-test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
+// The scenarios share one forge and run sequentially with real Git subprocesses.
+test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
   const temporary = await mkdtemp(join(tmpdir(), "shard-http-"));
   const persistence = join(temporary, "state");
   const configPath = join(temporary, "wrangler.json");
   const webhookSecret = "local-regression-webhook-signing-key";
   const deliveries = [];
+  const subscriptionDeliveries = [];
   const receiver = createServer(async (req, res) => {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
-    deliveries.push({ id: req.headers["x-shard-event-id"], signature: req.headers["x-shard-signature"],
-      method: req.method, path: req.url, body: Buffer.concat(chunks) });
-    res.writeHead(deliveries.length === 1 ? 503 : 204).end();
+    const capture = { id: req.headers["x-shard-event-id"], signature: req.headers["x-shard-signature"],
+      method: req.method, path: req.url, body: Buffer.concat(chunks) };
+    if (req.url === "/hooks/history") {
+      const fail = subscriptionDeliveries.length === 0;
+      subscriptionDeliveries.push({ ...capture, delivery: req.headers["x-shard-delivery-id"] });
+      res.writeHead(fail ? 503 : 204).end();
+    } else {
+      deliveries.push(capture);
+      res.writeHead(deliveries.length === 1 ? 503 : 204).end();
+    }
   });
   let worker;
   try {
@@ -55,6 +65,8 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       ...config.vars, PUBLIC_ORIGIN: "https://forge.example.test", EMAIL_FROM: "shard@example.test",
       WEBHOOK_LOCAL_HTTP: "1", WEBHOOK_SECRET: webhookSecret, WEBHOOK_REPO: "webhook-regression-repo",
       WEBHOOK_ENDPOINT: `http://127.0.0.1:${receiver.address().port}/hooks/shard`,
+      WEBHOOK_LOCAL_HTTP_ORIGIN: `http://127.0.0.1:${receiver.address().port}`,
+      WEBHOOK_ENCRYPTION_KEY: "19".repeat(32),
     };
     config.d1_databases = config.d1_databases.map((binding) => ({
       ...binding, database_name: `${binding.database_name}-http-tests`,
@@ -103,6 +115,13 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       },
     });
     const base = `http://127.0.0.1:${worker.port}`;
+    const tick = async () => {
+      const result = await fetch(`${base}/__scheduled?cron=${encodeURIComponent("* * * * *")}`, {
+        signal: AbortSignal.timeout(30_000),
+      });
+      assert.equal(result.status, 200);
+      await result.text();
+    };
     let clientNumber = 0;
 
     class Client {
@@ -114,8 +133,11 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
         if (!headers.has("CF-Connecting-IP")) headers.set("CF-Connecting-IP", this.source);
         if (this.cookies.size) headers.set("Cookie", [...this.cookies]
           .map(([name, value]) => `${name}=${value}`).join("; "));
-        const response = await fetch(new URL(path, base), {
-          ...options, headers, redirect: "manual",
+        const url = new URL(path, base);
+        const response = await fetch(url, {
+          signal: AbortSignal.timeout(30_000), ...options, headers, redirect: "manual",
+        }).catch((error) => {
+          throw new Error(`${options.method ?? "GET"} ${url.pathname} failed`, { cause: error });
         });
         for (const cookie of response.headers.getSetCookie()) {
           const pair = cookie.split(";", 1)[0];
@@ -139,7 +161,7 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
         });
       }
     }
-    const redirected = (response) => assert.equal(response.status, 302, response.body.slice(0, 500));
+    const redirected = (response) => assert.equal(response.status, 302, response.body.match(/<h1[^>]*>[^<]*/) ?? response.body.slice(0, 500));
     async function signup(name, email = `${name}@example.test`) {
       const client = new Client();
       await client.get("/user/sign_up");
@@ -382,7 +404,7 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       const git = async (...args) => exec("git", args, { cwd: root, env: gitEnv, timeout: 30_000 });
       await git("init", "--initial-branch=main", worktree);
       await git("-C", worktree, "config", "user.name", "HTTP regression");
-      await git("-C", worktree, "config", "user.email", "git@example.test");
+      await git("-C", worktree, "config", "user.email", "SUITEOWNER@EXAMPLE.TEST");
       await git("-C", worktree, "config", "commit.gpgsign", "false");
       for (let i = 0; i < 21; i++) {
         await writeFile(join(worktree, "README.md"), `# History ${i}\n`);
@@ -468,10 +490,49 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       assert.equal((await new Client().get(history)).status, 200);
       const saved = await owner.post(settingsPath, { default_branch: "feature/readme", visibility: "public" });
       redirected(saved);
-      assert.match((await owner.get(saved.location)).body, /Git clones follow the remote HEAD/);
+      assert.match((await owner.get(saved.location)).body, /Used for browsing, new pull requests and Git clones/);
       assert.match((await owner.get(history)).body, /href="\/suiteowner\/history\/blob\/FEATURE.md\?branch=feature%2Freadme"/);
-      assert.equal(await gitHead(), remoteHead);
+      assert.match(await gitHead(), /ref: refs\/heads\/feature\/readme\s+HEAD/);
+      const defaultClone = join(temporary, "changed-head-clone");
+      await git("clone", "--depth", "1", `${base}${history}.git`, defaultClone);
+      assert.equal((await git("-C", defaultClone, "rev-parse", "HEAD")).stdout.trim(), featureCommit);
       redirected(await owner.post(settingsPath, { default_branch: "main", visibility: "public" }));
+      assert.equal(await gitHead(), remoteHead);
+
+      for (const [kind, ref] of [["heads", "web/branch"], ["tags", "web/tag"]]) {
+        const fields = { kind, name: ref, oid: featureCommit };
+        assert.equal((await viewer.post(`${history}/refs`, { ...fields, action: "create" })).status, 403);
+        redirected(await owner.post(`${history}/refs`, { ...fields, action: "create" }));
+        const remote = `refs/${kind}/${ref}`;
+        assert.equal((await git("-C", worktree, "ls-remote", "origin", remote)).stdout.trim(), `${featureCommit}\t${remote}`);
+        assert.equal((await owner.post(`${history}/refs`, { ...fields, action: "delete", confirm: "wrong" })).status, 400);
+        redirected(await owner.post(`${history}/refs`, { ...fields, action: "delete", confirm: ref }));
+        assert.equal((await git("-C", worktree, "ls-remote", "origin", remote)).stdout, "");
+      }
+
+      const search = (type, q) => owner.get(`${history}/search?${new URLSearchParams({ type, q, branch: "feature/readme" })}`);
+      const foundPath = await search("path", "release%20notes");
+      const pathHit = `${history}/blob/${encodeURIComponent("docs and examples/release%20notes.txt")}?branch=${featureCommit}`;
+      assert.ok(foundPath.body.includes(`href="${pathHit}"`));
+      assert.equal((await owner.get(pathHit)).status, 200);
+      const foundCode = await search("code", "Field guide");
+      assert.ok(foundCode.body.includes(`blob/${encodeURIComponent("figures/guide.md")}?branch=${featureCommit}`));
+      assert.match(foundCode.body, /Partial results/);
+      assert.match((await search("commits", "feature note")).body, new RegExp(`/commit/${featureCommit}\\?branch=${featureCommit}`));
+      assert.equal((await viewer.get(`${privateRepo}/search?q=secret&type=code`)).status, 404);
+
+      const avatarForm = new FormData();
+      avatarForm.set("csrf_token", owner.csrf);
+      avatarForm.set("avatar", new Blob([fixturePng], { type: "image/png" }), "portrait.png");
+      redirected(await owner.request("/user/settings/avatar", { method: "POST", headers: { Origin: base }, body: avatarForm }));
+      const visitor = new Client();
+      const avatarUrl = (await visitor.get("/suiteowner")).body.match(/src="(\/user\/avatar\/\d+)"/)?.[1];
+      assert.ok(avatarUrl);
+      for (const path of [`${history}?branch=feature%2Freadme`, `${history}/commits?branch=feature%2Freadme`, `${history}/commit/${featureCommit}`]) {
+        const page = await visitor.get(path);
+        assert.ok(page.body.includes(`src="${avatarUrl}"`), path);
+        assert.doesNotMatch(page.body, /SUITEOWNER@EXAMPLE\.TEST/i);
+      }
 
       const branchPage = await owner.get("/suiteowner/history?branch=feature%2Freadme");
       assert.match(branchPage.body, /<option value="feature\/readme"\s+selected>/);
@@ -688,6 +749,84 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       });
       assert.notEqual(crisscross.status, 302);
       assert.match(crisscross.body, /more than one best common ancestor/);
+
+      const queueBranch = "automation/checks";
+      await git("-C", worktree, "switch", "-c", queueBranch, "main");
+      await writeFile(join(worktree, "CHECKED.txt"), "This change passed the required check.\n");
+      await git("-C", worktree, "add", "CHECKED.txt");
+      await git("-C", worktree, "-c", "core.hooksPath=", "commit", "--no-verify", "-m", "Test required checks");
+      const reviewedOid = (await git("-C", worktree, "rev-parse", "HEAD")).stdout.trim();
+      await git("-C", worktree, "push", "origin", queueBranch);
+      const rulePath = `${history}/settings/branches`;
+      const rule = { action: "save", branch: "main", approvals: "1", checks: "ci/unit" };
+      assert.equal((await viewer.post(rulePath, rule)).status, 403);
+      redirected(await owner.post(rulePath, rule));
+      await assert.rejects(git("-C", worktree, "push", "origin", `${reviewedOid}:refs/heads/main`), /403/);
+      const verifyMain = async (expected, stage) => {
+        const ref = await git("-C", worktree, "ls-remote", "origin", "refs/heads/main").catch((error) => {
+          throw new Error(`Could not read main ${stage}`, { cause: error });
+        });
+        assert.equal(ref.stdout.trim(), `${expected}\trefs/heads/main`, stage);
+      };
+      await verifyMain(mergeTip, "after the rejected direct push");
+      const gatePull = await viewer.post(`${history}/pulls/new`, { title: "Require a review and green CI", base_branch: "main", head_branch: queueBranch });
+      redirected(gatePull);
+      const queuePath = `${gatePull.location}/merge`;
+      const queued = { action: "queue", comparison_version: "1" };
+      assert.equal((await viewer.post(queuePath, queued)).status, 403);
+      redirected(await owner.post(queuePath, queued));
+      for (let attempt = 0; attempt < 8; attempt++) {
+        await tick();
+        if ((await owner.get(gatePull.location)).body.includes("Waiting for required approvals or checks")) break;
+        await delay(50);
+      }
+      assert.match((await owner.get(gatePull.location)).body, /Waiting for required approvals or checks/);
+      const status = (state) => owner.request(`${history}/commit/${reviewedOid}/checks`, {
+        method: "POST", headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ context: "ci/unit", state }),
+      });
+      assert.equal((await status("failure")).status, 204);
+      redirected(await owner.post(`${gatePull.location}/reviews`, { decision: "approved", comparison_version: "1" }));
+      await tick();
+      await verifyMain(mergeTip, "with failing CI");
+      assert.match((await owner.get(gatePull.location)).body, /Checks on the reviewed commit[\s\S]*ci\/unit[\s\S]*Failed/);
+      assert.equal((await status("success")).status, 204);
+      await tick();
+      await verifyMain(reviewedOid, "after the successful queued merge");
+      assert.match((await owner.get(gatePull.location)).body, /Merged by Shard/);
+
+      const hook = `${history}/settings/webhooks`;
+      const signingSecret = "repository-hook-regression-key";
+      const subscription = { action: "create", endpoint: `${config.vars.WEBHOOK_LOCAL_HTTP_ORIGIN}/hooks/history`, secret: signingSecret, label: "History reporter" };
+      assert.equal((await viewer.post(hook, subscription)).status, 403);
+      assert.equal((await owner.post(hook, { ...subscription, endpoint: "http://127.0.0.1:1/hooks" })).status, 400);
+      redirected(await owner.post(hook, subscription));
+      const tagRef = "refs/tags/delivery/v1";
+      await git("-C", worktree, "push", "origin", `${featureCommit}:${tagRef}`);
+      for (let attempt = 0; attempt < 6 && subscriptionDeliveries.length === 0; attempt++) {
+        await tick();
+        await delay(50);
+      }
+      assert.equal(subscriptionDeliveries.length, 1);
+      const delivery = subscriptionDeliveries[0];
+      const report = JSON.parse(delivery.body);
+      assert.deepEqual([report.kind, report.action, report.ref, report.before, report.after], ["tag", "created", tagRef, null, featureCommit]);
+      assert.equal(String(report.event_id), delivery.id);
+      assert.equal(delivery.signature, `sha256=${createHmac("sha256", signingSecret).update(delivery.body).digest("hex")}`);
+      assert.match(delivery.delivery, /^\d+$/);
+      await cli(["d1", "execute", "DB", "--local", "--persist-to", persistence, "--command",
+        "UPDATE webhook_subscription_deliveries SET next_attempt_at=0 WHERE state='pending'"]);
+      await tick();
+      assert.deepEqual(subscriptionDeliveries, [delivery, delivery]);
+      const hookPage = await owner.get(hook);
+      assert.match(hookPage.body, /History reporter/);
+      assert.doesNotMatch(hookPage.body, /repository-hook-regression-key/);
+      const subscription_id = hookPage.body.match(/name="subscription_id" value="(\d+)"/)?.[1];
+      assert.ok(subscription_id);
+      redirected(await owner.post(hook, { action: "disable", subscription_id }));
+      await git("-C", worktree, "push", "origin", `:${tagRef}`);
+      await tick();
+      assert.equal(subscriptionDeliveries.length, 2);
     });
 
     await t.test("Artifacts transfers actual LFS objects with scoped credentials", async () => {
@@ -754,6 +893,49 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       const clone = join(temporary, "private-clone");
       await git(readerToken, "clone", "--config", "core.autocrlf=false", remote, clone);
       assert.equal(await readFile(join(clone, "README.md"), "utf8"), "# Private source\n");
+
+      const releaseTag = "series/v2";
+      await git(ownerToken, "-C", seed, "-c", "user.name=Regression", "-c", "user.email=git@example.test",
+        "tag", "-a", releaseTag, "-m", "Private release");
+      await git(ownerToken, "-C", seed, "push", remote, releaseTag);
+      const releaseNew = `${privateRepo}/releases/new`;
+      const releaseFields = { tag_name: releaseTag, title: "Pinned private release", notes: "<script>alert(1)</script>\n\n![Map](map.png)" };
+      assert.equal((await viewer.post(releaseNew, releaseFields)).status, 403);
+      assert.equal((await owner.post(releaseNew, { ...releaseFields, tag_name: "main" })).status, 422);
+      const draft = await owner.post(releaseNew, releaseFields);
+      redirected(draft);
+      const releasePath = draft.location.replace(/\/edit$/, "");
+      assert.equal((await viewer.get(releasePath)).status, 404);
+      assert.equal((await owner.post(releaseNew, releaseFields)).status, 409);
+      redirected(await owner.post(draft.location, { ...releaseFields, version: "1", action: "publish" }));
+      assert.equal((await owner.post(draft.location, { ...releaseFields, version: "1", action: "publish" })).status, 409);
+      const alternate = (await git(ownerToken, "-C", seed, "-c", "user.name=Regression", "-c", "user.email=git@example.test",
+        "commit-tree", "HEAD^{tree}", "-p", oid, "-m", "Move tag after publication")).stdout.trim();
+      await git(ownerToken, "-C", seed, "push", remote, `+${alternate}:refs/tags/${releaseTag}`);
+      const release = await viewer.get(releasePath);
+      assert.equal(release.status, 200);
+      assert.ok(release.body.includes(`/archive/${oid}`));
+      assert.ok(release.body.includes(`/media/map.png?branch=${oid}`));
+      assert.doesNotMatch(release.body, /<script>/);
+      assert.equal((await outsider.get(releasePath)).status, 404);
+
+      for (const path of ["watch", "star"]) {
+        redirected(await viewer.post(`${privateRepo}/${path}`, { active: "1" }));
+        redirected(await viewer.post(`${privateRepo}/${path}`, { active: "1" }));
+      }
+      const watched = await owner.post(`${privateRepo}/issues/new`, { title: "Private watched issue" });
+      redirected(watched);
+      assert.equal([...((await viewer.get("/user/notifications")).body.matchAll(/>Private watched issue</g))].length, 1);
+      assert.doesNotMatch((await owner.get("/user/notifications")).body, />Private watched issue</);
+      assert.match((await viewer.get("/user/stars")).body, /suiteowner\/private-vault/);
+      const reaction = `${watched.location}/reactions`;
+      assert.equal((await outsider.post(reaction, { reaction: "up", active: "1" })).status, 404);
+      for (let attempt = 0; attempt < 2; attempt++) {
+        redirected(await viewer.post(reaction, { reaction: "up", active: "1" }));
+      }
+      assert.match((await viewer.get(watched.location)).body, /aria-pressed="true">\s*Upvote <span[^>]*>1</);
+      redirected(await viewer.post(reaction, { reaction: "up", active: "0" }));
+      assert.match((await viewer.get(watched.location)).body, /aria-pressed="false">\s*Upvote <span[^>]*>0</);
       redirected(await owner.post(access, { username: "suiteviewer", role: "write" }));
       const readCredential = await viewer.post("/user/settings/tokens", { name: "read-only CI", scope: "read" });
       const readSecret = readCredential.body.match(/\bshard_[a-f0-9]{64}\b/)?.[0];
@@ -771,6 +953,19 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       const catalog = `${privateRepo}/settings/issues`;
       redirected(await owner.post(catalog, { action: "create_label", name: "review-required" }));
       redirected(await owner.post(catalog, { action: "create_milestone", name: "delivery-window" }));
+      const templates = `${privateRepo}/settings/issue-templates`;
+      const template = { name: "Bug report", title: "Default bug title", body: "Reproduction details" };
+      assert.equal((await viewer.post(templates, template)).status, 403);
+      redirected(await owner.post(templates, template));
+      const formPath = `${privateRepo}/issues/new`;
+      const newIssue = await viewer.get(formPath);
+      const templateId = newIssue.body.match(/<option value="(\d+)"[^>]*>Bug report/)?.[1];
+      assert.ok(templateId);
+      const draftIssue = await viewer.post(formPath, { issue_template: templateId, apply_issue_template: "1", title: "My title" });
+      assert.equal(draftIssue.status, 200);
+      assert.match(draftIssue.body, /name="title" value="My title"/);
+      assert.match(draftIssue.body, /Reproduction details/);
+      assert.doesNotMatch((await viewer.get(`${privateRepo}/issues`)).body, />My title</);
       assert.equal((await owner.post(catalog, { action: "create_label", name: "REVIEW-REQUIRED" })).status, 409);
       const thread = await viewer.post(`${privateRepo}/issues/new`, { title: "Protected classification", body: "before edit" });
       redirected(thread);
@@ -810,6 +1005,57 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       assert.equal((await viewer.post(`/user/notifications/${notification}/read`, {})).status, 404);
       assert.doesNotMatch((await viewer.get("/user/notifications")).body, /Protected classification/);
       assert.doesNotMatch((await viewer.get("/explore/repos?q=private-vault")).body, /href="\/suiteowner\/private-vault/);
+      assert.equal((await viewer.get(releasePath)).status, 404);
+      assert.doesNotMatch((await viewer.get("/user/stars")).body, /suiteowner\/private-vault/);
+      assert.doesNotMatch((await viewer.get("/user/notifications")).body, />Private watched issue</);
+
+      const orgs = "/user/organizations";
+      const org = `${orgs}/regression-team`;
+      const team = `${org}/teams/maintainers`;
+      const offer = `${privateRepo}/settings/organization`;
+      redirected(await owner.post(orgs, { slug: "regression-team" }));
+      redirected(await owner.post(org, { action: "add_member", username: "suiteviewer" }));
+      redirected(await owner.post(org, { action: "create_team", slug: "maintainers" }));
+      const organization_id = (await owner.get(offer)).body.match(/<option value="(\d+)">regression-team</)?.[1];
+      assert.ok(organization_id);
+      redirected(await owner.post(offer, { action: "offer", organization_id }));
+      const link_id = (await owner.get(org)).body.match(/name="link_id" value="(\d+)"/)?.[1];
+      assert.ok(link_id);
+      assert.equal((await viewer.post(org, { action: "accept", link_id })).status, 403);
+      redirected(await owner.post(org, { action: "accept", link_id }));
+      redirected(await owner.post(team, { action: "add_member", user_id: assignee_id }));
+      redirected(await owner.post(team, { action: "grant", link_id, role: "read" }));
+      assert.equal((await viewer.get(privateRepo)).status, 200);
+      assert.equal((await viewer.request(`${privateRef}git-receive-pack`, auth(readerToken))).status, 401);
+      redirected(await owner.post(team, { action: "grant", link_id, role: "write" }));
+      assert.equal((await viewer.request(`${privateRef}git-receive-pack`, auth(readerToken))).status, 200);
+      redirected(await viewer.post(edit, fields));
+      redirected(await owner.post(team, { action: "remove_member", user_id: assignee_id }));
+      assert.equal((await viewer.get(privateRepo)).status, 404);
+      assert.equal((await viewer.request(`${privateRef}git-upload-pack`, auth(readerToken))).status, 404);
+    });
+
+    await t.test("portable metadata import is owner-only and atomic", async () => {
+      const repo = "/suiteowner/portable-metadata";
+      redirected(await owner.post("/repo/create", { name: "portable-metadata" }));
+      const path = `${repo}/settings/metadata-import`;
+      const thread = { number: 42, title: "Imported work item", state: "open", created_at: 1700000000, updated_at: 1700000000 };
+      const bundle = { version: 1, source: { url: "https://git.example.test/owner/repo.git", private: false }, threads: [thread], releases: [] };
+      const submit = (client, value) => {
+        const form = new FormData();
+        form.set("csrf_token", client.csrf);
+        form.set("bundle", JSON.stringify(value));
+        return client.request(path, { method: "POST", headers: { Origin: base }, body: form });
+      };
+      assert.equal((await submit(viewer, bundle)).status, 404);
+      assert.equal((await submit(owner, { ...bundle, version: 2 })).status, 422);
+      assert.equal((await submit(owner, bundle)).status, 200);
+      assert.match((await viewer.get(`${repo}/issues/42`)).body, /Imported work item/);
+      assert.equal((await submit(owner, { ...bundle, threads: [{ ...thread, number: 43 }, thread] })).status, 409);
+      assert.equal((await viewer.get(`${repo}/issues/43`)).status, 404);
+      const next = await viewer.post(`${repo}/issues/new`, { title: "Next local work item" });
+      redirected(next);
+      assert.equal(next.location, `${repo}/issues/43`);
     });
 
     await t.test("renames, transfers and forks preserve Git data with canonical access", async () => {
@@ -1074,11 +1320,6 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
         title: "Webhook test issue",
       });
       redirected(opened);
-      const tick = async () => {
-        const result = await fetch(`${base}/__scheduled?cron=${encodeURIComponent("* * * * *")}`);
-        assert.equal(result.status, 200);
-        await result.text();
-      };
       const stored = async () => JSON.parse(await cli(["d1", "execute", "DB", "--local", "--persist-to", persistence,
         "--json", "--command", "SELECT d.state, d.attempts, d.last_status FROM webhook_deliveries d JOIN repos r ON r.id=d.repo_id WHERE r.artifacts_repo='webhook-regression-repo'"]))[0].results;
       await tick();

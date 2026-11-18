@@ -1,0 +1,16 @@
+<details class="refs-remove">
+  <summary>{{ chrome.locale.t(crate::i18n::BranchText::DeleteRef) }}</summary>
+  <form class="form" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/refs">
+    {% include "csrf.html" %}
+    <input type="hidden" name="kind" value="{{ ref_kind }}">
+    <input type="hidden" name="name" value="{{ ref_name }}">
+    <input type="hidden" name="oid" value="{{ ref_oid }}">
+    <label class="field">
+      <span>{{ chrome.locale.t(crate::i18n::BranchText::DeleteRefName) }}</span>
+      <input class="input mono" name="confirm" maxlength="255" required>
+    </label>
+    <div class="form__actions">
+      <button class="btn btn--danger btn--sm" type="submit" name="action" value="delete">{{ chrome.locale.t(crate::i18n::BranchText::DeleteRef) }}</button>
+    </div>
+  </form>
+</details>

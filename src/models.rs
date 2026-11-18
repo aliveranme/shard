@@ -139,6 +139,7 @@ impl Issue {
 #[derive(Clone, Deserialize)]
 pub struct Pull {
     pub issue_id: i64,
+    pub source_repo_id: Option<i64>,
     pub head_branch: String,
     pub base_branch: String,
     #[serde(flatten)]
@@ -146,6 +147,12 @@ pub struct Pull {
     pub merged: i64,
     pub merged_at: Option<Ts>,
     pub merge_commit: Option<String>,
+}
+
+impl Pull {
+    pub fn source_repo_id(&self, target_id: i64) -> i64 {
+        self.source_repo_id.unwrap_or(target_id)
+    }
 }
 
 #[derive(Clone, Deserialize)]

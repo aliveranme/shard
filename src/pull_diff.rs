@@ -41,14 +41,14 @@ impl ChangedFile {
         (before != after).then_some((before, after))
     }
 
-    pub async fn lines(&self, repo: &RepoHandle) -> Result<FileDiff> {
+    pub async fn lines(&self, target: &RepoHandle, source: &RepoHandle) -> Result<FileDiff> {
         if let (Some(before), Some(after)) = (&self.before, &self.after) {
             if before.hash == after.hash {
                 return Ok(FileDiff::Unchanged);
             }
         }
         let mut text = [String::new(), String::new()];
-        for (entry, output) in [&self.before, &self.after].into_iter().zip(&mut text) {
+        for ((entry, repo), output) in [(&self.before, target), (&self.after, source)].into_iter().zip(&mut text) {
             let Some(entry) = entry else { continue };
             if entry.mode == "160000" {
                 return Ok(FileDiff::Submodule);
@@ -69,28 +69,33 @@ impl ChangedFile {
     }
 }
 
-pub async fn compare(repo: &RepoHandle, base: &str, head: &str) -> Result<Comparison> {
+pub async fn compare(target: &RepoHandle, source: &RepoHandle, base: &str, head: &str) -> Result<Comparison> {
     if !is_object_id(base) || !is_object_id(head) {
         return Ok(Comparison::MissingSnapshot);
     }
-    let Some(base_tree) = commit_tree(repo, base).await? else {
+    let Some(base_tree) = commit_tree(target, base).await? else {
         return Ok(Comparison::MissingSnapshot);
     };
-    let head_tree = if base == head {
+    let same = std::ptr::eq(target, source);
+    let head_tree = if same && base == head {
         None
     } else {
-        let Some(tree) = commit_tree(repo, head).await? else {
+        let Some(tree) = commit_tree(source, head).await? else {
             return Ok(Comparison::MissingSnapshot);
         };
         Some(tree)
     };
     let head_tree = head_tree.as_deref().unwrap_or(&base_tree);
     if base_tree == head_tree {
-        repo.read_tree_bounded(&base_tree, 0).await?;
+        target.read_tree_bounded(&base_tree, 0).await?;
+        if !same {
+            source.read_tree_bounded(head_tree, 0).await?;
+        }
         return Ok(Comparison::Complete(Vec::new()));
     }
     let mut walk = Walk {
-        repo,
+        target,
+        source,
         reads_left: MAX_TREE_READS,
         entries_left: MAX_ENTRIES,
         changed: Vec::new(),
@@ -111,7 +116,8 @@ async fn commit_tree(repo: &RepoHandle, id: &str) -> Result<Option<String>> {
 }
 
 struct Walk<'a> {
-    repo: &'a RepoHandle,
+    target: &'a RepoHandle,
+    source: &'a RepoHandle,
     reads_left: u8,
     entries_left: u32,
     changed: Vec<ChangedFile>,
@@ -119,13 +125,13 @@ struct Walk<'a> {
 }
 
 impl Walk<'_> {
-    async fn entries(&mut self, hash: Option<&str>) -> Result<Option<Vec<TreeEntry>>> {
+    async fn entries(&mut self, repo: &RepoHandle, hash: Option<&str>) -> Result<Option<Vec<TreeEntry>>> {
         let Some(hash) = hash else { return Ok(Some(Vec::new())) };
         if self.reads_left == 0 {
             return Ok(None);
         }
         self.reads_left -= 1;
-        let Some(mut entries) = self.repo.read_tree_bounded(hash, self.entries_left).await? else {
+        let Some(mut entries) = repo.read_tree_bounded(hash, self.entries_left).await? else {
             return Ok(None);
         };
         self.entries_left -= entries.len() as u32;
@@ -140,8 +146,8 @@ impl Walk<'_> {
         if depth > MAX_DEPTH {
             return Ok(false);
         }
-        let Some(base) = self.entries(base).await? else { return Ok(false) };
-        let Some(head) = self.entries(head).await? else { return Ok(false) };
+        let Some(base) = self.entries(self.target, base).await? else { return Ok(false) };
+        let Some(head) = self.entries(self.source, head).await? else { return Ok(false) };
         let mut base = base.into_iter().peekable();
         let mut head = head.into_iter().peekable();
         loop {

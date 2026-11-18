@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "repo_header.html" %}
+<div class="page">
+  <header class="page-head">
+    <div>
+      <h1 class="page-title">{{ chrome.locale.t(crate::i18n::BranchText::Protection) }}</h1>
+      <p class="page-sub">{{ chrome.locale.t(crate::i18n::BranchText::ProtectionHelp) }}</p>
+    </div>
+  </header>
+  <div class="settings-main">
+    <form class="form card card--narrow" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/settings/branches">
+      {% include "csrf.html" %}
+      <div class="two-col">
+        <label class="field">
+          <span>{{ chrome.locale.t(crate::i18n::BranchText::BranchName) }}</span>
+          <input class="input mono" name="branch" placeholder="{{ repo.default_branch }}" maxlength="255" required>
+        </label>
+        <label class="field">
+          <span>{{ chrome.locale.t(crate::i18n::BranchText::RequiredApprovals) }}</span>
+          <input class="input" type="number" name="approvals" min="0" max="20" value="0" required>
+        </label>
+      </div>
+      <label class="field">
+        <span>{{ chrome.locale.t(crate::i18n::BranchText::RequiredChecks) }}</span>
+        <textarea class="textarea mono" name="checks" rows="3" aria-describedby="branch-checks-help"></textarea>
+      </label>
+      <p class="help" id="branch-checks-help">{{ chrome.locale.t(crate::i18n::BranchText::ChecksHelp) }}</p>
+      <div class="form__actions">
+        <button class="btn btn--primary" name="action" value="save" type="submit">{{ chrome.locale.t(crate::i18n::BranchText::SaveRule) }}</button>
+      </div>
+    </form>
+    {% if rules.is_empty() %}
+      <p class="card card--narrow muted">{{ chrome.locale.t(crate::i18n::BranchText::NoRules) }}</p>
+    {% else %}
+      {% for rule in rules %}
+        <section class="card card--narrow" aria-labelledby="rule-{{ loop.index }}">
+          <h2 class="card__title" id="rule-{{ loop.index }}"><bdi class="mono">{{ rule.branch }}</bdi></h2>
+          <form class="form" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/settings/branches">
+            {% include "csrf.html" %}
+            <input type="hidden" name="branch" value="{{ rule.branch }}">
+            <div class="two-col">
+              <label class="field">
+                <span>{{ chrome.locale.t(crate::i18n::BranchText::RequiredApprovals) }}</span>
+                <input class="input" type="number" name="approvals" min="0" max="20" value="{{ rule.approvals }}" required>
+              </label>
+              <label class="field">
+                <span>{{ chrome.locale.t(crate::i18n::BranchText::RequiredChecks) }}</span>
+                <textarea class="textarea mono" name="checks" rows="3">{{ rule.contexts() }}</textarea>
+              </label>
+            </div>
+            <div class="form__actions">
+              <button class="btn btn--ghost" name="action" value="save" type="submit">{{ chrome.locale.t(crate::i18n::BranchText::SaveRule) }}</button>
+            </div>
+          </form>
+          <details class="rule-remove">
+            <summary>{{ chrome.locale.t(crate::i18n::BranchText::RemoveRule) }}</summary>
+            <form class="form" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/settings/branches">
+              {% include "csrf.html" %}
+              <input type="hidden" name="branch" value="{{ rule.branch }}">
+              <label class="field">
+                <span>{{ chrome.locale.t(crate::i18n::BranchText::ConfirmName) }}</span>
+                <input class="input mono" name="confirm" required>
+              </label>
+              <div class="form__actions">
+                <button class="btn btn--danger" name="action" value="remove" type="submit">{{ chrome.locale.t(crate::i18n::BranchText::RemoveRule) }}</button>
+              </div>
+            </form>
+          </details>
+        </section>
+      {% endfor %}
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

@@ -23,6 +23,11 @@
       <input class="input" id="title" name="title" value="{{ title_value }}" placeholder="{% if is_pull %}{{ chrome.locale.t(crate::i18n::DiscussionText::PullTitleExample) }}{% else %}{{ chrome.locale.t(crate::i18n::DiscussionText::IssueTitleExample) }}{% endif %}" required autofocus>
     </div>
     {% if is_pull %}
+    <div class="field">
+      <label for="source_repo">{{ chrome.locale.t(crate::i18n::DiscussionText::SourceRepository) }}</label>
+      <input class="input mono" id="source_repo" name="source_repo" value="{{ source_value }}" dir="ltr" aria-describedby="source_repo_help">
+      <p class="help muted" id="source_repo_help">{{ chrome.locale.t(crate::i18n::DiscussionText::SourceRepositoryHelp) }}</p>
+    </div>
     <div class="two-col">
       <div class="field">
         <label for="base_branch">{{ chrome.locale.t(crate::i18n::DiscussionText::BaseBranch) }}</label>
@@ -40,12 +45,13 @@
     {% endif %}
     <div class="field">
       <label for="body">{{ chrome.locale.t(crate::i18n::DiscussionText::Description) }}</label>
-      <textarea class="textarea" id="body" name="body" placeholder="{{ chrome.locale.t(crate::i18n::CommonText::MarkdownSupported) }}">{{ body_value }}</textarea>
+      <textarea class="textarea" id="body" name="body" placeholder="{{ chrome.locale.t(crate::i18n::CommonText::MarkdownSupported) }}">&#10;{{ body_value }}</textarea>
     </div>
     <div class="form__actions">
       <button class="btn btn--primary" type="submit">{% if is_pull %}{{ chrome.locale.t(crate::i18n::DiscussionText::CreatePullRequest) }}{% else %}{{ chrome.locale.t(crate::i18n::DiscussionText::CreateIssue) }}{% endif %}</button>
       <a class="btn btn--ghost" href="/{{ repo.owner_name }}/{{ repo.name }}/{% if is_pull %}pulls{% else %}issues{% endif %}">{{ chrome.locale.t(crate::i18n::DiscussionText::Cancel) }}</a>
     </div>
+    {% if !is_pull && !issue_templates.is_empty() %}{% include "issue_template_picker.html" %}{% endif %}
   </form>
 </div>
 {% endblock %}

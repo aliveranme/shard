@@ -500,6 +500,7 @@ pub async fn settings(req: Request, ctx: RouteContext<AppState>) -> Result<Respo
             Some("branch-not-found") => Some(RepoText::DefaultBranchNotFound),
             Some("branch-check-limit") => Some(RepoText::RefsLimit),
             Some("branch-check-unavailable") => Some(RepoText::StorageUnavailable),
+            Some("git-head-unavailable") => Some(RepoText::GitHeadUnavailable),
             _ => None,
         }.map(|key| state.locale.t(key).into()),
         message: util::query_param(&req, "saved").filter(|value| value == "1"),
@@ -527,16 +528,21 @@ pub async fn update_settings(_req: Request, ctx: RouteContext<AppState>) -> Resu
     let default_branch = util::form_value(form, "default_branch")
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| repo.default_branch.clone());
-    if default_branch != repo.default_branch {
-        let inventory = match RepoHandle::open(&state.env, &repo).await {
-            Ok(handle) => refs::load(&handle).await,
-            Err(error) => {
-                console_log!("repository: verify web default branch: {error}");
-                Err(RefsError::Unavailable)
-            }
-        };
+    let sync_head = default_branch != repo.default_branch || util::form_value(form, "sync_git_head").as_deref() == Some("1");
+    let mut override_head = None;
+    if sync_head {
+        let inventory = async {
+            let handle = RepoHandle::open(&state.env, &repo).await.map_err(|_| RefsError::Unavailable)?;
+            let refs = refs::load(&handle).await?;
+            Ok::<_, RefsError>((handle, refs))
+        }.await;
         let error = match inventory {
-            Ok(refs) if refs.branches.iter().any(|branch| branch.name == default_branch) => None,
+            Ok((handle, refs)) if refs.branches.iter().any(|branch| branch.name == default_branch) => {
+                match handle.set_default_branch(&default_branch).await {
+                    Ok(advertise) => { override_head = Some(i64::from(advertise)); None }
+                    Err(_) => Some("git-head-unavailable"),
+                }
+            }
             Ok(_) => Some("branch-not-found"),
             Err(RefsError::Limit) => Some("branch-check-limit"),
             Err(RefsError::Unavailable) => Some("branch-check-unavailable"),
@@ -550,11 +556,12 @@ pub async fn update_settings(_req: Request, ctx: RouteContext<AppState>) -> Resu
         let database = state.db()?;
         db::run(
             &database,
-            "UPDATE repos SET description = ?, visibility = ?, default_branch = ?, updated_at = ? WHERE id = ?",
+            "UPDATE repos SET description = ?, visibility = ?, default_branch = ?, git_head_override = COALESCE(?, git_head_override), updated_at = ? WHERE id = ?",
             &[
                 util::js_text(&description),
                 util::js_text(visibility),
                 util::js_text(&default_branch),
+                override_head.map_or_else(util::js_null, util::js_int),
                 util::js_int(util::now()),
                 util::js_int(repo.id),
             ],

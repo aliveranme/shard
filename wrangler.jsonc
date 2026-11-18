@@ -28,8 +28,7 @@
     { "name": "REQUEST_LIMITER", "namespace_id": "2001", "simple": { "limit": 300, "period": 60 } }
   ],
   "triggers": {
-    "crons": ["0 3 * * *"]
-    // Add "* * * * *" in the deployment config when enabling signed webhooks.
+    "crons": ["0 3 * * *", "* * * * *"]
   },
   "observability": {
     "enabled": true,
@@ -42,6 +41,7 @@
         "NATIVE_GIT_ORIGIN": "http://127.0.0.1:8793"
       },
       "secrets": { "required": ["NATIVE_GIT_TOKEN"] },
+      "triggers": { "crons": ["0 3 * * *", "* * * * *"] },
       "artifacts": [],
       "d1_databases": [
         {

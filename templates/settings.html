@@ -24,6 +24,11 @@
       <a href="/{{ repo.owner_name }}/{{ repo.name }}/settings/collaborators">{{ chrome.locale.t(crate::i18n::CollaboratorText::Collaborators) }}</a>
       <a href="/{{ repo.owner_name }}/{{ repo.name }}/settings/lifecycle">{{ chrome.locale.t(crate::i18n::LifecycleText::RepositoryLifecycle) }}</a>
       <a href="/{{ repo.owner_name }}/{{ repo.name }}/settings/issues">{{ chrome.locale.t(crate::i18n::IssueMetadataText::Catalog) }}</a>
+      <a href="/{{ repo.owner_name }}/{{ repo.name }}/settings/issue-templates">{{ chrome.locale.t(crate::i18n::RepoFeatureText::IssueTemplates) }}</a>
+      <a href="/{{ repo.owner_name }}/{{ repo.name }}/settings/organization">{{ chrome.locale.t(crate::i18n::OrganizationText::Organizations) }}</a>
+      <a href="/{{ repo.owner_name }}/{{ repo.name }}/settings/webhooks">{{ chrome.locale.t(crate::i18n::WebhookText::Webhooks) }}</a>
+      <a href="/{{ repo.owner_name }}/{{ repo.name }}/settings/metadata-import">{{ chrome.locale.t(crate::i18n::LifecycleText::MetadataImport) }}</a>
+      <a href="/{{ repo.owner_name }}/{{ repo.name }}/settings/branches">{{ chrome.locale.t(crate::i18n::BranchText::Protection) }}</a>
     </nav>
 
     <div class="settings-main">
@@ -40,9 +45,9 @@
           </div>
           <div class="two-col">
             <div class="field">
-              <label for="default_branch">{{ chrome.locale.t(crate::i18n::RepoText::WebDefaultBranch) }}</label>
+              <label for="default_branch">{{ chrome.locale.t(crate::i18n::RepoText::DefaultBranch) }}</label>
               <input class="input mono" id="default_branch" name="default_branch" value="{{ repo.default_branch }}" aria-describedby="default-branch-help">
-              <span class="help" id="default-branch-help">{{ chrome.locale.t(crate::i18n::RepoText::WebDefaultBranchHelp) }}</span>
+              <span class="help" id="default-branch-help">{{ chrome.locale.t(crate::i18n::RepoText::DefaultBranchHelp) }}</span>
             </div>
             <div class="field">
               <label for="visibility">{{ chrome.locale.t(crate::i18n::RepoText::Visibility) }}</label>
@@ -54,6 +59,7 @@
           </div>
           <div class="form__actions">
             <button class="btn btn--primary" type="submit">{{ chrome.locale.t(crate::i18n::RepoText::SaveSettings) }}</button>
+            <button class="btn btn--ghost" type="submit" name="sync_git_head" value="1">{{ chrome.locale.t(crate::i18n::RepoText::SyncGitHead) }}</button>
           </div>
         </form>
       </section>

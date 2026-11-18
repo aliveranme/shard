@@ -12,6 +12,8 @@ mod collaborators;
 mod crypto;
 mod ctx;
 mod db;
+mod git_activity;
+mod git_wire;
 mod git_storage;
 mod handlers;
 mod i18n;
@@ -19,6 +21,8 @@ mod issue_filters;
 mod issue_metadata;
 mod lfs;
 mod markdown;
+mod branch_rules;
+mod metadata_import;
 mod models;
 mod native_git;
 mod notifications;
@@ -64,6 +68,13 @@ fn routes(router: Router<AppState>) -> Router<AppState> {
         .post_async("/user/notifications/:id/read", notifications::read_one)
         .post_async("/user/notifications/read-all", notifications::read_all)
         .get_async("/user/avatar/:id", avatar::show)
+        .get_async("/user/stars", repo_features::starred)
+        .get_async("/user/organizations", organizations::index)
+        .post_async("/user/organizations", organizations::create)
+        .get_async("/user/organizations/:org", organizations::show)
+        .post_async("/user/organizations/:org", organizations::update)
+        .get_async("/user/organizations/:org/teams/:team", organizations::team)
+        .post_async("/user/organizations/:org/teams/:team", organizations::update_team)
         .get_async("/user/settings", handlers::auth_handlers::account_page)
         .post_async("/user/settings/avatar", handlers::auth_handlers::update_avatar)
         .post_async("/user/settings/avatar/remove", handlers::auth_handlers::remove_avatar)
@@ -102,6 +113,17 @@ fn routes(router: Router<AppState>) -> Router<AppState> {
         .post_async("/:owner/:repo/commit/:hash/checks", handlers::checks::record)
         .get_async("/:owner/:repo/archive/:hash", repo_objects::archive)
         .get_async("/:owner/:repo/refs", handlers::repos::references)
+        .post_async("/:owner/:repo/refs", branch_rules::write_ref)
+        .get_async("/:owner/:repo/search", repo_search::search)
+        .get_async("/:owner/:repo/releases", repo_features::releases)
+        .get_async("/:owner/:repo/releases/new", repo_features::new_release)
+        .post_async("/:owner/:repo/releases/new", repo_features::create_release)
+        .get_async("/:owner/:repo/releases/:id", repo_features::release)
+        .get_async("/:owner/:repo/releases/:id/edit", repo_features::edit_release)
+        .post_async("/:owner/:repo/releases/:id/edit", repo_features::update_release)
+        .post_async("/:owner/:repo/releases/:id/delete", repo_features::delete_release)
+        .post_async("/:owner/:repo/watch", repo_features::watch)
+        .post_async("/:owner/:repo/star", repo_features::star)
         .get_async("/:owner/:repo/fork", repo_lifecycle::fork_form)
         .post_async("/:owner/:repo/fork", repo_lifecycle::fork)
         .get_async("/:owner/:repo/src", handlers::repos::tree)
@@ -117,12 +139,24 @@ fn routes(router: Router<AppState>) -> Router<AppState> {
         .post_async("/:owner/:repo/settings/collaborators/revoke", collaborators::revoke)
         .get_async("/:owner/:repo/settings/issues", issue_metadata::catalog)
         .post_async("/:owner/:repo/settings/issues", issue_metadata::catalog_action)
+        .get_async("/:owner/:repo/settings/issue-templates", repo_features::issue_templates)
+        .post_async("/:owner/:repo/settings/issue-templates", repo_features::save_issue_template)
+        .post_async("/:owner/:repo/settings/issue-templates/:id/delete", repo_features::delete_issue_template)
+        .get_async("/:owner/:repo/settings/organization", organizations::repository)
+        .post_async("/:owner/:repo/settings/organization", organizations::update_repository)
+        .get_async("/:owner/:repo/settings/webhooks", webhooks::page)
+        .post_async("/:owner/:repo/settings/webhooks", webhooks::update)
+        .get_async("/:owner/:repo/settings/metadata-import", metadata_import::form)
+        .post_async("/:owner/:repo/settings/metadata-import", metadata_import::submit)
+        .get_async("/:owner/:repo/settings/branches", branch_rules::settings)
+        .post_async("/:owner/:repo/settings/branches", branch_rules::update)
         .get_async("/:owner/:repo/settings/lifecycle", repo_lifecycle::settings)
         .post_async("/:owner/:repo/settings/lifecycle", repo_lifecycle::update)
         // Issues and pull requests
         .get_async("/:owner/:repo/issues", handlers::issues::list_issues)
         .get_async("/:owner/:repo/issues/new", handlers::issues::new_issue_form)
         .post_async("/:owner/:repo/issues/new", handlers::issues::create_issue)
+        .post_async("/:owner/:repo/issues/:number/reactions", repo_features::react)
         .get_async("/:owner/:repo/issues/:number", handlers::issues::detail_issue)
         .get_async("/:owner/:repo/issues/:number/edit", issue_metadata::edit_form)
         .post_async("/:owner/:repo/issues/:number/edit", issue_metadata::save_edit)
@@ -140,6 +174,7 @@ fn routes(router: Router<AppState>) -> Router<AppState> {
         .get_async("/:owner/:repo/pulls/:number", handlers::issues::detail_pull)
         .post_async("/:owner/:repo/pulls/:number/reviews", pull_review::submit)
         .post_async("/:owner/:repo/pulls/:number/comparison", pull_review::refresh)
+        .post_async("/:owner/:repo/pulls/:number/merge", branch_rules::request_merge)
         .post_async(
             "/:owner/:repo/pulls/:number/comments",
             handlers::issues::comment,
@@ -252,6 +287,11 @@ async fn serve(mut req: Request, env: Env, worker_ctx: Context, request_id: &str
                     avatar::FormError::Invalid => (400, locale.t(AccountText::AvatarInvalidForm)),
                     avatar::FormError::TooLarge => (413, locale.t(AccountText::AvatarTooLarge)),
                 })
+            } else if metadata_import::is_form_path(&req.path()) {
+                avatar::read_form(&mut req).await.map_err(|error| match error {
+                    avatar::FormError::Invalid => (400, locale.t(CommonText::UnreadableForm)),
+                    avatar::FormError::TooLarge => (413, locale.t(i18n::LifecycleText::MetadataTooLarge)),
+                })
             } else {
                 req.form_data().await.map_err(|_| (400, locale.t(CommonText::UnreadableForm)))
             };
@@ -296,13 +336,20 @@ async fn serve(mut req: Request, env: Env, worker_ctx: Context, request_id: &str
 }
 
 #[event(scheduled)]
-async fn scheduled(event: ScheduledEvent, env: Env, ctx: ScheduleContext) {
+async fn scheduled(event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
     if event.cron() == "* * * * *" {
-        ctx.wait_until(async move {
-            if webhooks::deliver_pending(&env).await.is_err() {
-                console_log!("event=webhook_delivery_failed");
-            }
-        });
+        if repo_lifecycle::reconcile_pending(&env).await.is_err() {
+            console_log!("event=repository_copy_reconcile_failed");
+        }
+        if pull_review::refresh_pending(&env).await.is_err() {
+            console_log!("event=pull_comparison_refresh_failed");
+        }
+        if branch_rules::process_queue(&env).await.is_err() {
+            console_log!("event=merge_queue_failed");
+        }
+        if webhooks::deliver_pending(&env).await.is_err() {
+            console_log!("event=webhook_delivery_failed");
+        }
         return;
     }
     if let Err(error) = auth::cleanup_expired(&env).await {

@@ -1,7 +1,8 @@
 use crate::artifacts::{self, Artifacts};
+use crate::git_wire;
 use crate::i18n::RepoText;
 use crate::models::Repo;
-use crate::native_git::{NativeGit, NativeRepo};
+use crate::native_git::{NativeGit, NativeRepo, RemoteRepo, WriteError};
 use js_sys::Uint8Array;
 use serde::Deserialize;
 use wasm_bindgen_futures::JsFuture;
@@ -260,6 +261,61 @@ impl RepoHandle {
         match self {
             Self::Artifacts(repo) => Ok(repo.read_file(git_ref, path).await?.map(GitFile::Artifacts)),
             Self::Native(repo) => repo.read_file(git_ref, path, limit).await,
+        }
+    }
+
+    pub(crate) async fn write_ref(&self, reference: &str, before: &str, after: &str) -> std::result::Result<(), WriteError> {
+        if let Self::Native(repo) = self {
+            return repo.write_ref(reference, after, before).await;
+        }
+        let body = git_wire::update_request(reference, before, after).await.map_err(|_| WriteError::Unavailable)?;
+        let init = RequestInit { method: worker::Method::Post, body: Some(body), ..Default::default() };
+        init.headers.set("Content-Type", "application/x-git-receive-pack-request").map_err(|_| WriteError::Unavailable)?;
+        let response = self.git_request("git-receive-pack", "", true, "", init).await.map_err(|_| WriteError::Unavailable)?;
+        if response.status_code() != 200 {
+            return Err(WriteError::Unavailable);
+        }
+        let ResponseBody::Stream(body) = response.body() else { return Err(WriteError::Unavailable) };
+        let applied = git_wire::receive_report(body, false).await.map_err(|_| WriteError::Unavailable)?;
+        if applied.iter().any(|name| name == reference) { Ok(()) } else { Err(WriteError::Stale) }
+    }
+
+    pub(crate) async fn set_default_branch(&self, branch: &str) -> std::result::Result<bool, WriteError> {
+        match self {
+            Self::Native(repo) => {
+                repo.set_head(&format!("refs/heads/{branch}")).await?;
+                Ok(false)
+            }
+            Self::Artifacts(_) => Ok(true),
+        }
+    }
+
+    pub(crate) async fn merge_saved(
+        &self, env: &Env, reference: &str, base: &str, head: &str, fast_forward: bool,
+        source: Option<(&Self, &str)>,
+    ) -> std::result::Result<String, WriteError> {
+        match (self, source) {
+            (Self::Native(repo), None) => repo.merge(reference, base, head, None).await,
+            (Self::Native(repo), Some((Self::Native(_), id))) => repo.merge(reference, base, head, Some(id)).await,
+            (Self::Artifacts(_), None) if fast_forward => {
+                self.write_ref(reference, base, head).await?;
+                Ok(head.to_owned())
+            }
+            (Self::Artifacts(repo), source @ (None | Some((Self::Artifacts(_), _)))) => {
+                let native = NativeGit::from_env(env).map_err(|_| WriteError::Unsupported)?;
+                let remote = repo.remote().await.map_err(|_| WriteError::Unavailable)?;
+                let token = repo.create_token("write", 300).await.map_err(|_| WriteError::Unavailable)?;
+                let target = RemoteRepo { remote: &remote, token: &token };
+                let source_credentials = if let Some((Self::Artifacts(source), _)) = source {
+                    Some((source.remote().await.map_err(|_| WriteError::Unavailable)?,
+                        source.create_token("read", 300).await.map_err(|_| WriteError::Unavailable)?))
+                } else {
+                    None
+                };
+                let source = source_credentials.as_ref().map(|(remote, token)| RemoteRepo { remote, token });
+                native.merge_remote(reference, base, head, &target, source.as_ref()).await
+            }
+            _ => Err(WriteError::Unsupported),
         }
     }
 

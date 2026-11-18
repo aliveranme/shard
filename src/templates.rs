@@ -160,6 +160,7 @@ pub struct FilePreview {
 
 #[derive(Clone)]
 pub struct PullView {
+    pub source_name: Option<String>,
     pub head_branch: String,
     pub base_branch: String,
     pub snapshot: PullSnapshot,
@@ -169,8 +170,9 @@ pub struct PullView {
 }
 
 impl PullView {
-    pub fn from_pull(pull: Pull) -> Self {
+    pub fn from_pull(pull: Pull, source_name: Option<String>) -> Self {
         Self {
+            source_name,
             head_branch: pull.head_branch,
             base_branch: pull.base_branch,
             snapshot: pull.snapshot,
@@ -331,6 +333,7 @@ pub struct IssuePage {
     pub discussion: Vec<DiscussionRow>,
     pub pagination: Pagination,
     pub pull: Option<PullView>,
+    pub comparison_available: bool,
     pub changed: Vec<ChangedFile>,
     pub preview: Option<FilePreview>,
     pub preview_missing: bool,
@@ -339,6 +342,8 @@ pub struct IssuePage {
     pub comparison_notice: Option<&'static str>,
     pub can_refresh_comparison: bool,
     pub metadata: Option<crate::issue_metadata::IssueMetadata>,
+    pub reactions: Vec<crate::repo_features::Reaction>,
+    pub merge_workflow: Option<crate::branch_rules::Workflow>,
     pub can_review: bool,
     pub can_comment_on_diff: bool,
     pub can_verify_merge: bool,
@@ -358,8 +363,11 @@ pub struct IssueNewPage {
     pub title_value: String,
     pub body_value: String,
     pub base_value: String,
+    pub source_value: String,
     pub head_value: String,
     pub branches: Vec<String>,
+    pub issue_templates: Vec<crate::repo_features::IssueTemplateChoice>,
+    pub selected_issue_template: Option<i64>,
     pub is_owner: bool,
 }
 

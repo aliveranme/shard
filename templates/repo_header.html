@@ -26,6 +26,7 @@
   </div>
   {% if chrome.signed_in %}
     <div class="repo-head__actions">
+      {% include "repo_preferences.html" %}
       <a class="btn btn--ghost btn--sm" href="/{{ repo.owner_name }}/{{ repo.name }}/fork">{{ chrome.locale.t(crate::i18n::LifecycleText::Fork) }}</a>
       {% if is_owner %}
         <a class="btn btn--ghost btn--sm" href="/{{ repo.owner_name }}/{{ repo.name }}/settings">{{ chrome.locale.t(crate::i18n::CommonText::Settings) }}</a>
@@ -46,6 +47,10 @@
     <a class="tab" {% if tab == "refs" %}aria-current="page"{% endif %} href="/{{ repo.owner_name }}/{{ repo.name }}/refs">
       <svg class="icon" aria-hidden="true"><use href="/img/icons.svg#branch"></use></svg>
       {{ chrome.locale.t(crate::i18n::RepoText::BranchesAndTags) }}
+    </a>
+    <a class="tab" {% if tab == "releases" %}aria-current="page"{% endif %} href="/{{ repo.owner_name }}/{{ repo.name }}/releases">
+      <svg class="icon" aria-hidden="true"><use href="/img/icons.svg#tag"></use></svg>
+      {{ chrome.locale.t(crate::i18n::RepoFeatureText::Releases) }}
     </a>
     <a class="tab" {% if tab == "issues" %}aria-current="page"{% endif %} href="/{{ repo.owner_name }}/{{ repo.name }}/issues">
       <svg class="icon" aria-hidden="true"><use href="/img/icons.svg#issue"></use></svg>

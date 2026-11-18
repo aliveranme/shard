@@ -4,10 +4,12 @@
 use super::common::{RepoRole, not_found, repo_role};
 use crate::git_storage::{GitBackend, GitStorage};
 use crate::auth;
+use crate::git_wire::{self, ReceiveRequest};
 use crate::ctx::AppState;
 use crate::db;
-use crate::i18n::{CollaboratorText, CommonText, RepoText};
+use crate::i18n::{BranchText, CollaboratorText, CommonText, RepoText};
 use crate::util;
+use wasm_bindgen::JsCast;
 use worker::*;
 
 #[derive(serde::Deserialize)]
@@ -18,6 +20,8 @@ struct GitRepo {
     storage_id: String,
     saved_remote: String,
     visibility: String,
+    default_branch: String,
+    git_head_override: i64,
 }
 
 pub async fn info_refs(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
@@ -44,7 +48,7 @@ async fn proxy(req: Request, ctx: RouteContext<AppState>, service: &str) -> Resu
     let repo: Option<GitRepo> = db::first(
         &database,
         "SELECT r.id, r.owner_id, r.git_backend, r.artifacts_repo AS storage_id,
-            r.artifacts_remote AS saved_remote, r.visibility
+            r.artifacts_remote AS saved_remote, r.visibility, r.default_branch, r.git_head_override
            FROM repo_paths p JOIN users pu ON pu.id = p.owner_id JOIN repos r ON r.id = p.repo_id
           WHERE pu.username = ? COLLATE NOCASE AND p.name = ? COLLATE NOCASE",
         &[util::js_text(&owner), util::js_text(repo_name)],
@@ -65,7 +69,7 @@ async fn proxy(req: Request, ctx: RouteContext<AppState>, service: &str) -> Resu
     let private = repo.visibility != "public";
     let identity = auth::git_identity(&state.env, &req).await?;
     if write || private {
-        let Some(id) = identity else {
+        let Some(id) = &identity else {
             return unauthorized(state.locale.t(CollaboratorText::GitCredentials));
         };
         let role = repo_role(&database, repo.id, repo.owner_id, id.user_id, id.is_admin).await?;
@@ -86,16 +90,41 @@ async fn proxy(req: Request, ctx: RouteContext<AppState>, service: &str) -> Resu
         Err(error) => return upstream_error(state, &error),
     };
 
+    let want_default = repo.git_head_override == 1 && !write;
+    let receive = if service == "git-receive-pack" {
+        let encoding = util::header(&req, "content-encoding").unwrap_or_default();
+        let encoding = encoding.trim().to_ascii_lowercase();
+        if !matches!(encoding.as_str(), "" | "identity" | "gzip") {
+            return git_error(state, 415, BranchText::InvalidPush);
+        }
+        let push = match ReceiveRequest::inspect(&req, &encoding).await {
+            Ok(push) => push,
+            Err(_) => return git_error(state, 400, BranchText::InvalidPush),
+        };
+        if crate::branch_rules::blocks_push(&database, repo.id, &push.updates).await? {
+            let _ = push.body.cancel();
+            return git_error(state, 403, BranchText::ProtectedPush);
+        }
+        Some(push)
+    } else {
+        None
+    };
+
     let headers = Headers::new();
     for name in ["content-type", "content-encoding", "accept", "git-protocol", "user-agent"] {
+        if (want_default && name == "git-protocol") || (receive.is_some() && name == "content-encoding") {
+            continue;
+        }
         if let Some(value) = util::header(&req, name) {
             headers.set(name, &value)?;
         }
     }
 
     let method = req.method();
-    // Forward the original Workers stream without copying pack data into Wasm.
-    let body = if method == Method::Post {
+    // Inspect only the command prefix. Pack data still bypasses Wasm memory.
+    let body = if let Some(push) = &receive {
+        Some(push.body.clone().into())
+    } else if method == Method::Post {
         req.inner().body().map(Into::into)
     } else {
         None
@@ -107,7 +136,7 @@ async fn proxy(req: Request, ctx: RouteContext<AppState>, service: &str) -> Resu
         method,
         ..Default::default()
     };
-    let upstream = match handle.git_request(service, query, write, &repo.saved_remote, init).await {
+    let mut upstream = match handle.git_request(service, query, write, &repo.saved_remote, init).await {
         Ok(response) => response,
         Err(error) => return upstream_error(state, &error),
     };
@@ -126,7 +155,38 @@ async fn proxy(req: Request, ctx: RouteContext<AppState>, service: &str) -> Resu
     if private {
         response_headers.set("Cache-Control", "no-store")?;
     }
+    if upstream.status_code() == 200 {
+        if let Some(push) = receive.filter(|push| push.report && !push.updates.is_empty()) {
+            if let ResponseBody::Stream(stream) = upstream.body() {
+                let halves = stream.tee();
+                let client = halves.get(0).unchecked_into();
+                let observer = halves.get(1).unchecked_into();
+                let env = state.env.clone();
+                let actor = identity.as_ref().map(|id| id.user_id);
+                state.worker_ctx.wait_until(async move {
+                    if let Ok(accepted) = git_wire::receive_report(&observer, push.sideband).await {
+                        let updates: Vec<_> = push.updates.into_iter().filter(|update| accepted.contains(&update.name)).collect();
+                        crate::git_activity::record(&env, repo.id, actor, &updates).await;
+                    }
+                });
+                upstream = git_wire::response_with_stream(upstream, client)?;
+            }
+        } else if want_default && service == "info/refs" && response_headers.get("content-type")?.as_deref()
+            == Some("application/x-git-upload-pack-advertisement")
+        {
+            if let ResponseBody::Stream(stream) = upstream.body() {
+                let stream = git_wire::default_head(stream, &repo.default_branch).await?;
+                upstream = git_wire::response_with_stream(upstream, stream)?;
+            }
+        }
+    }
     Ok(upstream.with_headers(response_headers))
+}
+
+fn git_error(state: &AppState, status: u16, message: BranchText) -> Result<Response> {
+    let mut response = Response::error(state.locale.t(message), status)?;
+    response.headers_mut().set("Cache-Control", "no-store")?;
+    Ok(response)
 }
 
 fn upstream_error(state: &AppState, error: &Error) -> Result<Response> {

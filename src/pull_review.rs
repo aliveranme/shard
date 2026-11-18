@@ -1,10 +1,10 @@
 use crate::git_storage::{is_object_id, RepoHandle};
 use crate::ctx::AppState;
 use crate::db;
-use crate::handlers::common::{can_write, forbidden, not_found, visible_repo};
+use crate::handlers::common::{can_write, forbidden, load_repo_by_id, not_found, visible_repo, visible_repo_by_id};
 use crate::i18n::{CommonText, DiscussionText};
 use crate::models::{Issue, Pull, Repo};
-use crate::pull_base;
+use crate::pull_base::{self, Repositories};
 use crate::pull_diff::{self, Comparison, FileDiff};
 use crate::templates::{error_response, Chrome};
 use crate::util;
@@ -13,6 +13,25 @@ use worker::*;
 
 const MAX_HISTORY_READS: usize = 80;
 const MAX_QUEUED_PARENTS: usize = 512;
+const REFRESH_BATCH: usize = 6;
+const REFRESH_RETRY_SECONDS: i64 = 60;
+
+const TARGET_READ: &str = "(t.visibility = 'public' OR t.owner_id = u.id OR u.is_admin = 1
+    OR EXISTS (SELECT 1 FROM repo_member_roles m WHERE m.repo_id = t.id AND m.user_id = u.id))";
+const SOURCE_READ: &str = "(s.visibility = 'public' OR s.owner_id = u.id OR u.is_admin = 1
+    OR EXISTS (SELECT 1 FROM repo_member_roles m WHERE m.repo_id = s.id AND m.user_id = u.id))";
+const TARGET_WRITE: &str = "(t.owner_id = u.id OR u.is_admin = 1 OR EXISTS (
+    SELECT 1 FROM repo_member_roles m WHERE m.repo_id = t.id AND m.user_id = u.id AND m.role = 'write'))";
+
+pub(crate) async fn load_pull(database: &d1::D1Database, id: i64) -> Result<Option<Pull>> {
+    db::first(
+        database,
+        "SELECT issue_id, source_repo_id, head_branch, base_branch, head_commit, base_commit,
+                merge_base, comparison_version, merged, merged_at, merge_commit
+         FROM pulls WHERE issue_id = ?",
+        &[util::js_int(id)],
+    ).await
+}
 
 enum Operation {
     Review,
@@ -49,15 +68,21 @@ async fn mutate(ctx: RouteContext<AppState>, operation: Operation) -> Result<Res
     let Some(issue) = issue else {
         return not_found(state, state.locale.t(CommonText::NotFound));
     };
-    let pull: Option<Pull> = db::first(
-        &database,
-        "SELECT issue_id, head_branch, base_branch, head_commit, base_commit, merge_base,
-                comparison_version, merged, merged_at, merge_commit
-         FROM pulls WHERE issue_id = ?",
-        &[util::js_int(issue.id)],
-    ).await?;
+    let Some(pull) = load_pull(&database, issue.id).await? else {
+        return error(state, 409, DiscussionText::ReviewConflict);
+    };
+    let source_id = pull.source_repo_id(repo.id);
+    let source_repo;
+    let source = if source_id == repo.id {
+        &repo
+    } else {
+        source_repo = visible_repo_by_id(state, source_id).await?;
+        let Some(source) = source_repo.as_ref() else {
+            return not_found(state, state.locale.t(CommonText::NotFound));
+        };
+        source
+    };
     let conflict = || error(state, 409, DiscussionText::ReviewConflict);
-    let Some(pull) = pull else { return conflict() };
     let form = state.form()?;
     let snapshot = &pull.snapshot;
     let version = snapshot.comparison_version;
@@ -72,7 +97,7 @@ async fn mutate(ctx: RouteContext<AppState>, operation: Operation) -> Result<Res
         if issue.author_id != Some(actor) && !can_write(state, &repo).await? {
             return forbidden(state, state.locale.t(DiscussionText::RefreshForbidden));
         }
-        return refresh_comparison(state, &database, &repo, &issue, &pull, actor).await;
+        return refresh_comparison(state, &database, &repo, source, &issue, &pull, actor).await;
     }
     let Some((diff_base, head)) = snapshot.diff_tips() else {
         return conflict();
@@ -118,15 +143,15 @@ async fn mutate(ctx: RouteContext<AppState>, operation: Operation) -> Result<Res
     if !issue.is_open() {
         return conflict();
     }
-    let handle = RepoHandle::open(&state.env, &repo).await?;
-    let Comparison::Complete(files) = pull_diff::compare(&handle, diff_base, head).await? else {
+    let handles = Repositories::open(&state.env, &repo, source).await?;
+    let Comparison::Complete(files) = pull_diff::compare(&handles.target, handles.source(), diff_base, head).await? else {
         return conflict();
     };
     if let (Some(path), Some(side), Some(line)) = (&path, side, line) {
         let Ok(index) = files.binary_search_by(|file| file.path.cmp(path)) else {
             return error(state, 400, DiscussionText::ReviewInvalid);
         };
-        let FileDiff::Text(diff) = files[index].lines(&handle).await? else {
+        let FileDiff::Text(diff) = files[index].lines(&handles.target, handles.source()).await? else {
             return error(state, 400, DiscussionText::ReviewInvalid);
         };
         if !diff.rows().any(|row| match side {
@@ -138,12 +163,16 @@ async fn mutate(ctx: RouteContext<AppState>, operation: Operation) -> Result<Res
     }
     let recorded: Option<ReviewId> = db::first(
         &database,
-        "INSERT INTO pull_reviews (issue_id, actor_id, decision, base_commit, head_commit,
-                                   merge_base, comparison_version, path, side, line, body, created_at)
-         SELECT p.issue_id, ?1, ?2, p.base_commit, p.head_commit, p.merge_base, p.comparison_version, ?3, ?4, ?5, ?6, ?7
-         FROM pulls p JOIN issues i ON i.id = p.issue_id
-         WHERE p.issue_id = ?8 AND p.comparison_version = ?9 AND p.merged = 0 AND i.state = 'open'
-         RETURNING id",
+        &format!("INSERT INTO pull_reviews (issue_id, actor_id, decision, base_commit, head_commit,
+                                    merge_base, comparison_version, path, side, line, body, created_at)
+          SELECT p.issue_id, ?1, ?2, p.base_commit, p.head_commit, p.merge_base, p.comparison_version, ?3, ?4, ?5, ?6, ?7
+          FROM pulls p JOIN issues i ON i.id = p.issue_id
+          JOIN repos t ON t.id = i.repo_id JOIN repos s ON s.id = COALESCE(p.source_repo_id, i.repo_id)
+          JOIN users u ON u.id = ?1
+          WHERE p.issue_id = ?8 AND p.comparison_version = ?9 AND p.merged = 0 AND i.state = 'open'
+            AND {TARGET_READ} AND {SOURCE_READ}
+            AND (?2 = 'line_comment' OR (i.author_id IS NOT u.id AND {TARGET_WRITE}))
+          RETURNING id"),
         &[
             util::js_int(actor), util::js_text(&decision),
             path.as_deref().map_or_else(util::js_null, util::js_text),
@@ -154,7 +183,7 @@ async fn mutate(ctx: RouteContext<AppState>, operation: Operation) -> Result<Res
         ],
     ).await?;
     match recorded {
-        Some(review) => crate::handlers::issues::redirect_to_entry(&database, &repo, &issue, Some(review.id)).await,
+        Some(review) => crate::handlers::issues::redirect_to_entry(state, &database, &repo, &issue, Some(review.id)).await,
         None => conflict(),
     }
 }
@@ -162,60 +191,207 @@ async fn mutate(ctx: RouteContext<AppState>, operation: Operation) -> Result<Res
 async fn refresh_comparison(
     state: &AppState,
     database: &d1::D1Database,
-    repo: &Repo,
+    target: &Repo,
+    source: &Repo,
     issue: &Issue,
     pull: &Pull,
     actor: i64,
 ) -> Result<Response> {
-    let handle = match RepoHandle::open(&state.env, repo).await {
-        Ok(handle) => handle,
+    let handles = match Repositories::open(&state.env, target, source).await {
+        Ok(handles) => handles,
         Err(cause) => {
             console_log!("pull comparison: could not open Git repository: {cause}");
             return error(state, 502, DiscussionText::GitUnavailable);
         }
     };
-    let (base, head) = match pull_base::branch_tips(&handle, &pull.base_branch, &pull.head_branch).await {
-        Ok(tips) => tips,
+    match sample_comparison(&handles, pull, false).await {
+        Ok(Some(tips)) => {
+            if !save_comparison(database, pull, &tips, Some(actor), None).await? {
+                return error(state, 409, DiscussionText::ReviewConflict);
+            }
+        }
+        Ok(None) => {}
         Err(message) => return error(state, 409, message),
-    };
+    }
+    util::redirect(&format!("/{}/{}/pulls/{}#pull-comparison", target.owner_name, target.name, issue.number))
+}
+
+struct ComparisonTips {
+    base: String,
+    head: String,
+    merge_base: String,
+}
+
+async fn sample_comparison(
+    handles: &Repositories,
+    pull: &Pull,
+    automatic: bool,
+) -> std::result::Result<Option<ComparisonTips>, DiscussionText> {
+    let (base, head) = pull_base::branch_tips(handles, &pull.base_branch, &pull.head_branch).await?;
     let snapshot = &pull.snapshot;
-    let url = format!("/{}/{}/pulls/{}#pull-comparison", repo.owner_name, repo.name, issue.number);
     if snapshot.merge_base.is_some()
         && snapshot.base_commit.as_deref() == Some(base.as_str())
         && snapshot.head_commit.as_deref() == Some(head.as_str())
     {
-        return util::redirect(&url);
+        return Ok(None);
     }
-    let merge_base = match pull_base::find(&handle, &base, &head).await {
-        Ok(merge_base) => merge_base,
-        Err(cause) => return error(state, 409, cause.message()),
-    };
-    // Keep the pre-integration snapshot available to the merge verifier.
+    let merge_base = pull_base::find(handles, &base, &head).await.map_err(pull_base::BaseError::message)?;
+    // Keep the saved commits available for external integration verification.
     if merge_base == head {
-        return error(state, 409, DiscussionText::RefreshIntegrated);
+        return Err(DiscussionText::RefreshIntegrated);
     }
+    if automatic {
+        if let Some((saved_base, saved_head)) = snapshot.base_commit.as_deref().zip(snapshot.head_commit.as_deref()) {
+            if saved_base != base && saved_head != head && saved_base != saved_head
+                && is_object_id(saved_base) && is_object_id(saved_head)
+                && handles.target.read_commit(saved_head).await.map_err(storage_unavailable)?.is_some()
+            {
+                match check_integration(&handles.target, &base, saved_base, saved_head).await.map_err(storage_unavailable)? {
+                    Ok(()) => return Err(DiscussionText::RefreshIntegrated),
+                    Err(DiscussionText::MergeAbsent) => {}
+                    Err(message) => return Err(message),
+                }
+            }
+        }
+    }
+    Ok(Some(ComparisonTips { base, head, merge_base }))
+}
 
-    let result = database.prepare(
-        "UPDATE pulls SET base_commit = ?1, head_commit = ?2, merge_base = ?3,
-                          comparison_version = comparison_version + 1
-         WHERE issue_id = ?4 AND comparison_version = ?5 AND merged = 0
+fn storage_unavailable(error: Error) -> DiscussionText {
+    console_log!("pull comparison: could not read Git history: {error}");
+    DiscussionText::GitUnavailable
+}
+
+async fn save_comparison(
+    database: &d1::D1Database,
+    pull: &Pull,
+    tips: &ComparisonTips,
+    actor: Option<i64>,
+    generation: Option<i64>,
+) -> Result<bool> {
+    let result = database.prepare(format!(
+        "UPDATE pulls AS p SET base_commit = ?1, head_commit = ?2, merge_base = ?3,
+                              comparison_version = comparison_version + 1
+         WHERE p.issue_id = ?4 AND p.comparison_version = ?5 AND p.merged = 0
+           AND NOT EXISTS (SELECT 1 FROM merge_queue mq WHERE mq.issue_id = p.issue_id AND mq.state = 'running')
+           AND (?7 IS NULL OR EXISTS (
+               SELECT 1 FROM pull_comparison_updates q WHERE q.issue_id = p.issue_id AND q.generation = ?7
+           ))
            AND EXISTS (
-               SELECT 1 FROM issues i JOIN repos r ON r.id = i.repo_id JOIN users u ON u.id = ?6
-               WHERE i.id = pulls.issue_id AND i.state = 'open'
-                 AND (u.id = r.owner_id OR u.is_admin = 1 OR EXISTS (
-                      SELECT 1 FROM repo_collaborators c
-                      WHERE c.repo_id = r.id AND c.user_id = u.id
-                        AND (c.role = 'write' OR i.author_id = u.id)
-                 ) OR (r.visibility = 'public' AND i.author_id = u.id))
-           )",
-    ).bind(&[
-        util::js_text(&base), util::js_text(&head), util::js_text(&merge_base),
-        util::js_int(issue.id), util::js_int(snapshot.comparison_version), util::js_int(actor),
+               SELECT 1 FROM issues i JOIN repos t ON t.id = i.repo_id
+               JOIN repos s ON s.id = COALESCE(p.source_repo_id, i.repo_id)
+               LEFT JOIN users u ON u.id = ?6
+               WHERE i.id = p.issue_id AND i.state = 'open' AND {TARGET_READ} AND {SOURCE_READ}
+                 AND ((?7 IS NOT NULL AND i.author_id IS u.id)
+                     OR (u.id IS NOT NULL AND (i.author_id = u.id OR {TARGET_WRITE})))
+           )"
+    )).bind(&[
+        util::js_text(&tips.base), util::js_text(&tips.head), util::js_text(&tips.merge_base),
+        util::js_int(pull.issue_id), util::js_int(pull.snapshot.comparison_version),
+        actor.map_or_else(util::js_null, util::js_int), generation.map_or_else(util::js_null, util::js_int),
     ])?.run().await?;
-    match result.meta()?.and_then(|meta| meta.changes) {
-        Some(0) => error(state, 409, DiscussionText::ReviewConflict),
-        Some(_) => util::redirect(&url),
-        None => Err(Error::RustError("D1 did not report comparison changes".into())),
+    result.meta()?.and_then(|meta| meta.changes).map(|count| count != 0)
+        .ok_or_else(|| Error::RustError("D1 did not report comparison changes".into()))
+}
+
+/// Queue open comparisons affected by refs the Git backend accepted.
+pub(crate) async fn enqueue_refs(env: &Env, repo_id: i64, refs: &[String]) -> Result<()> {
+    let branches: Vec<_> = refs.iter().filter_map(|name| name.strip_prefix("refs/heads/")).collect();
+    if branches.is_empty() {
+        return Ok(());
+    }
+    let branches = serde_json::to_string(&branches).map_err(|error| Error::RustError(error.to_string()))?;
+    db::run(
+        &env.d1("DB")?,
+        "WITH changed(branch) AS (SELECT value FROM json_each(?2))
+         INSERT OR REPLACE INTO pull_comparison_updates (issue_id, due_at)
+         SELECT p.issue_id, ?3 FROM issues i JOIN pulls p ON p.issue_id = i.id
+          WHERE i.repo_id = ?1 AND i.state = 'open' AND p.merged = 0 AND (
+              p.base_branch IN (SELECT branch FROM changed)
+              OR (p.source_repo_id IS NULL AND p.head_branch IN (SELECT branch FROM changed))
+          )
+         UNION
+         SELECT p.issue_id, ?3 FROM pulls p JOIN issues i ON i.id = p.issue_id
+          WHERE p.source_repo_id = ?1 AND p.head_branch IN (SELECT branch FROM changed)
+            AND i.state = 'open' AND p.merged = 0",
+        &[util::js_int(repo_id), util::js_text(&branches), util::js_int(util::now())],
+    ).await
+}
+
+#[derive(serde::Deserialize)]
+struct PendingComparison {
+    issue_id: i64,
+    generation: i64,
+}
+
+#[derive(serde::Deserialize)]
+struct ComparisonTarget {
+    repo_id: i64,
+    author_id: Option<i64>,
+}
+
+/// Re-sample refs on cron. A newly accepted push advances the queue generation
+/// so work based on an older observation cannot consume the new signal.
+pub(crate) async fn refresh_pending(env: &Env) -> Result<()> {
+    let database = env.d1("DB")?;
+    let pending: Vec<PendingComparison> = db::all(
+        &database,
+        "SELECT q.issue_id, q.generation FROM pull_comparison_updates q
+         WHERE q.due_at <= ?1 AND NOT EXISTS (
+             SELECT 1 FROM merge_queue mq WHERE mq.issue_id = q.issue_id AND mq.state = 'running'
+         ) ORDER BY q.due_at ASC, q.issue_id ASC LIMIT ?2",
+        &[util::js_int(util::now()), util::js_int(REFRESH_BATCH as i64)],
+    ).await?;
+    for item in pending {
+        let finished = match refresh_pending_comparison(env, &database, &item).await {
+            Ok(finished) => finished,
+            Err(error) => {
+                console_log!("pull comparison: scheduled refresh failed: {error}");
+                false
+            }
+        };
+        let sql = if finished {
+            "DELETE FROM pull_comparison_updates WHERE issue_id = ?1 AND generation = ?2"
+        } else {
+            "UPDATE pull_comparison_updates SET due_at = ?3 WHERE issue_id = ?1 AND generation = ?2"
+        };
+        let mut values = vec![util::js_int(item.issue_id), util::js_int(item.generation)];
+        if !finished {
+            values.push(util::js_int(util::now() + REFRESH_RETRY_SECONDS));
+        }
+        db::run(&database, sql, &values).await?;
+    }
+    Ok(())
+}
+
+async fn refresh_pending_comparison(env: &Env, database: &d1::D1Database, item: &PendingComparison) -> Result<bool> {
+    let Some(pull) = load_pull(database, item.issue_id).await? else { return Ok(true) };
+    if pull.merged != 0 {
+        return Ok(true);
+    }
+    let target: Option<ComparisonTarget> = db::first(
+        database,
+        &format!("SELECT i.repo_id, i.author_id FROM issues i JOIN repos t ON t.id = i.repo_id
+                  JOIN repos s ON s.id = COALESCE(?2, i.repo_id) LEFT JOIN users u ON u.id = i.author_id
+                  WHERE i.id = ?1 AND i.state = 'open' AND {TARGET_READ} AND {SOURCE_READ}"),
+        &[util::js_int(pull.issue_id), pull.source_repo_id.map_or_else(util::js_null, util::js_int)],
+    ).await?;
+    let Some(target) = target else { return Ok(true) };
+    let Some(repo) = load_repo_by_id(database, target.repo_id).await? else { return Ok(true) };
+    let source_id = pull.source_repo_id(repo.id);
+    let source_repo;
+    let source = if source_id == repo.id {
+        &repo
+    } else {
+        source_repo = load_repo_by_id(database, source_id).await?;
+        let Some(source) = source_repo.as_ref() else { return Ok(true) };
+        source
+    };
+    let handles = Repositories::open(env, &repo, source).await?;
+    match sample_comparison(&handles, &pull, true).await {
+        Ok(Some(tips)) => save_comparison(database, &pull, &tips, target.author_id, Some(item.generation)).await,
+        Err(DiscussionText::GitUnavailable | DiscussionText::MergeUnavailable) => Ok(false),
+        Ok(None) | Err(_) => Ok(true),
     }
 }
 
@@ -246,33 +422,51 @@ async fn record_merge(
             return error(state, 502, DiscussionText::MergeUnavailable);
         }
     };
+    let Some(review) = record_observed_merge(database, repo, issue, pull, actor, &tip).await? else {
+        return error(state, 409, DiscussionText::ReviewConflict);
+    };
+    crate::handlers::issues::redirect_to_entry(state, database, repo, issue, Some(review)).await
+}
+
+/// Record a target tip observed after an authorized native merge or Git verification.
+pub(crate) async fn record_observed_merge(
+    database: &d1::D1Database,
+    repo: &Repo,
+    issue: &Issue,
+    pull: &Pull,
+    actor: i64,
+    tip: &str,
+) -> Result<Option<i64>> {
+    if !is_object_id(tip) || issue.repo_id != repo.id || pull.issue_id != issue.id {
+        return Ok(None);
+    }
+    let version = pull.snapshot.comparison_version;
     let now = util::now();
     let event = database.prepare(
         "INSERT INTO pull_reviews (issue_id, actor_id, decision, base_commit, head_commit,
                                    merge_base, comparison_version, body, created_at)
-         SELECT issue_id, ?1, 'merge_verified', base_commit, head_commit, merge_base, comparison_version, ?2, ?3
-         FROM pulls WHERE issue_id = ?4 AND comparison_version = ?5 AND merged = 0
+         SELECT p.issue_id, ?1, 'merge_verified', p.base_commit, p.head_commit, p.merge_base, p.comparison_version, ?2, ?3
+         FROM pulls p JOIN issues i ON i.id = p.issue_id
+         WHERE p.issue_id = ?4 AND p.comparison_version = ?5 AND p.merged = 0 AND i.repo_id = ?6
          RETURNING id",
     ).bind(&[
-        util::js_int(actor), util::js_text(&tip), util::js_int(now), util::js_int(issue.id),
-        util::js_int(snapshot.comparison_version),
+        util::js_int(actor), util::js_text(tip), util::js_int(now), util::js_int(issue.id),
+        util::js_int(version), util::js_int(repo.id),
     ])?;
     let merge = database.prepare(
         "UPDATE pulls SET merged = 1, merged_at = ?1, merge_commit = ?2
-         WHERE issue_id = ?3 AND comparison_version = ?4 AND merged = 0",
-    ).bind(&[util::js_int(now), util::js_text(&tip), util::js_int(issue.id), util::js_int(snapshot.comparison_version)])?;
+         WHERE issue_id = ?3 AND comparison_version = ?4 AND merged = 0
+           AND EXISTS (SELECT 1 FROM issues WHERE id = ?3 AND repo_id = ?5)",
+    ).bind(&[util::js_int(now), util::js_text(tip), util::js_int(issue.id), util::js_int(version), util::js_int(repo.id)])?;
     let close = database.prepare(
         "UPDATE issues SET state = 'closed', closed_at = COALESCE(closed_at, ?1), updated_at = ?1
          WHERE id = ?2 AND state <> 'closed' AND EXISTS (SELECT 1 FROM pulls WHERE issue_id = ?2 AND merged = 1)",
     ).bind(&[util::js_int(now), util::js_int(issue.id)])?;
     let results = database.batch(vec![event, merge, close]).await?;
-    let Some(review) = results[0].results::<ReviewId>()?.into_iter().next() else {
-        return error(state, 409, DiscussionText::ReviewConflict);
-    };
-    crate::handlers::issues::redirect_to_entry(database, repo, issue, Some(review.id)).await
+    Ok(results[0].results::<ReviewId>()?.into_iter().next().map(|review| review.id))
 }
 
-async fn integrated_tip(
+pub(crate) async fn integrated_tip(
     repo: &RepoHandle,
     base_branch: &str,
     base: &str,
@@ -284,11 +478,20 @@ async fn integrated_tip(
     let Some(tip) = repo.head_commit(&format!("refs/heads/{base_branch}")).await? else {
         return Ok(Err(DiscussionText::MergeAbsent));
     };
-    if !is_object_id(&tip.hash) || tip.hash == base {
+    Ok(check_integration(repo, &tip.hash, base, head).await?.map(|()| tip.hash))
+}
+
+async fn check_integration(
+    repo: &RepoHandle,
+    tip: &str,
+    base: &str,
+    head: &str,
+) -> Result<std::result::Result<(), DiscussionText>> {
+    if !is_object_id(tip) || tip == base {
         return Ok(Err(DiscussionText::MergeAbsent));
     }
-    let mut seen = HashSet::from([tip.hash.clone()]);
-    let mut queue = VecDeque::from([tip.hash.clone()]);
+    let mut seen = HashSet::from([tip.to_owned()]);
+    let mut queue = VecDeque::from([tip.to_owned()]);
     let (mut found_base, mut found_head, mut missing) = (false, false, false);
     for _ in 0..MAX_HISTORY_READS {
         let Some(id) = queue.pop_front() else {
@@ -301,7 +504,7 @@ async fn integrated_tip(
         found_base |= id == base;
         found_head |= id == head;
         if found_base && found_head {
-            return Ok(Ok(tip.hash));
+            return Ok(Ok(()));
         }
         for parent in parents {
             if seen.len() == MAX_QUEUED_PARENTS {

@@ -53,24 +53,30 @@ runs the tests against an existing build. Keep Git on `PATH`, including in CI.
 `mise run setup` installs the pinned toolchain, editor tools and npm dependencies.
 For rust-analyzer, set the Cargo target to `wasm32-unknown-unknown`.
 
+The divergent merge regression requires Git 2.38 or later. When `git lfs` is
+installed, both backends also run a real LFS push and clone.
 </details>
 
 ## Features
 
-- **Browse code** by branch, tag or commit. View the first 256 KiB of a file,
-  stream the full file, or download a source archive pinned to a commit.
-- **Collaborate** with scoped Git tokens, read and write collaborators, forks,
-  public HTTPS imports, and transfers. Existing URLs keep their permission
-  checks after rename or transfer. Private forks stay private.
-- **Review changes** against a common ancestor. Approvals and line comments
-  stay linked to the saved comparison. Merge locally, push, and verify the
-  integration in Shard. Comparisons created before merge-base support keep
-  their two-tip diff until updated.
-- **Organize work** with searchable issues, labels, milestones, assignees, and
-  a permission-aware inbox. Record CI results on commits or receive signed
-  issue and review events through webhooks.
-- **Customize your profile** with a public avatar. Upload, replace or remove it
-  in **Account settings**. Avatars appear on profiles and in discussions.
+- **Browse and search code** by Git ref. Find paths, text, and commits within a
+  bounded scan. Results link to the searched commit. View a file, stream the
+  full contents, or download a commit-pinned source archive.
+- **Collaborate** with scoped Git tokens, repository collaborators, organization
+  teams, forks, imports, and transfers. Existing URLs keep their permission
+  checks after rename or transfer.
+- **Review and merge** pull requests from a branch or another repository.
+  Accepted pushes schedule a comparison refresh. Reviews and line comments
+  link to their original snapshot. Protected branches can require approvals
+  and CI results before the merge queue advances the target ref.
+- **Organize work** with issue templates, reactions, label and assignee filters,
+  milestones, repository watches and stars, and a permission-aware inbox.
+  Repository writers can draft and publish releases pinned to Git tags.
+- **Integrate** CI results and signed repository webhooks for issues, pull
+  requests, branch updates, and tag updates.
+- **Customize your profile** with an uploaded avatar. Commit lists, branch
+  summaries, and commit details use it when the Git author email matches
+  your account email. Other authors use their initials.
 
 ## Architecture
 
@@ -130,10 +136,11 @@ named `DB`. Run `mise run deploy` to apply remote migrations and deploy.
 ### Deploy with a native Git origin
 
 Choose the `native` Wrangler environment to use a Git server you operate. It
-uses D1, static assets and a rate limiter on Cloudflare, and stores bare Git
+uses D1, R2, static assets and a rate limiter on Cloudflare, and stores bare Git
 repositories on the origin's disk. Repository URLs and Shard token scopes are
-the same in both modes. New repositories and imports use `GIT_BACKEND`. A fork
-uses its source's backend. Existing repositories retain their recorded backend.
+the same in both modes. `GIT_BACKEND` selects storage for new repositories and
+credential-free imports. A fork uses its source's backend. Existing repositories
+retain their recorded backend.
 
 1. Run `node scripts/git-origin.mjs` on a host with the pinned Node version and
    Git 2.32 or later. Set `SHARD_GIT_DIRECTORY` to a dedicated directory on a
@@ -160,13 +167,28 @@ mise exec -- npx wrangler d1 migrations apply DB --env native --local
 mise exec -- npx wrangler dev --env native --local
 ```
 
-Native imports accept final public HTTPS Git URLs from `github.com`,
-`gitlab.com` and `codeberg.org` by default. Administrators can replace that list
-with `SHARD_GIT_IMPORT_HOSTS` on the origin, using comma-separated trusted
-hostnames. Back up the origin volume separately from D1. To keep serving legacy
-Artifacts repositories from an existing database, retain the original Artifacts
-binding alongside the native origin until those repositories have been migrated.
+Native imports accept final HTTPS Git URLs from `github.com`, `gitlab.com`,
+and `codeberg.org` by default. Set `SHARD_GIT_IMPORT_HOSTS` on the origin to
+replace the list with trusted hostnames. The import form accepts Basic or
+Bearer credentials. Credentialed copies use the configured native origin even
+when Artifacts is the default. They start as private repositories, and the
+minute cron advances pending copies.
+
+Back up the origin volume separately from D1. To keep serving legacy Artifacts
+repositories, retain the Artifacts binding alongside the native origin until
+those repositories are migrated. Native non-fast-forward Web merges require
+Git 2.38 or later.
 [Wrangler environments](https://developers.cloudflare.com/workers/wrangler/environments/) · [Git backend plan](PLAN.md#optional-git-backends)
+
+### Web merges on Artifacts
+
+Artifacts supports same-repository fast-forwards through Git HTTPS. For a
+divergent or cross-repository merge between Artifacts repositories, point the
+Worker's `NATIVE_GIT_ORIGIN` and `NATIVE_GIT_TOKEN` at a Git 2.38+ origin and
+configure `SHARD_GIT_ARTIFACTS_ORIGINS` there with the exact HTTPS origin from
+your Artifacts repository remotes. The origin stages the reviewed objects and
+pushes one branch with a lease on the expected target tip. Mixed-backend Web
+merges require manual integration and verification.
 
 ### Optional email setup
 
@@ -245,8 +267,12 @@ revoked tokens are rejected. Legacy tokens without an expiry remain valid until
 revoked. The secret is shown only at creation. Use it as the password when Git
 prompts. Anonymous clone works for public repositories.
 
-The web default branch must exist in Git. Clones follow the storage backend's
-`HEAD`. Account changes that affect credentials require the current password.
+The default branch must exist in Git. Changing it also changes the branch
+new clones select through Shard. Use **Save and sync Git HEAD** to synchronize
+an existing default. Native storage writes the symbolic ref directly. Artifacts
+advertises the configured branch through Shard's upload-pack proxy using the
+classic Git advertisement. Account changes that affect credentials require the
+current password.
 Before deleting an account, transfer or remove its repositories. Deletion
 revokes the account's sessions and tokens.
 
@@ -297,6 +323,24 @@ attributes from rendered images.
 Issue references open the issue or pull request with that number in Shard.
 Paste an HTTPS URL to link directly to a GitHub issue or pull request.
 
+## Repository workflows
+
+**Branches and tags** lets repository owners create a branch or lightweight tag
+from a commit ID, or remove a ref after confirming its name. **Settings → Branch
+protection** adds rules for exact branch names. Protected refs accept changes
+through the PR merge queue. Required check results belong to the reviewed head
+commit and the target repository. Once a comparison changes, review its new
+version before queuing again.
+
+**Settings → Organizations** lets a repository owner offer the repository to an
+organization. The organization owner accepts it and grants teams read or write
+access. Repository ownership and its URL stay with the account that offered it.
+
+**Settings → Import metadata** accepts a version 1 JSON bundle for issues,
+pull requests, and releases. The form includes the schema and size limits.
+The destination Git store must contain the referenced commits and release tags.
+Each bundle imports in one D1 transaction.
+
 ## Interface language
 
 Open **Language** in the footer or **Account settings → Language**. Choose
@@ -322,16 +366,24 @@ To record a check, POST JSON to `/{owner}/{repo}/commit/{hash}/checks` with
 `Authorization: Bearer <token>` and a write-scoped token belonging to a repository
 writer. Send `{ "context": "ci/unit", "state": "success", "summary": "42 tests passed" }`.
 The accepted states are `pending`, `success`, `failure` and `error`. Each context
-has one current result per commit, shown in the commit detail. A successful write
-returns `204`.
+has one current result per commit. Results appear on the commit detail and the
+corresponding pull request. A successful write returns `204`.
+For a cross-repository pull request, a target writer with source access can
+report a check for the saved head SHA at the target repository's endpoint.
 
-For signed issue and review events, set `WEBHOOK_REPO` to the stable Git storage
-repository name, `WEBHOOK_ENDPOINT` to the receiver's HTTPS URL, and
-`WEBHOOK_SECRET` as a Worker secret. Add `"* * * * *"` to `triggers.crons` alongside
-the daily maintenance schedule. Verify `X-Shard-Signature` as `sha256=` followed
-by the lowercase hex HMAC-SHA256 of the exact request body. Use `X-Shard-Event-Id`
-to deduplicate deliveries from the Worker. Check `webhook_deliveries` for state,
-attempt count and last HTTP status. The Worker attempts delivery up to six times.
+To manage signed repository webhooks, configure `WEBHOOK_ENCRYPTION_KEY` as a
+Worker secret containing 32 random bytes in hex, then open **Settings → Webhooks**.
+Add an HTTPS URL on a public hostname and a signing secret. Each repository can
+save up to 10 subscriptions. The minute cron retries a delivery up to six
+attempts. Events are retained for 30 days and settings shows five recent
+deliveries per subscription.
+
+Verify `X-Shard-Signature` as `sha256=` followed by the lowercase hex HMAC-SHA256
+of the exact request body. `X-Shard-Event-Id` identifies the event and
+`X-Shard-Delivery-Id` identifies the subscription delivery across retries.
+Git events include `ref`, `before`, and `after`. A missing tip is JSON `null`.
+Existing instance-level `WEBHOOK_REPO`, `WEBHOOK_ENDPOINT`, and `WEBHOOK_SECRET`
+configuration continues to deliver issue and review events.
 
 ## Backup and restore
 
@@ -373,7 +425,9 @@ at 03:00 UTC removes expired sessions, tokens, login throttle windows, and email
   objects remaining available. Merge verification separately uses bounded
   ancestry traversal and requires the saved branch tips to be reachable.
 - Branch and tag discovery reads at most 512 advertised refs within 256 KiB.
-  Create, update and delete refs through Git.
+  Search is scoped to one Git snapshot. Commit search follows up to 24
+  first-parent commits. Code search skips non-text files and files over 64 KiB
+  and reports when the scan or result budgets are reached.
 - Source downloads contain regular files and directories up to 16 MiB and 2,000
   entries in `ustar` format. Use a Git mirror for history, symlinks and submodules.
 - The edge limit is 300 requests per minute per source and traffic class, counted
@@ -413,8 +467,8 @@ according to the system's reduced-motion preference.
   The local simulator requires Wrangler ≥ 4.163 and Git ≥ 2.32 on `PATH`.
 - Workers binding surface: namespace `create/get/list/import/delete`; repo handle
   `info/createToken/listTokens/revokeToken/fork/log/readCommit/readTree/readBlob/readFile`.
-- The binding exposes object and history reads. Shard uses Git HTTPS for ref
-  discovery and leaves ref changes and merges to the Git client.
+- Shard uses Git HTTPS for ref discovery and supported ref writes. The optional
+  native origin stages Artifacts merges that require a pack with new objects.
 - Commit metadata uses `treeHash` and `authoredAt`/`committedAt` (Unix seconds);
   tree entries are `{ name, mode, type, hash }`.
 - Git remotes accept a Bearer repo token; for Basic auth the password is the token

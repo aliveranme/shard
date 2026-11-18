@@ -8,6 +8,34 @@
   {% if let Some(message) = notice %}
     <p class="alert alert--warn" role="status">{{ message }}</p>
   {% else %}
+    {% if is_owner %}
+      <details class="card refs-manage">
+        <summary>{{ chrome.locale.t(crate::i18n::BranchText::ManageRefs) }}</summary>
+        <form class="form" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/refs">
+          {% include "csrf.html" %}
+          <div class="two-col">
+            <label class="field">
+              <span>{{ chrome.locale.t(crate::i18n::BranchText::RefKind) }}</span>
+              <select class="select" name="kind">
+                <option value="heads">{{ chrome.locale.t(crate::i18n::BranchText::NewBranch) }}</option>
+                <option value="tags">{{ chrome.locale.t(crate::i18n::BranchText::NewTag) }}</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>{{ chrome.locale.t(crate::i18n::BranchText::RefName) }}</span>
+              <input class="input mono" name="name" maxlength="255" required>
+            </label>
+          </div>
+          <label class="field">
+            <span>{{ chrome.locale.t(crate::i18n::BranchText::FromCommit) }}</span>
+            <input class="input mono" name="oid" pattern="[a-fA-F0-9]{40}" required>
+          </label>
+          <div class="form__actions">
+            <button class="btn btn--primary" type="submit" name="action" value="create">{{ chrome.locale.t(crate::i18n::BranchText::CreateRef) }}</button>
+          </div>
+        </form>
+      </details>
+    {% endif %}
     <div class="grid grid--two refs-grid">
       <section class="refs-group" aria-labelledby="refs-branches">
         <h2 class="refs-group__title" id="refs-branches">{{ chrome.locale.t(crate::i18n::RepoText::Branches) }}</h2>
@@ -28,6 +56,12 @@
                   </span>
                   <svg class="icon refs-row__arrow" aria-hidden="true"><use href="/img/icons.svg#arrow-right"></use></svg>
                 </a>
+                {% if is_owner && branch.name != repo.default_branch %}
+                  {% let ref_name = branch.name %}
+                  {% let ref_oid = branch.oid %}
+                  {% let ref_kind = "heads" %}
+                  {% include "ref_delete.html" %}
+                {% endif %}
               </li>
             {% endfor %}
           </ul>
@@ -40,19 +74,27 @@
         {% else %}
           <ul class="list refs-list" role="list">
             {% for tag in inventory.tags %}
-              <li class="refs-row">
-                <svg class="icon" aria-hidden="true"><use href="/img/icons.svg#tag"></use></svg>
-                <div class="refs-row__body">
-                  <div class="refs-row__name"><bdi class="mono">{{ tag.name }}</bdi></div>
-                  <dl class="refs-row__objects">
-                    <dt>{{ chrome.locale.t(crate::i18n::RepoText::TagObject) }}</dt>
-                    <dd><code class="refs-row__hash" dir="ltr">{{ tag.oid }}</code></dd>
-                    {% if let Some(target) = tag.peeled %}
-                      <dt>{{ chrome.locale.t(crate::i18n::RepoText::PeeledTarget) }}</dt>
-                      <dd><code class="refs-row__hash" dir="ltr">{{ target }}</code></dd>
-                    {% endif %}
-                  </dl>
+              <li>
+                <div class="refs-row">
+                  <svg class="icon" aria-hidden="true"><use href="/img/icons.svg#tag"></use></svg>
+                  <div class="refs-row__body">
+                    <div class="refs-row__name"><bdi class="mono">{{ tag.name }}</bdi></div>
+                    <dl class="refs-row__objects">
+                      <dt>{{ chrome.locale.t(crate::i18n::RepoText::TagObject) }}</dt>
+                      <dd><code class="refs-row__hash" dir="ltr">{{ tag.oid }}</code></dd>
+                      {% if let Some(target) = tag.peeled %}
+                        <dt>{{ chrome.locale.t(crate::i18n::RepoText::PeeledTarget) }}</dt>
+                        <dd><code class="refs-row__hash" dir="ltr">{{ target }}</code></dd>
+                      {% endif %}
+                    </dl>
+                  </div>
                 </div>
+                {% if is_owner %}
+                  {% let ref_name = tag.name %}
+                  {% let ref_oid = tag.oid %}
+                  {% let ref_kind = "tags" %}
+                  {% include "ref_delete.html" %}
+                {% endif %}
               </li>
             {% endfor %}
           </ul>

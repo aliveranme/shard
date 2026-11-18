@@ -1,4 +1,5 @@
 use crate::git_storage::{is_object_id, RepoHandle};
+use crate::models::Repo;
 use crate::i18n::DiscussionText;
 use crate::refs::{self, RefsError};
 use std::collections::{HashMap, VecDeque};
@@ -37,44 +38,72 @@ impl BaseError {
     }
 }
 
-/// Capture both exact branch tips from the same Git advertisement.
+/// Keep one handle for same-repository comparisons and one for each store otherwise.
+pub(crate) struct Repositories {
+    pub target: RepoHandle,
+    source: Option<RepoHandle>,
+}
+
+impl Repositories {
+    pub async fn open(env: &worker::Env, target: &Repo, source: &Repo) -> worker::Result<Self> {
+        let same = target.id == source.id;
+        let target = RepoHandle::open(env, target).await?;
+        let source = if same { None } else { Some(RepoHandle::open(env, source).await?) };
+        Ok(Self { target, source })
+    }
+
+    pub fn source(&self) -> &RepoHandle {
+        self.source.as_ref().unwrap_or(&self.target)
+    }
+}
+
+/// Sample exact branch tips, sharing a single advertisement for the same repository.
 pub(crate) async fn branch_tips(
-    repo: &RepoHandle,
+    repos: &Repositories,
     base_branch: &str,
     head_branch: &str,
 ) -> Result<(String, String), DiscussionText> {
-    if base_branch == head_branch {
+    if repos.source.is_none() && base_branch == head_branch {
         return Err(DiscussionText::BranchesMustDiffer);
     }
-    let inventory = refs::load(repo).await.map_err(|error| match error {
-        RefsError::Limit => DiscussionText::CompareRefsLimited,
-        RefsError::Unavailable => DiscussionText::GitUnavailable,
-    })?;
+    let target = load_refs(&repos.target).await?;
     let (mut base, mut head) = (None, None);
-    for branch in inventory.branches {
+    for branch in target.branches {
         if branch.name == base_branch {
             base = Some(branch.oid);
-        } else if branch.name == head_branch {
+        } else if repos.source.is_none() && branch.name == head_branch {
             head = Some(branch.oid);
         }
-        if base.is_some() && head.is_some() {
+        if base.is_some() && (repos.source.is_some() || head.is_some()) {
             break;
         }
     }
-    Ok((
-        base.ok_or(DiscussionText::BaseBranchNotFound)?,
-        head.ok_or(DiscussionText::HeadBranchNotFound)?,
-    ))
+    let base = base.ok_or(DiscussionText::BaseBranchNotFound)?;
+    if let Some(source) = &repos.source {
+        head = load_refs(source).await?.branches.into_iter()
+            .find(|branch| branch.name == head_branch).map(|branch| branch.oid);
+    }
+    Ok((base, head.ok_or(DiscussionText::HeadBranchNotFound)?))
+}
+
+async fn load_refs(repo: &RepoHandle) -> Result<refs::Inventory, DiscussionText> {
+    refs::load(repo).await.map_err(|error| match error {
+        RefsError::Limit => DiscussionText::CompareRefsLimited,
+        RefsError::Unavailable => DiscussionText::GitUnavailable,
+    })
 }
 
 /// Find the unique best common ancestor. Exhaustion or incomplete history
 /// must not turn a two-tip comparison into an apparent source-branch diff.
-pub(crate) async fn find(repo: &RepoHandle, base: &str, head: &str) -> Result<String, BaseError> {
+pub(crate) async fn find(repos: &Repositories, base: &str, head: &str) -> Result<String, BaseError> {
     if !is_object_id(base) || !is_object_id(head) {
         return Err(BaseError::Missing);
     }
     if base == head {
-        repo.read_commit(head).await.map_err(BaseError::Storage)?.ok_or(BaseError::Missing)?;
+        repos.target.read_commit(base).await.map_err(BaseError::Storage)?.ok_or(BaseError::Missing)?;
+        if let Some(source) = &repos.source {
+            source.read_commit(head).await.map_err(BaseError::Storage)?.ok_or(BaseError::Missing)?;
+        }
         return Ok(head.to_owned());
     }
     let mut graph = Graph::default();
@@ -88,6 +117,7 @@ pub(crate) async fn find(repo: &RepoHandle, base: &str, head: &str) -> Result<St
         if side != BASE && side != HEAD {
             continue;
         }
+        let repo = if side == BASE { &repos.target } else { repos.source() };
         for edge in graph.parents(repo, id).await? {
             let parent = graph.edges[edge];
             if graph.nodes[parent].flags & (side | STALE) != 0 {
@@ -110,14 +140,14 @@ pub(crate) async fn find(repo: &RepoHandle, base: &str, head: &str) -> Result<St
     }
     if remaining == 1 {
         let first = graph.candidates().next().ok_or(BaseError::Missing)?;
-        graph.parents(repo, first).await?;
+        graph.parents(&repos.target, first).await?;
         return Ok(graph.into_hash(first));
     }
     // Parallel paths can meet again below an earlier candidate. Follow the
     // candidates' parents to eliminate those ancestors before declaring a tie.
     for id in 0..graph.nodes.len() {
         if graph.nodes[id].flags == COMMON {
-            queue.extend(graph.parents(repo, id).await?.map(|edge| graph.edges[edge]));
+            queue.extend(graph.parents(&repos.target, id).await?.map(|edge| graph.edges[edge]));
         }
     }
     while let Some(id) = queue.pop_front() {
@@ -132,7 +162,7 @@ pub(crate) async fn find(repo: &RepoHandle, base: &str, head: &str) -> Result<St
             let best = graph.candidates().next().ok_or(BaseError::Missing)?;
             return Ok(graph.into_hash(best));
         }
-        queue.extend(graph.parents(repo, id).await?.map(|edge| graph.edges[edge]));
+        queue.extend(graph.parents(&repos.target, id).await?.map(|edge| graph.edges[edge]));
     }
     Err(BaseError::Ambiguous)
 }

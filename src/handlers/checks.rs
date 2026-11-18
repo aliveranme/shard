@@ -139,16 +139,15 @@ pub async fn record(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
         _ => return error(state, 400, CheckText::InvalidPayload),
     };
 
-    let commit = async {
+    let target_has_commit = async {
         let handle = RepoHandle::open(&state.env, &repo).await?;
         handle.read_commit(hash).await
     }
     .await;
-    match commit {
-        Ok(Some(_)) => (),
-        Ok(None) => return error(state, 404, RepoText::CommitNotFound),
+    let target_has_commit = match target_has_commit {
+        Ok(commit) => commit.is_some(),
         Err(_) => return error(state, 502, RepoText::StorageUnavailable),
-    }
+    };
 
     // Recheck the writer in the mutation because Artifacts calls can race a role change.
     let recorded = database
@@ -158,6 +157,15 @@ pub async fn record(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
              WHERE r.id = ?1 AND (r.owner_id = u.id OR u.is_admin = 1 OR EXISTS (
                  SELECT 1 FROM repo_member_roles c
                  WHERE c.repo_id = r.id AND c.user_id = u.id AND c.role = 'write'
+             ))
+             AND (?7 = 1 OR EXISTS (
+                 SELECT 1 FROM issues i JOIN pulls p ON p.issue_id = i.id
+                 JOIN repos s ON s.id = p.source_repo_id
+                 WHERE i.repo_id = r.id AND i.state = 'open' AND p.merged = 0
+                   AND p.head_commit = ?2 AND s.id <> r.id
+                   AND (s.visibility = 'public' OR (r.visibility = 'private'
+                       AND (s.owner_id = u.id OR u.is_admin = 1 OR EXISTS (
+                           SELECT 1 FROM repo_member_roles m WHERE m.repo_id = s.id AND m.user_id = u.id))))
              ))
              ON CONFLICT (repo_id, commit_hash, context) DO UPDATE SET
                  state = excluded.state, summary = excluded.summary
@@ -170,6 +178,7 @@ pub async fn record(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
             util::js_text(check.state.as_str()),
             check.summary.as_deref().map_or_else(util::js_null, util::js_text),
             util::js_int(identity.user_id),
+            util::js_int(i64::from(target_has_commit)),
         ])?
         .first::<i64>(Some("repo_id"))
         .await?;

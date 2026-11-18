@@ -16,6 +16,7 @@ macro_rules! catalog {
 
 mod account;
 mod checks;
+mod branches;
 mod collaborators;
 mod common;
 mod discussion;
@@ -31,6 +32,7 @@ mod web;
 mod webhooks;
 
 pub use account::AccountText;
+pub use branches::BranchText;
 pub use checks::CheckText;
 pub use collaborators::CollaboratorText;
 pub use common::CommonText;
