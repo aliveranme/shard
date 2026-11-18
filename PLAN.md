@@ -67,12 +67,11 @@ refs and any retained PR objects, then change its recorded backend. Retain the
 source until the destination and rollback have been verified. Migrate Git LFS
 objects separately from Git refs.
 
-LFS can be added independently of the selected Git backend. The Shard Batch
-endpoint should authorize each repository and operation using the existing Git
-token roles, then issue short-lived operations against a private R2 bucket.
-Verify the declared SHA-256 and size before making an upload visible. Direct
-R2 transfers avoid the Worker's inbound body limit. A basic single PUT is
-subject to R2's single-part limit. [Git LFS Batch API](https://github.com/git-lfs/git-lfs/blob/main/docs/api/batch.md) · [R2 presigned URLs](https://developers.cloudflare.com/r2/api/s3/presigned-urls/)
+Both Git backends use the Shard LFS Batch route. The Worker authorizes each
+operation with existing Git token roles, then streams a verified SHA-256
+object to or from a private, repository-scoped R2 key. Basic uploads accept
+up to 100,000,000 bytes through the Worker. Back up the R2 bucket with D1 and
+Git storage. [Git LFS Batch API](https://github.com/git-lfs/git-lfs/blob/main/docs/api/batch.md)
 
 ## Deployment prerequisites
 

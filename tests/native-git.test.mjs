@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { experimental_readRawConfig, unstable_dev } from "wrangler";
 import { createGitOrigin } from "../scripts/git-origin.mjs";
+import { exerciseLfs } from "./lfs.mjs";
 
 const exec = promisify(execFile);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -355,6 +356,8 @@ test("forge native Git over loopback", { timeout: 240_000 }, async (t) => {
         assert.equal((await viewer.get(path)).status, 404);
         assert.equal((await guest.get(infoRefs(path, "upload"), viewerToken)).status, 404);
       }
+      const canRunGitLfs = await exec("git", ["lfs", "version"]).then(() => true, () => false);
+      await exerciseLfs({ base, repo: renamed, writeToken, readToken, canRunGitLfs });
 
       const fork = "/nativeviewer/project-fork";
       let copied = await viewer.post(`${project}/fork`, { name: "project-fork" });

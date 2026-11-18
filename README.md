@@ -77,7 +77,8 @@ For rust-analyzer, set the Cargo target to `wasm32-unknown-unknown`.
 The Rust Worker serves the web interface and checks repository access before
 forwarding Git traffic. D1 keeps accounts, permissions, issues, and reviews.
 Cloudflare Artifacts stores Git data by default. With `--env native`, an
-authenticated Git origin stores bare repositories on a persistent disk.
+authenticated Git origin stores bare repositories on a persistent disk. Both
+modes store Git LFS bytes in the private `LFS_OBJECTS` R2 binding.
 
 [Storage design](PLAN.md#optional-git-backends) · [Verified behavior and staging status](STATUS.md)
 
@@ -85,6 +86,8 @@ authenticated Git origin stores bare repositories on a persistent disk.
 
 The default Artifacts deployment requires **Workers Paid** with Artifacts access.
 The Worker can use its `workers.dev` address or a Cloudflare custom domain.
+Enable R2 and configure a separate `LFS_OBJECTS` bucket for each instance that
+serves LFS. Use an isolated D1 database and Git storage for staging.
 [Artifacts pricing](https://developers.cloudflare.com/artifacts/platform/pricing/) · [Custom domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)
 
 ### Deploy from GitHub or GitLab
@@ -138,9 +141,9 @@ uses its source's backend. Existing repositories retain their recorded backend.
    secret. The service defaults to `127.0.0.1:8793`. Run one process per volume
    and put it behind an HTTPS reverse proxy that streams request bodies.
 2. In `env.native` in `wrangler.jsonc`, set `NATIVE_GIT_ORIGIN` to the proxy's
-   HTTPS origin and set `d1_databases[0].database_id` and `database_name` for
-   this instance. Set the Worker's `NATIVE_GIT_TOKEN` secret to the same value
-   as `SHARD_GIT_TOKEN`. Use a dedicated origin directory and token per instance.
+   HTTPS origin. Set the native D1 database ID and name and the native
+   `LFS_OBJECTS` bucket name. Set `NATIVE_GIT_TOKEN` to the same value as
+   `SHARD_GIT_TOKEN`. Use a dedicated origin directory and token per instance.
 3. Apply migrations and deploy the same environment:
 
    ```sh
@@ -255,11 +258,15 @@ as referrer. Git smart HTTP returns an empty HTTP 404 for a missing `.git` repos
 
 ### Git LFS
 
-Shard stores the Git LFS pointer in Git history. Its HTTPS remote has no LFS
-Batch API, so a normal Git LFS push or checkout cannot transfer the file itself.
-`GIT_LFS_SKIP_SMUDGE=1 git clone "$SHARD_CLONE_URL"` can retrieve the pointers.
-Configure a separate LFS endpoint with `lfs.url` to transfer the actual files.
-[Git LFS server discovery](https://github.com/git-lfs/git-lfs/blob/main/docs/api/server-discovery.md)
+Install Git LFS and use the regular Shard HTTPS remote. `git lfs track` stores
+pointers in Git, while the LFS Batch endpoint transfers the files using the
+basic adapter. Uploads require a write-scoped token and repository write access.
+Public objects can be downloaded anonymously. Private downloads require a
+repository grant. Each object is scoped to its repository and checked against
+the declared SHA-256 and size. The limits are 100 objects per batch and
+100,000,000 bytes per upload. R2 data needs its own backup.
+Copy LFS objects separately when moving a repository or creating a Git mirror.
+[Git LFS Batch API](https://github.com/git-lfs/git-lfs/blob/main/docs/api/batch.md)
 
 ## Images and issue references
 

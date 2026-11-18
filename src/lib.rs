@@ -16,6 +16,7 @@ mod git_storage;
 mod handlers;
 mod i18n;
 mod issue_metadata;
+mod lfs;
 mod markdown;
 mod models;
 mod native_git;
@@ -153,6 +154,10 @@ fn routes(router: Router<AppState>) -> Router<AppState> {
             "/:owner/:repo/git-receive-pack",
             handlers::git::receive_pack,
         )
+        .post_async("/:owner/:repo/info/lfs/objects/batch", lfs::batch)
+        .put_async("/:owner/:repo/info/lfs/objects/:repo_id/:oid/:size", lfs::upload)
+        .get_async("/:owner/:repo/info/lfs/objects/:repo_id/:oid/:size", lfs::download)
+        .post_async("/:owner/:repo/info/lfs/objects/:repo_id/:oid/:size/verify", lfs::verify)
 }
 
 #[event(fetch)]

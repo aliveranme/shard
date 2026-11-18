@@ -14,7 +14,19 @@ pub fn is_git_request(req: &Request) -> bool {
     }
     match endpoint {
         "git-upload-pack" | "git-receive-pack" => parts.next().is_none(),
-        "info" => parts.next() == Some("refs") && parts.next().is_none(),
+        "info" => match parts.next() {
+            Some("refs") => parts.next().is_none(),
+            Some("lfs") => match (parts.next(), parts.next()) {
+                (Some("objects"), Some("batch")) => parts.next().is_none(),
+                (Some("objects"), Some(_)) => match (parts.next(), parts.next(), parts.next()) {
+                    (Some(_), Some(_), None) => true,
+                    (Some(_), Some(_), Some("verify")) => parts.next().is_none(),
+                    _ => false,
+                },
+                _ => false,
+            },
+            _ => false,
+        },
         _ => false,
     }
 }

@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
 import { unstable_dev } from "wrangler";
+import { exerciseLfs } from "./lfs.mjs";
 
 const exec = promisify(execFile);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -687,6 +688,19 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       });
       assert.notEqual(crisscross.status, 302);
       assert.match(crisscross.body, /more than one best common ancestor/);
+    });
+
+    await t.test("Artifacts transfers actual LFS objects with scoped credentials", async () => {
+      const repo = "/suiteowner/lfs-objects";
+      redirected(await owner.post("/repo/create", { name: "lfs-objects", private: "on" }));
+      const token = async (scope) => {
+        const response = await owner.post("/user/settings/tokens", { name: `LFS ${scope}`, scope, expires_in: "7" });
+        const value = response.body.match(/\bshard_[a-f0-9]{64}\b/)?.[0];
+        assert.ok(value);
+        return value;
+      };
+      const canRunGitLfs = await exec("git", ["lfs", "version"]).then(() => true, () => false);
+      await exerciseLfs({ base, repo, writeToken: await token("write"), readToken: await token("read"), canRunGitLfs });
     });
 
     await t.test("private repository grants govern Git, issue classification and notifications", async () => {

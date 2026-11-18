@@ -9,7 +9,7 @@ Update this file whenever a milestone lands or a limitation changes.
 |---|---|
 | Runtime | Rust 1.100.0, `worker` 0.9.0, `worker-build` 0.9.0 |
 | Tooling | Node 26.13.1, Wrangler 4.164.0, mise |
-| Storage | D1 with Cloudflare Artifacts by default. The `native` environment uses an authenticated Git origin with persistent disk. |
+| Storage | D1 with Cloudflare Artifacts by default or an authenticated native Git origin. Both environments use a private R2 bucket for LFS objects. |
 | UI | Server-rendered Askama templates using `static/css/theme.css` and `static/css/shard.css` |
 | Deployment | Deploy to Cloudflare and Wrangler scripts are configured. Production verification is pending. |
 | Source | [aliveranme/shard](https://github.com/aliveranme/shard) |
@@ -27,6 +27,7 @@ Update this file whenever a milestone lands or a limitation changes.
 | Repository lifecycle | Rename and accepted transfers preserve existing Web and Git routes. Forks preserve Git refs. The import form rejects sources outside its public HTTPS URL policy. |
 | Web default branch | Settings accept an existing Git branch. Clones follow the Git backend's `HEAD`. |
 | Git transport | Smart HTTP request and response bodies are streamed. Private clone requires a credential, and push also requires write scope and repository write access. |
+| Git LFS | Both Git backends transfer objects through the authenticated Batch and basic transfer API. R2 verifies the SHA-256 and size before serving a repository-scoped object. |
 | Native Git origin | The `native` Wrangler environment passes Git push, clone, fetch, branch and tag browsing, raw downloads, pull request line diffs, and access revocation. Forked refs and files stay readable after source deletion. |
 | Code browsing | Branch and tag inventory, branch-scoped trees and files, cursor-paginated first-parent history, parent links, and commit-pinned source TAR downloads. Text previews read at most 256 KiB. README links and images use the displayed commit, and raw downloads stream full files. |
 | Pull requests | Common-ancestor file and line diffs. Authors and writers can explicitly update open comparisons. Review links retain the saved diff and line. Writers can verify integration after pushing a merge. |
