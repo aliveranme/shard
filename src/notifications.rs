@@ -54,7 +54,7 @@ pub async fn inbox(req: Request, ctx: RouteContext<AppState>) -> Result<Response
     }
     let page = PageRequest::new(&req, "page");
     let [recipient, admin] = viewer_params(state);
-    // Resolve the canonical path and filter visibility before applying pagination.
+    // Resolve canonical paths and current visibility, including team grants, before pagination.
     let mut notifications: Vec<NotificationRow> = db::all(
         &state.db()?,
         &format!(
@@ -103,8 +103,8 @@ pub async fn read_one(req: Request, ctx: RouteContext<AppState>) -> Result<Respo
         return missing();
     };
     let [recipient, admin] = viewer_params(state);
-    // Check current access atomically with the mutation, including repeated reads.
-    let marked = state.db()?.prepare(&format!(
+    // Recheck current grants in the mutation, including repeated reads.
+    let marked = state.db()?.prepare(format!(
         "UPDATE notifications SET read_at = COALESCE(read_at, ?3)
          WHERE recipient_id = ?1 AND event_id = ?4 AND EXISTS (
              SELECT 1 FROM notification_events e {THREAD_JOINS}

@@ -91,6 +91,10 @@ pub struct Repo {
     pub updated_at: Ts,
     pub open_issues: i64,
     pub open_pulls: i64,
+    #[serde(default)]
+    pub watched: i64,
+    #[serde(default)]
+    pub starred: i64,
 }
 
 impl Repo {

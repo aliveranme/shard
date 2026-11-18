@@ -11,9 +11,17 @@ pub const REPO_COLUMNS: &str = "r.id, r.owner_id, u.username AS owner_name, r.na
     (SELECT COUNT(*) FROM issues i WHERE i.repo_id = r.id AND i.kind = 'issue' AND i.state = 'open') AS open_issues,
     (SELECT COUNT(*) FROM issues i WHERE i.repo_id = r.id AND i.kind = 'pull' AND i.state = 'open') AS open_pulls";
 
+const REPO_FROM: &str = "repos r JOIN users u ON u.id = r.owner_id";
+const REPO_PATH_FROM: &str = "repo_paths p JOIN users pu ON pu.id = p.owner_id
+    JOIN repos r ON r.id = p.repo_id JOIN users u ON u.id = r.owner_id";
+
+const REPO_VIEWER_COLUMNS: &str = "
+    EXISTS (SELECT 1 FROM repo_watches WHERE repo_id = r.id AND user_id = ?1) AS watched,
+    EXISTS (SELECT 1 FROM repo_stars WHERE repo_id = r.id AND user_id = ?1) AS starred";
+
 /// Listing queries use `r` for the repository and bind the viewer first.
 pub(crate) const VISIBLE_REPO_SQL: &str = "(r.visibility = 'public' OR r.owner_id = ?1 OR ?2 = 1
-    OR EXISTS (SELECT 1 FROM repo_collaborators c WHERE c.repo_id = r.id AND c.user_id = ?1))";
+    OR EXISTS (SELECT 1 FROM repo_member_roles c WHERE c.repo_id = r.id AND c.user_id = ?1))";
 
 pub(crate) fn viewer_params(state: &AppState) -> [JsValue; 2] {
     match &state.user {
@@ -24,14 +32,24 @@ pub(crate) fn viewer_params(state: &AppState) -> [JsValue; 2] {
 
 pub async fn load_repo(state: &AppState, owner: &str, name: &str) -> Result<Option<Repo>> {
     let database = state.db()?;
+    let [viewer, _] = viewer_params(state);
     db::first(
         &database,
         &format!(
-            "SELECT {REPO_COLUMNS} FROM repo_paths p JOIN users pu ON pu.id = p.owner_id
-             JOIN repos r ON r.id = p.repo_id JOIN users u ON u.id = r.owner_id
-             WHERE pu.username = ? COLLATE NOCASE AND p.name = ? COLLATE NOCASE"
+            "SELECT {REPO_COLUMNS}, {REPO_VIEWER_COLUMNS} FROM {REPO_PATH_FROM}
+             WHERE pu.username = ?2 COLLATE NOCASE AND p.name = ?3 COLLATE NOCASE"
         ),
-        &[crate::util::js_text(owner), crate::util::js_text(name)],
+        &[viewer, crate::util::js_text(owner), crate::util::js_text(name)],
+    )
+    .await
+}
+
+/// Load a canonical repository by ID after the caller authorizes the operation.
+pub(crate) async fn load_repo_by_id(database: &d1::D1Database, id: i64) -> Result<Option<Repo>> {
+    db::first(
+        database,
+        &format!("SELECT {REPO_COLUMNS} FROM {REPO_FROM} WHERE r.id = ?"),
+        &[crate::util::js_int(id)],
     )
     .await
 }
@@ -49,12 +67,12 @@ fn is_repo_admin(owner_id: i64, user_id: i64, is_admin: i64) -> bool {
 
 #[derive(Clone, Copy, Eq, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub(super) enum RepoRole {
+pub(crate) enum RepoRole {
     Read,
     Write,
 }
 
-pub(super) async fn repo_role(
+pub(crate) async fn repo_role(
     database: &d1::D1Database,
     repo_id: i64,
     owner_id: i64,
@@ -70,7 +88,8 @@ pub(super) async fn repo_role(
     }
     let grant: Option<Grant> = db::first(
         database,
-        "SELECT role FROM repo_collaborators WHERE repo_id = ? AND user_id = ?",
+        "SELECT role FROM repo_member_roles WHERE repo_id = ? AND user_id = ?
+         ORDER BY role = 'write' DESC LIMIT 1",
         &[crate::util::js_int(repo_id), crate::util::js_int(user_id)],
     )
     .await?;
@@ -97,19 +116,29 @@ pub fn forbidden(state: &AppState, message: &'static str) -> Result<Response> {
     error_response(&Chrome::new(state), 403, message)
 }
 
-/// Load a repo and enforce visibility in one go.
+/// Resolve a repository path and enforce current visibility in the same query.
 pub async fn visible_repo(state: &AppState, owner: &str, name: &str) -> Result<Option<Repo>> {
-    let Some(repo) = load_repo(state, owner, name).await? else {
-        return Ok(None);
-    };
-    if repo.visibility == "public" || can_admin(state, &repo) {
-        return Ok(Some(repo));
-    }
-    let Some(user) = &state.user else {
-        return Ok(None);
-    };
-    let role = repo_role(&state.db()?, repo.id, repo.owner_id, user.id, user.is_admin).await?;
-    Ok(role.map(|_| repo))
+    let [viewer, admin] = viewer_params(state);
+    db::first(
+        &state.db()?,
+        &format!(
+            "SELECT {REPO_COLUMNS}, {REPO_VIEWER_COLUMNS} FROM {REPO_PATH_FROM}
+             WHERE pu.username = ?3 COLLATE NOCASE AND p.name = ?4 COLLATE NOCASE AND {VISIBLE_REPO_SQL}"
+        ),
+        &[viewer, admin, crate::util::js_text(owner), crate::util::js_text(name)],
+    )
+    .await
+}
+
+pub(crate) async fn visible_repo_by_id(state: &AppState, id: i64) -> Result<Option<Repo>> {
+    let [viewer, admin] = viewer_params(state);
+    db::first(
+        &state.db()?,
+        &format!("SELECT {REPO_COLUMNS}, {REPO_VIEWER_COLUMNS} FROM {REPO_FROM}
+                  WHERE r.id = ?3 AND {VISIBLE_REPO_SQL}"),
+        &[viewer, admin, crate::util::js_int(id)],
+    )
+    .await
 }
 
 pub fn page_title(parts: &[&str]) -> String {

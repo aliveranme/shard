@@ -12,10 +12,10 @@ use worker::d1::D1Database;
 use worker::{Error, FormData, FormEntry, Request, Response, Result, RouteContext};
 
 const ELIGIBLE_ASSIGNEE: &str = "(u.id = r.owner_id OR u.is_admin = 1 OR EXISTS (
-    SELECT 1 FROM repo_collaborators c WHERE c.repo_id = r.id AND c.user_id = u.id
+    SELECT 1 FROM repo_member_roles c WHERE c.repo_id = r.id AND c.user_id = u.id
 ))";
 const WRITER: &str = "(u.id = r.owner_id OR u.is_admin = 1 OR EXISTS (
-    SELECT 1 FROM repo_collaborators c WHERE c.repo_id = r.id AND c.user_id = u.id AND c.role = 'write'
+    SELECT 1 FROM repo_member_roles c WHERE c.repo_id = r.id AND c.user_id = u.id AND c.role = 'write'
 ))";
 
 #[derive(Deserialize)]
@@ -46,7 +46,7 @@ async fn assigned(database: &D1Database, repo_id: i64, issue_id: i64) -> Result<
          JOIN repo_labels l ON l.repo_id = il.repo_id AND l.id = il.label_id
          WHERE il.repo_id = ? AND il.issue_id = ? ORDER BY l.name, l.id",
     ).bind(&args)?;
-    let assignment = database.prepare(&format!(
+    let assignment = database.prepare(format!(
         "SELECT m.id AS milestone_id, m.name AS milestone_name,
                 u.id AS assignee_id, u.username AS assignee_name
          FROM issues i
@@ -216,7 +216,7 @@ async fn edit(ctx: &RouteContext<AppState>, submit: bool) -> Result<Response> {
                 }
                 error = Some(locale.t(IssueMetadataText::InvalidSelection));
             } else {
-                let saved = database.prepare(&format!(
+                let saved = database.prepare(format!(
                     "UPDATE issues SET title = COALESCE(?4, title), body = COALESCE(?5, body), updated_at = ?6
                      WHERE repo_id = ?1 AND id = ?2 AND kind = 'issue'
                        AND EXISTS (
@@ -267,7 +267,7 @@ async fn edit(ctx: &RouteContext<AppState>, submit: bool) -> Result<Response> {
             "SELECT u.id, u.username AS name FROM users u
              JOIN (
                  SELECT owner_id AS id FROM repos WHERE id = ?1
-                 UNION SELECT user_id FROM repo_collaborators WHERE repo_id = ?1
+                 UNION SELECT user_id FROM repo_member_roles WHERE repo_id = ?1
                  UNION SELECT id FROM users WHERE is_admin = 1
              ) eligible ON eligible.id = u.id
              ORDER BY u.username, u.id",
@@ -306,16 +306,16 @@ async fn save_classification(
         selection.assignee.map_or_else(js_null, js_int), js_text(&labels),
         title, body, js_int(now()),
     ];
-    let update = database.prepare(&format!(
+    let update = database.prepare(format!(
         "{guard} UPDATE issues SET title = COALESCE(?7, title), body = COALESCE(?8, body),
                     assignee_id = ?5, updated_at = ?9
                  WHERE id IN (SELECT id FROM allowed) RETURNING id",
     )).bind(&args)?;
-    let remove_labels = database.prepare(&format!(
+    let remove_labels = database.prepare(format!(
         "{guard} DELETE FROM issue_labels WHERE issue_id IN (SELECT id FROM allowed)
                     AND label_id NOT IN (SELECT id FROM chosen_labels)",
     )).bind(&args[..6])?;
-    let add_labels = database.prepare(&format!(
+    let add_labels = database.prepare(format!(
         "{guard} INSERT INTO issue_labels(issue_id, repo_id, label_id)
                  SELECT a.id, a.repo_id, c.id FROM allowed a CROSS JOIN chosen_labels c WHERE 1
                  ON CONFLICT(issue_id, label_id) DO NOTHING",
@@ -327,7 +327,7 @@ async fn save_classification(
     } else {
         "DELETE FROM issue_milestones WHERE issue_id IN (SELECT id FROM allowed)"
     };
-    let milestone = database.prepare(&format!("{guard} {milestone_sql}")).bind(&args[..6])?;
+    let milestone = database.prepare(format!("{guard} {milestone_sql}")).bind(&args[..6])?;
     let results = database.batch(vec![update, remove_labels, add_labels, milestone]).await?;
     Ok(!results[0].results::<serde::de::IgnoredAny>()?.is_empty())
 }
@@ -407,7 +407,7 @@ impl CatalogKind {
 
 async fn catalog_entries(database: &D1Database, repo_id: i64) -> Result<[Vec<Named>; 2]> {
     let entries = |kind: CatalogKind| {
-        database.prepare(&format!("SELECT id, name FROM {} WHERE repo_id = ? ORDER BY name, id", kind.table()))
+        database.prepare(format!("SELECT id, name FROM {} WHERE repo_id = ? ORDER BY name, id", kind.table()))
             .bind(&[js_int(repo_id)])
     };
     let results = database.batch(vec![entries(CatalogKind::Label)?, entries(CatalogKind::Milestone)?]).await?;

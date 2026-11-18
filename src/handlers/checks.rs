@@ -156,7 +156,7 @@ pub async fn record(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
             "INSERT INTO commit_checks (repo_id, commit_hash, context, state, summary)
              SELECT r.id, ?2, ?3, ?4, ?5 FROM repos r JOIN users u ON u.id = ?6
              WHERE r.id = ?1 AND (r.owner_id = u.id OR u.is_admin = 1 OR EXISTS (
-                 SELECT 1 FROM repo_collaborators c
+                 SELECT 1 FROM repo_member_roles c
                  WHERE c.repo_id = r.id AND c.user_id = u.id AND c.role = 'write'
              ))
              ON CONFLICT (repo_id, commit_hash, context) DO UPDATE SET
