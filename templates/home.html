@@ -8,11 +8,7 @@
       <p class="page-sub">{{ chrome.locale.t(crate::i18n::WebText::ExploreIntro) }}</p>
     </div>
   </div>
-  <form class="hero__search" method="get" action="/explore/repos" role="search">
-    <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M10.68 11.74a6 6 0 0 1-7.922-8.982 6 6 0 0 1 8.982 7.922l3.04 3.04a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215ZM11.5 7a4.499 4.499 0 1 0-8.997 0A4.499 4.499 0 0 0 11.5 7Z"></path></svg>
-    <input type="search" name="q" value="{{ query }}" placeholder="{{ chrome.locale.t(crate::i18n::WebText::SearchRepositoryHint) }}" aria-label="{{ chrome.locale.t(crate::i18n::WebText::SearchRepositories) }}">
-    <button type="submit" aria-label="{{ chrome.locale.t(crate::i18n::CommonText::Search) }}">→</button>
-  </form>
+  {% include "repo_search.html" %}
   <section class="section">
     <div class="section__head">
       <h2 class="section__title">{{ chrome.locale.t(crate::i18n::WebText::PublicRepositories) }}</h2>
@@ -32,48 +28,35 @@
   </section>
 </div>
 {% else %}
-<section class="hero">
+<section class="hero{% if chrome.signed_in %} hero--workspace{% endif %}">
   <div class="page hero__grid">
-    <div>
-      {% if chrome.signed_in %}
-        <p class="eyebrow">{{ chrome.locale.welcome(chrome.user_name.as_str()) }}</p>
-        <h1 class="hero__title">{{ chrome.locale.t(crate::i18n::WebText::WorkHeadline) }}</h1>
-        <p class="hero__sub">{{ chrome.locale.t(crate::i18n::WebText::WorkIntro) }}</p>
-      {% else %}
-        <p class="eyebrow">{{ chrome.locale.t(crate::i18n::WebText::GuestEyebrow) }}</p>
-        <h1 class="hero__title">{{ chrome.locale.t(crate::i18n::WebText::GuestHeadline) }}</h1>
-        <p class="hero__sub">{{ chrome.locale.t(crate::i18n::WebText::GuestIntro) }}</p>
-      {% endif %}
-      <form class="hero__search" method="get" action="/explore/repos" role="search">
-        <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M10.68 11.74a6 6 0 0 1-7.922-8.982 6 6 0 0 1 8.982 7.922l3.04 3.04a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215ZM11.5 7a4.499 4.499 0 1 0-8.997 0A4.499 4.499 0 0 0 11.5 7Z"></path></svg>
-        <input type="search" name="q" placeholder="{{ chrome.locale.t(crate::i18n::WebText::SearchRepositoryHint) }}" aria-label="{{ chrome.locale.t(crate::i18n::WebText::SearchRepositories) }}" value="{{ query }}">
-        <button type="submit" aria-label="{{ chrome.locale.t(crate::i18n::CommonText::Search) }}">→</button>
-      </form>
-      <div class="chips hero__chips">
+    <div class="hero__content">
+      <div>
         {% if chrome.signed_in %}
-          <a class="chip" href="/new"><span aria-hidden="true">＋</span> {{ chrome.locale.t(crate::i18n::CommonText::NewRepository) }}</a>
-          <a class="chip" href="/issues"><span aria-hidden="true">◎</span> {{ chrome.locale.t(crate::i18n::CommonText::Issues) }}</a>
-          <a class="chip" href="/pulls"><span aria-hidden="true">⑂</span> {{ chrome.locale.t(crate::i18n::CommonText::PullRequests) }}</a>
-          <a class="chip" href="/user/settings/tokens"><span aria-hidden="true">◇</span> {{ chrome.locale.t(crate::i18n::CommonText::AccessTokens) }}</a>
+          <h1 class="hero__title">{{ chrome.locale.t(crate::i18n::WebText::WorkHeadline) }}</h1>
+          <p class="hero__sub">{{ chrome.locale.t(crate::i18n::WebText::WorkIntro) }}</p>
         {% else %}
-          <a class="chip" href="/user/sign_up">{{ chrome.locale.t(crate::i18n::CommonText::CreateAccount) }}</a>
-          <a class="chip" href="/explore/repos">{{ chrome.locale.t(crate::i18n::WebText::ExploreRepositories) }}</a>
-          <a class="chip" href="/user/login">{{ chrome.locale.t(crate::i18n::CommonText::SignIn) }}</a>
+          <p class="eyebrow">{{ chrome.locale.t(crate::i18n::WebText::GuestEyebrow) }}</p>
+          <h1 class="hero__title">{{ chrome.locale.t(crate::i18n::WebText::GuestHeadline) }}</h1>
+          <p class="hero__sub">{{ chrome.locale.t(crate::i18n::WebText::GuestIntro) }}</p>
         {% endif %}
       </div>
-    </div>
-    <div class="hero__art" aria-hidden="true">
-      <div class="orb orb--amber"></div>
-      <div class="orb orb--lavender"></div>
-      <div class="hero__mock">
-        <div class="mock__head">
-          <span class="mock__dot"></span><span class="mock__dot"></span><span class="mock__dot"></span>
+      <div class="hero__tools">
+        {% include "repo_search.html" %}
+        <div class="hero__actions">
+          {% if chrome.signed_in %}
+            <a class="btn btn--primary" href="/new">{{ chrome.locale.t(crate::i18n::CommonText::NewRepository) }}</a>
+            <a class="btn btn--ghost" href="/user/settings/tokens">{{ chrome.locale.t(crate::i18n::CommonText::AccessTokens) }}</a>
+          {% else %}
+            <a class="btn btn--primary" href="/user/sign_up">{{ chrome.locale.t(crate::i18n::CommonText::CreateAccount) }}</a>
+            <a class="btn btn--ghost" href="/explore/repos">{{ chrome.locale.t(crate::i18n::WebText::ExploreRepositories) }}</a>
+          {% endif %}
         </div>
-        <div class="mock__row"><span class="mock__name"><span class="mock__dotfile">MD</span>README.md</span></div>
-        <div class="mock__row"><span class="mock__name"><span class="mock__dotfile">/</span>src/</span></div>
-        <div class="mock__row"><span class="mock__name"><span class="mock__dotfile">rs</span>main.rs</span></div>
       </div>
     </div>
+    {% if !chrome.signed_in %}
+      {% include "review_preview.html" %}
+    {% endif %}
   </div>
 </section>
 <section class="page section">

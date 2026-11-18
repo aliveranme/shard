@@ -3,14 +3,14 @@
 Living record of what works, what is missing, and how it was verified.
 Update this file whenever a milestone lands or a limitation changes.
 
-**Snapshot:** 2026-11-18 · selectable Git storage and release packaging · local development
+**Snapshot:** 2026-11-18 · shared Shard theme and interface refinement · local development
 
 | Item | Value |
 |---|---|
 | Runtime | Rust 1.100.0, `worker` 0.9.0, `worker-build` 0.9.0 |
 | Tooling | Node 26.13.1, Wrangler 4.164.0, mise |
 | Storage | D1 with Cloudflare Artifacts by default. The `native` environment uses an authenticated Git origin with persistent disk. |
-| UI | `static/css/shard.css` implementing `DESIGN.md` |
+| UI | Server-rendered Askama templates using `static/css/theme.css` and `static/css/shard.css` |
 | Deployment | Deploy to Cloudflare and Wrangler scripts are configured. Production verification is pending. |
 | Source | [aliveranme/shard](https://github.com/aliveranme/shard) |
 
@@ -33,7 +33,7 @@ Update this file whenever a milestone lands or a limitation changes.
 | Notifications and integrations | Permission-aware inbox, one current CI result per commit and context, and signed webhook retries using stable event IDs. |
 | Maintenance | Per-source limits, `X-Request-ID` correlation, and daily removal of expired sessions, tokens, throttle windows, and email links. |
 | Backups | Rehearsed D1 export and restore into isolated persistence and Git bundle restore with matching refs and object IDs. |
-| UI and development | Forgejo-shaped server-rendered pages with the shared design tokens. Chromium covered bilingual desktop and mobile layouts. The pinned Rust/Wasm, Wrangler, and IDE toolchain supports local builds and regression tests. |
+| UI and development | The shared palette keeps Shard's white, warm off-white, amber, lavender and blue roles. It controls page surfaces, feedback and logo colors. Chromium covered desktop and mobile layouts, keyboard navigation, line review and reduced motion. |
 
 ## Remaining work and prerequisites
 
@@ -113,6 +113,7 @@ Architecture decisions and provider evidence are recorded in [PLAN.md](PLAN.md).
 | 2026-11-18 | Prebuilt native Worker dry run and workflow lint | The archive includes the origin script. Wrangler resolved native D1, rate limiting and static assets without an Artifacts binding. The default Artifacts regression suite still passed all 23 tests. |
 | 2026-11-18 | Independent R2 Git engine rehearsal | `durable-git` stored an 18 MiB pack in local R2. A clone after restart matched the commit ID, annotated tag and file contents. |
 | 2026-11-18 | Isolated native Git and Chromium settings | The native suite passed all 3 reported tests. The origin required its own credential, rejected an unlisted import host and preserved repository permissions through rename and revocation. English and Simplified Chinese storage settings fit 1365px and 390px widths. |
+| 2026-11-18 | `mise run build` and Chromium at 1365px, 820px, 390px and 320px | Verified repository search, branch selection, file preview, a submitted line comment and its historical link, the keyboard-operated mobile menu, saved Chinese language preferences and reduced motion. Confirmed a palette override recolors the page logo. |
 
 ## How to update
 

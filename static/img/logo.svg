@@ -1,6 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Shard">
-  <rect width="64" height="64" rx="16" fill="#F2C94C"/>
-  <path d="m32 10 20 11-20 11-20-11Z" fill="#1A1A1A"/>
-  <path d="m12 26 17.5 9.6V54L12 44.4Z" fill="#1A1A1A"/>
-  <path d="m52 26-17.5 9.6V54L52 44.4Z" fill="#5C1A1A"/>
+  <g id="mark">
+    <rect width="64" height="64" rx="16" fill="var(--brand-tile, #F2C94C)"/>
+    <path d="m32 10 20 11-20 11-20-11Z" fill="var(--brand-front, #1A1A1A)"/>
+    <path d="m12 26 17.5 9.6V54L12 44.4Z" fill="var(--brand-front, #1A1A1A)"/>
+    <path d="m52 26-17.5 9.6V54L52 44.4Z" fill="var(--brand-side, #5C1A1A)"/>
+  </g>
 </svg>

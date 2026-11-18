@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <symbol id="repo" viewBox="0 0 16 16">
+    <path d="M3.5 12V3.5A1.5 1.5 0 0 1 5 2h8v9H5a1.5 1.5 0 0 0 0 3h8M6.5 5h3.5"/>
+  </symbol>
+  <symbol id="search" viewBox="0 0 16 16">
+    <circle cx="7" cy="7" r="4.5"/><path d="m10.25 10.25 3.25 3.25"/>
+  </symbol>
+  <symbol id="arrow-right" viewBox="0 0 16 16">
+    <path d="M2.5 8h11m-4-4 4 4-4 4"/>
+  </symbol>
+  <symbol id="chevron-down" viewBox="0 0 16 16">
+    <path d="m4 6 4 4 4-4"/>
+  </symbol>
+  <symbol id="branch" viewBox="0 0 16 16">
+    <circle cx="4" cy="3.5" r="1.75"/><circle cx="4" cy="12.5" r="1.75"/><circle cx="12" cy="3.5" r="1.75"/>
+    <path d="M4 5.25v5.5M12 5.25v.5A2.25 2.25 0 0 1 9.75 8h-3.5A2.25 2.25 0 0 0 4 10.25"/>
+  </symbol>
+  <symbol id="commit" viewBox="0 0 16 16">
+    <circle cx="8" cy="8" r="2.75"/><path d="M1.5 8h3.75m5.5 0h3.75"/>
+  </symbol>
+  <symbol id="pull" viewBox="0 0 16 16">
+    <circle cx="4" cy="3.5" r="1.75"/><circle cx="4" cy="12.5" r="1.75"/><circle cx="12" cy="12.5" r="1.75"/>
+    <path d="M4 5.25v5.5M12 10.75V6a3 3 0 0 0-3-3H8m2-2L8 3l2 2"/>
+  </symbol>
+  <symbol id="issue" viewBox="0 0 16 16">
+    <circle cx="8" cy="8" r="5.75"/><path d="M8 5v3m0 2.5v.25"/>
+  </symbol>
+  <symbol id="code" viewBox="0 0 16 16">
+    <path d="m5.5 4.5-3.5 3.5 3.5 3.5m5-7L14 8l-3.5 3.5"/>
+  </symbol>
+  <symbol id="file" viewBox="0 0 16 16">
+    <path d="M4 1.75h5l3.5 3.5v7.5A1.5 1.5 0 0 1 11 14.25H4A1.5 1.5 0 0 1 2.5 12.75v-9.5A1.5 1.5 0 0 1 4 1.75Z"/>
+    <path d="M9 1.75v3.5h3.5"/>
+  </symbol>
+  <symbol id="folder" viewBox="0 0 16 16">
+    <path d="M2.75 3.25h3l1.5 1.5h6A1.25 1.25 0 0 1 14.5 6v5.5a1.25 1.25 0 0 1-1.25 1.25H2.75A1.25 1.25 0 0 1 1.5 11.5v-7a1.25 1.25 0 0 1 1.25-1.25Z"/>
+  </symbol>
+  <symbol id="comment" viewBox="0 0 16 16">
+    <path d="M3.5 2.75h9a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H7l-4.5 3v-10a1 1 0 0 1 1-1Z"/>
+  </symbol>
+  <symbol id="key" viewBox="0 0 16 16">
+    <circle cx="5.25" cy="6" r="3"/><path d="m7.5 8.25 5.5 5.5m-2.5-2.5 1.75-1.75"/>
+  </symbol>
+  <symbol id="settings" viewBox="0 0 16 16">
+    <path d="M2.5 4h2.25m2.5 0h6.25m-11 4h6.25m2.5 0h2.25m-11 4h2.25m2.5 0h6.25"/>
+    <circle cx="6" cy="4" r="1.25"/><circle cx="10" cy="8" r="1.25"/><circle cx="6" cy="12" r="1.25"/>
+  </symbol>
+</svg>

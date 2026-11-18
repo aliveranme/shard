@@ -3,7 +3,7 @@
 {% include "repo_header.html" %}
 {% let author = issue.author_name.as_deref().unwrap_or(chrome.locale.t(crate::i18n::CommonText::Ghost)) %}
 <div class="page">
-  <div class="page-head" style="padding-top:34px">
+  <div class="page-head">
     <div>
       <h1 class="page-title">{{ issue.title }} <span class="num">#{{ issue.number }}</span></h1>
       <p class="page-sub">
@@ -36,21 +36,35 @@
   </div>
 
   {% if let Some(pull) = pull %}
-    <div class="pull-banner" id="pull-comparison">
-      <span class="badge badge--count">{{ chrome.locale.comparison_version(pull.snapshot.comparison_version) }}</span>
-      {% if viewed_review.is_some() %}
-        <span>{{ chrome.locale.t(crate::i18n::DiscussionText::HistoricalComparison) }}</span>
-        <a href="/{{ repo.owner_name }}/{{ repo.name }}/pulls/{{ issue.number }}#pull-comparison">{{ chrome.locale.t(crate::i18n::DiscussionText::CurrentComparison) }}</a>
+    <div class="pull-banner pull-banner--comparison" id="pull-comparison">
+      <div class="pull-banner__flow">
+        <span class="badge badge--count">{{ chrome.locale.comparison_version(pull.snapshot.comparison_version) }}</span>
+        {% if viewed_review.is_some() %}
+          <span>{{ chrome.locale.t(crate::i18n::DiscussionText::HistoricalComparison) }}</span>
+          <a href="/{{ repo.owner_name }}/{{ repo.name }}/pulls/{{ issue.number }}#pull-comparison">{{ chrome.locale.t(crate::i18n::DiscussionText::CurrentComparison) }}</a>
+        {% endif %}
+        <span>{{ chrome.locale.t(crate::i18n::DiscussionText::MergeFrom) }}</span>
+        <code dir="ltr">{{ pull.head_branch }}</code>
+        <span class="muted">{{ chrome.locale.t(crate::i18n::DiscussionText::MergeInto) }}</span>
+        <code dir="ltr">{{ pull.base_branch }}</code>
+        {% if let Some(merged) = pull.merged_at.as_ref() %}<span class="badge badge--merged">{{ chrome.locale.merged_when(merged) }}</span>{% endif %}
+      </div>
+      {% if pull.snapshot.head_commit.is_some() || pull.snapshot.base_commit.is_some() || pull.snapshot.merge_base.is_some() || pull.merge_commit.is_some() %}
+        <div class="pull-banner__refs">
+          {% if let Some(head) = pull.snapshot.head_commit %}
+            <div class="pull-banner__ref"><span>{{ chrome.locale.t(crate::i18n::DiscussionText::HeadCommit) }}</span><code dir="ltr">{{ head }}</code></div>
+          {% endif %}
+          {% if let Some(base) = pull.snapshot.base_commit %}
+            <div class="pull-banner__ref"><span>{{ chrome.locale.t(crate::i18n::DiscussionText::BaseCommit) }}</span><code dir="ltr">{{ base }}</code></div>
+          {% endif %}
+          {% if let Some(base) = pull.snapshot.merge_base %}
+            <div class="pull-banner__ref"><span>{{ chrome.locale.t(crate::i18n::DiscussionText::MergeBase) }}</span><code dir="ltr">{{ base }}</code></div>
+          {% endif %}
+          {% if let Some(tip) = pull.merge_commit %}
+            <div class="pull-banner__ref"><span>{{ chrome.locale.t(crate::i18n::DiscussionText::VerifiedTip) }}</span><code dir="ltr">{{ tip }}</code></div>
+          {% endif %}
+        </div>
       {% endif %}
-      <span>{{ chrome.locale.t(crate::i18n::DiscussionText::MergeFrom) }}</span>
-      <code dir="ltr">{{ pull.head_branch }}</code>
-      <span class="muted">{{ chrome.locale.t(crate::i18n::DiscussionText::MergeInto) }}</span>
-      <code dir="ltr">{{ pull.base_branch }}</code>
-      {% if let Some(head) = pull.snapshot.head_commit %}<span class="muted">· {{ chrome.locale.t(crate::i18n::DiscussionText::HeadCommit) }}</span><code dir="ltr">{{ head }}</code>{% endif %}
-      {% if let Some(base) = pull.snapshot.base_commit %}<span class="muted">· {{ chrome.locale.t(crate::i18n::DiscussionText::BaseCommit) }}</span><code dir="ltr">{{ base }}</code>{% endif %}
-      {% if let Some(base) = pull.snapshot.merge_base %}<span class="muted">· {{ chrome.locale.t(crate::i18n::DiscussionText::MergeBase) }}</span><code dir="ltr">{{ base }}</code>{% endif %}
-      {% if let Some(merged) = pull.merged_at.as_ref() %}<span class="badge badge--merged">{{ chrome.locale.merged_when(merged) }}</span>{% endif %}
-      {% if let Some(tip) = pull.merge_commit %}<span class="muted">{{ chrome.locale.t(crate::i18n::DiscussionText::VerifiedTip) }}</span><code dir="ltr">{{ tip }}</code>{% endif %}
     </div>
   {% endif %}
   {% if let Some(message) = comparison_notice %}
@@ -150,10 +164,10 @@
           {% else %}
             <div class="side-list">
               {% for file in changed %}
-                <div class="side-row">
-                  <a href="?{% if let Some(id) = viewed_review %}review={{ id }}&amp;{% endif %}file={{ file.url_path }}#file-diff"><code>{{ file.path }}</code></a>
+                <a class="side-row side-row--file" href="?{% if let Some(id) = viewed_review %}review={{ id }}&amp;{% endif %}file={{ file.url_path }}#file-diff"{% if let Some(selected) = preview %}{% if selected.path == file.path %} aria-current="true"{% endif %}{% endif %}>
+                  <code>{{ file.path }}</code>
                   <span class="badge badge--{{ file.status() }}">{{ chrome.locale.diff_status(file.status()) }}</span>
-                </div>
+                </a>
               {% endfor %}
             </div>
           {% endif %}

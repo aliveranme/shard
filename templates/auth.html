@@ -2,14 +2,14 @@
 {% block content %}
 <div class="page auth-simple">
   <div class="auth-simple__brand">
-    <img src="/img/logo.svg" width="30" height="30" alt="">
+    {% include "brand_mark.html" %}
     <span>shard</span>
   </div>
   <div class="card">
     <h1 class="page-title" style="font-size:2rem">
       {% if mode == "login" %}{{ chrome.locale.t(crate::i18n::CommonText::SignIn) }}{% else %}{{ chrome.locale.t(crate::i18n::AccountText::CreateYourAccount) }}{% endif %}
     </h1>
-    <p class="page-sub" style="margin-bottom:22px">
+    <p class="page-sub" style="margin-bottom:20px">
       {% if mode == "login" %}{{ chrome.locale.t(crate::i18n::AccountText::SignInIntro) }}{% else %}{{ chrome.locale.t(crate::i18n::AccountText::SignupIntro) }}{% endif %}
     </p>
     {% if let Some(message) = error %}

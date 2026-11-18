@@ -6,7 +6,7 @@
   <div class="page-head">
     <h1 class="page-title">{% if let Some(file) = crumbs.last() %}{{ file.name }}{% else %}{{ chrome.locale.t(crate::i18n::RepoText::File) }}{% endif %}</h1>
   </div>
-  <div class="breadcrumb" style="font-size:1.25rem;margin-top:26px">
+  <div class="breadcrumb breadcrumb--path">
     <a href="/{{ repo.owner_name }}/{{ repo.name }}/src?branch={{ branch_url }}">{{ repo.name }}</a>
     {% for crumb in crumbs %}
       <span class="sep" aria-hidden="true">/</span>
@@ -20,20 +20,18 @@
 
   <div class="code-panel">
     <div class="code-panel__bar">
-      <span style="display:inline-flex;gap:12px;align-items:center">
-        <span>{{ size }}</span>
-        <a class="btn btn--ghost btn--sm" href="/{{ repo.owner_name }}/{{ repo.name }}/raw/{{ path_url }}?branch={{ branch_url }}">{{ chrome.locale.t(crate::i18n::RepoText::RawFile) }}</a>
-      </span>
+      <span>{{ size }}</span>
+      <a class="btn btn--ghost btn--sm" href="/{{ repo.owner_name }}/{{ repo.name }}/raw/{{ path_url }}?branch={{ branch_url }}">{{ chrome.locale.t(crate::i18n::RepoText::RawFile) }}</a>
     </div>
     {% if is_binary %}
       <div class="empty">
         <p class="empty__title">{{ chrome.locale.t(crate::i18n::RepoText::BinaryFile) }}</p>
-        <p style="margin-bottom:16px">{{ chrome.locale.t(crate::i18n::RepoText::NoPreview) }}</p>
+        <p>{{ chrome.locale.t(crate::i18n::RepoText::NoPreview) }}</p>
         <a class="btn btn--primary" href="/{{ repo.owner_name }}/{{ repo.name }}/raw/{{ path_url }}?branch={{ branch_url }}">{{ chrome.locale.t(crate::i18n::RepoText::DownloadRaw) }}</a>
       </div>
     {% else %}
       {% if truncated %}<div class="alert alert--warn" style="margin:0;border-radius:0">{{ chrome.locale.t(crate::i18n::RepoText::TruncatedPreview) }}</div>{% endif %}
-      <pre><code>{{ content }}</code></pre>
+      <pre tabindex="0"><code>{{ content }}</code></pre>
     {% endif %}
   </div>
 </div>

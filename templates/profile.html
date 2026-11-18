@@ -2,7 +2,7 @@
 {% block content %}
 <div class="page">
   <div class="page-head">
-    <div style="display:flex;align-items:center;gap:22px;flex-wrap:wrap">
+    <div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap">
       <span class="avatar avatar--lg" aria-hidden="true">{{ name.chars().next().unwrap_or_default().to_uppercase() }}</span>
       <div>
         <h1 class="page-title">{{ name }}{% if is_self %} <span class="badge">{{ chrome.locale.t(crate::i18n::WebText::You) }}</span>{% endif %}</h1>

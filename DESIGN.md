@@ -119,3 +119,31 @@ The system appears optimized for desktop presentation based on available imagery
 ## Scope note
 
 This guide covers the Copilot for Individuals product marketing page and related Microsoft product surfaces. Mobile layouts, animation behavior, hover states, and dark mode implementations are not represented in the available material. Measurements are practical adaptation targets derived from visual inspection.
+
+## Shard interface
+
+The Shard web UI uses the palette above. The canvas and editable controls are
+white. Panels use near-white `#FDFDFB`, and toolbars and table headers use warm
+`#F5F5F0`. Rows move to `#F1F1EC` on hover and `#EDEDE7` on selection. Primary
+actions are amber, links and focus rings are blue, and lavender marks repository
+identity and open status. The Git diff uses muted green and red for added and
+removed lines, with a warm line-number gutter for the linked line.
+
+Define all interface colors in [`static/css/theme.css`](static/css/theme.css).
+Components use role variables for surfaces, text, borders, shadows, actions,
+feedback and the page logo. The standalone favicon uses the original brand
+colors. To add a palette, define an override such as `:root[data-theme="name"]`
+after the default `:root` block and set `data-theme` on `<html>`. Each palette
+can set `color-scheme` for native controls. Check text and focus contrast on the
+surfaces where they appear.
+
+Shard uses a 4px spacing grid, 8px controls, 12px cards and 16px outer panels.
+The public homepage shows a Git diff and its line comment. Repository and
+discussion pages keep the application content in reading order at narrow widths.
+
+Interaction feedback takes 150ms, menu and status reveals take 200ms, and the
+homepage entrance and diff-line cue take 360ms. Reduced-motion preferences turn
+off movement while retaining the focus, selection and line markers.
+
+The design review follows [Unslop by Damir Sokolovsky](https://x.com/heydamir), CC BY 4.0.
+[License](https://creativecommons.org/licenses/by/4.0/)

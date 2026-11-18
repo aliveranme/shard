@@ -1,0 +1,58 @@
+<figure class="review-preview">
+  <figcaption class="review-preview__caption">
+    <svg class="icon" aria-hidden="true"><use href="/img/icons.svg#repo"></use></svg>
+    <span class="review-preview__repo">aliveranme / shard</span>
+    <span class="review-preview__label">{{ chrome.locale.t(crate::i18n::WebText::ReviewExample) }}</span>
+  </figcaption>
+  <div class="review-preview__body">
+    <h2 class="review-preview__title">{{ chrome.locale.t(crate::i18n::WebText::ReviewExampleTitle) }}</h2>
+    <div class="review-preview__branches" dir="ltr">
+      <svg class="icon" aria-hidden="true"><use href="/img/icons.svg#branch"></use></svg>
+      <code>docs/local-setup</code>
+      <svg class="icon" aria-hidden="true"><use href="/img/icons.svg#arrow-right"></use></svg>
+      <code>main</code>
+    </div>
+    <div class="diff-scroll">
+      <div class="review-preview__file">
+        <svg class="icon" aria-hidden="true"><use href="/img/icons.svg#file"></use></svg>
+        <code>README.md</code>
+      </div>
+      <table class="diff-table" dir="ltr" aria-label="README.md">
+        <thead class="sr-only"><tr>
+          <th scope="col">{{ chrome.locale.t(crate::i18n::DiscussionText::OldLine) }}</th>
+          <th scope="col">{{ chrome.locale.t(crate::i18n::DiscussionText::NewLine) }}</th>
+          <th scope="col">{{ chrome.locale.t(crate::i18n::DiscussionText::FileChanges) }}</th>
+        </tr></thead>
+        <tbody>
+          <tr>
+            <td class="diff-table__number">19</td><td class="diff-table__number">19</td>
+            <td class="diff-table__text"><code>  ```sh</code></td>
+          </tr>
+          <tr class="diff-table__deleted">
+            <td class="diff-table__number">20</td><td class="diff-table__number"></td>
+            <td class="diff-table__text"><code>- npm run dev</code></td>
+          </tr>
+          <tr class="diff-table__added">
+            <td class="diff-table__number"></td><td class="diff-table__number">20</td>
+            <td class="diff-table__text"><code>+ mise install</code></td>
+          </tr>
+          <tr class="diff-table__added diff-table__highlight">
+            <td class="diff-table__number"></td><td class="diff-table__number">21</td>
+            <td class="diff-table__text"><code>+ mise run setup</code></td>
+          </tr>
+          <tr class="diff-table__added">
+            <td class="diff-table__number"></td><td class="diff-table__number">22</td>
+            <td class="diff-table__text"><code>+ mise run dev</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="review-preview__comment">
+      <svg class="icon" aria-hidden="true"><use href="/img/icons.svg#comment"></use></svg>
+      <div>
+        <strong>{{ chrome.locale.t(crate::i18n::DiscussionText::NewLine) }} 21</strong>
+        <p>{{ chrome.locale.t(crate::i18n::WebText::ReviewExampleComment) }}</p>
+      </div>
+    </div>
+  </div>
+</figure>

@@ -1,11 +1,14 @@
 {% extends "base.html" %}
 {% block content %}
 {% let repo_nav_branch = branch_url %}
+{% let repo_name_is_heading = crumbs.is_empty() %}
 {% include "repo_header.html" %}
 <div class="page">
-  <div class="page-head">
-    <h1 class="page-title">{% if let Some(directory) = crumbs.last() %}{{ directory.name }}{% else %}{{ repo.full_name() }}{% endif %}</h1>
-  </div>
+  {% if let Some(directory) = crumbs.last() %}
+    <div class="page-head">
+      <h1 class="page-title">{{ directory.name }}</h1>
+    </div>
+  {% endif %}
   <div class="repo-body">
     <div class="repo-main">
       <div class="repo-toolbar">
@@ -33,7 +36,7 @@
       {% endif %}
 
       {% if !crumbs.is_empty() %}
-        <div class="breadcrumb" style="font-size:1.125rem;margin-top:14px">
+        <div class="breadcrumb breadcrumb--path">
           <a href="/{{ repo.owner_name }}/{{ repo.name }}/src?branch={{ branch_url }}">{{ repo.name }}</a>
           {% for crumb in crumbs %}
             <span class="sep" aria-hidden="true">/</span>
@@ -51,10 +54,10 @@
           <h2 class="empty__title">{{ chrome.locale.t(crate::i18n::RepoText::EmptyBranch) }}</h2>
         </div>
       {% else if files.is_empty() && storage_notice.is_none() %}
-        <div class="card card--warm empty" style="margin-top:22px;text-align:left">
+        <div class="card card--warm empty repo-instructions">
           <h2 class="empty__title">{{ chrome.locale.t(crate::i18n::RepoText::EmptyRepository) }}</h2>
-          <p class="muted" style="margin-bottom:16px">{{ chrome.locale.t(crate::i18n::RepoText::PushBranch) }}</p>
-          <pre style="background:var(--canvas);border:1px solid var(--border);border-radius:16px;padding:18px;overflow:auto;font-size:.8125rem"><code>git clone {{ clone_url }}
+          <p class="muted">{{ chrome.locale.t(crate::i18n::RepoText::PushBranch) }}</p>
+          <pre tabindex="0"><code>git clone {{ clone_url }}
 cd {{ repo.name }}
 echo "# {{ repo.name }}" &gt; README.md
 git add README.md &amp;&amp; git commit -m "Initial commit"
@@ -66,17 +69,13 @@ git push -u origin {{ repo.default_branch }}</code></pre>
           <div class="file-row file-row--head" aria-hidden="true">
             <span></span>
             <span>{{ chrome.locale.t(crate::i18n::RepoText::Name) }}</span>
-            <span>{{ chrome.locale.t(crate::i18n::RepoText::Size) }}</span>
+            <span class="file-row__size">{{ chrome.locale.t(crate::i18n::RepoText::Size) }}</span>
           </div>
           {% for file in files %}
             <a class="file-row" href="/{{ repo.owner_name }}/{{ repo.name }}/{% if file.is_dir %}src{% else %}blob{% endif %}/{{ file.url_path }}?branch={{ branch_url }}">
-              <span class="file-row__icon {% if file.is_dir %}file-row__icon--dir{% endif %}" aria-hidden="true">
-                {% if file.is_dir %}
-                  <svg viewBox="0 0 16 16" width="16" height="16"><path fill="currentColor" d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z"></path></svg>
-                {% else %}
-                  <svg viewBox="0 0 16 16" width="16" height="16"><path fill="currentColor" d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5Zm6.75.062V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011Z"></path></svg>
-                {% endif %}
-              </span>
+              <svg class="icon file-row__icon{% if file.is_dir %} file-row__icon--dir{% endif %}" aria-hidden="true">
+                <use href="/img/icons.svg#{% if file.is_dir %}folder{% else %}file{% endif %}"></use>
+              </svg>
               <span class="file-row__name">{{ file.name }}{% if file.is_dir %}/{% endif %}</span>
               <span class="file-row__size">{{ file.size }}</span>
             </a>
@@ -108,7 +107,7 @@ git push -u origin {{ repo.default_branch }}</code></pre>
       <div class="side-card">
         <h2 class="side-card__title">{{ chrome.locale.t(crate::i18n::RepoText::About) }}</h2>
         <p>{% if repo.description.is_empty() %}{{ chrome.locale.t(crate::i18n::CommonText::NoDescription) }}{% else %}{{ repo.description }}{% endif %}</p>
-        <div class="side-list" style="margin-top:14px">
+        <div class="side-list" style="margin-top:12px">
           <div class="side-row"><span class="muted">{{ chrome.locale.t(crate::i18n::RepoText::DefaultBranch) }}</span><code>{{ repo.default_branch }}</code></div>
           <div class="side-row"><span class="muted">{{ chrome.locale.t(crate::i18n::RepoText::Visibility) }}</span><span>{% if repo.is_private() %}{{ chrome.locale.t(crate::i18n::CommonText::Private) }}{% else %}{{ chrome.locale.t(crate::i18n::CommonText::Public) }}{% endif %}</span></div>
           <div class="side-row"><span class="muted">{{ chrome.locale.t(crate::i18n::CommonText::Issues) }}</span><span>{{ chrome.locale.open_count(repo.open_issues) }}</span></div>

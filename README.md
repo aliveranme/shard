@@ -353,9 +353,10 @@ at 03:00 UTC removes expired sessions, tokens, login throttle windows, and email
 
 ## Design
 
-Shard's web UI uses warm surfaces, amber actions, lavender accents, and system
-fonts. Askama renders the HTML and the pages share one stylesheet.
-[Design guide](DESIGN.md) · [Stylesheet](static/css/shard.css)
+Shard uses a white canvas, warm off-white surface steps, amber actions, lavender
+accents, and blue links. Askama renders the HTML. The shared palette and CSS
+drive layout and interaction feedback, including the reduced-motion setting.
+[Design guide](DESIGN.md) · [Palette](static/css/theme.css) · [Stylesheet](static/css/shard.css)
 
 ## Prior art
 

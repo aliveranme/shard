@@ -1,6 +1,6 @@
 <section class="code-panel" aria-labelledby="commit-checks">
   <h2 class="code-panel__bar" id="commit-checks">{{ chrome.locale.t(crate::i18n::CheckText::Title) }}</h2>
-  <div style="padding: 16px 22px; overflow-wrap: anywhere">
+  <div style="padding: 16px; overflow-wrap: anywhere">
     {% if checks.rows.is_empty() %}
       <p class="muted">{{ chrome.locale.t(crate::i18n::CheckText::Empty) }}</p>
     {% else %}

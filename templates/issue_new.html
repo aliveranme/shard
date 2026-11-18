@@ -2,7 +2,7 @@
 {% block content %}
 {% include "repo_header.html" %}
 <div class="page">
-  <div class="page-head" style="padding-top:34px">
+  <div class="page-head">
     <div>
       <h1 class="page-title">{% if is_pull %}{{ chrome.locale.t(crate::i18n::DiscussionText::NewPullRequest) }}{% else %}{{ chrome.locale.t(crate::i18n::DiscussionText::NewIssue) }}{% endif %}</h1>
       <p class="page-sub">

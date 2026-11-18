@@ -1,0 +1,8 @@
+<form class="search" method="get" role="search">
+  <input type="hidden" name="state" value="{{ state }}">
+  <svg class="icon" aria-hidden="true"><use href="/img/icons.svg#search"></use></svg>
+  <input type="search" name="q" value="{{ query }}" placeholder="{{ chrome.locale.t(crate::i18n::CommonText::SearchDiscussion) }}" aria-label="{{ chrome.locale.t(crate::i18n::CommonText::SearchDiscussion) }}">
+  <button type="submit" aria-label="{{ chrome.locale.t(crate::i18n::CommonText::Search) }}">
+    <svg class="icon" aria-hidden="true"><use href="/img/icons.svg#arrow-right"></use></svg>
+  </button>
+</form>

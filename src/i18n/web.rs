@@ -2,20 +2,23 @@ catalog! {
     WebText {
         Dashboard => "Dashboard", "工作台";
         ExploreRepositories => "Explore repositories", "探索仓库";
-        ExploreIntro => "Public projects hosted on this shard.", "此站点托管的公开项目。";
+        ExploreIntro => "Public projects hosted on this Shard instance", "此 Shard 实例托管的公开项目";
         SearchRepositories => "Search repositories", "搜索仓库";
-        SearchRepositoryHint => "Search by name, owner or description", "按名称、所有者或描述搜索";
+        SearchRepositoryHint => "Name, owner or description", "名称、所有者或描述";
         PublicRepositories => "Public repositories", "公开仓库";
         NoMatchingRepositories => "No matching repositories", "没有匹配的仓库";
-        TryAnotherSearch => "Try a different search.", "请尝试更换搜索关键词。";
-        WorkHeadline => "Your work, at the edge.", "边缘上的开发空间";
-        WorkIntro => "Manage your repositories, issues and pull requests in one place.", "在同一处管理仓库、议题和合并请求。";
-        GuestEyebrow => "Self-hosted Git on Cloudflare", "在 Cloudflare 自托管 Git";
-        GuestHeadline => "Ship code. Keep the forge.", "自主托管代码";
-        GuestIntro => "A self-hosted Git forge for repositories, issues and pull requests.", "支持仓库、议题和合并请求的自托管 Git 平台。";
+        TryAnotherSearch => "Try a different search", "请尝试更换搜索关键词";
+        WorkHeadline => "Your repositories", "你的仓库";
+        WorkIntro => "Manage your repositories, issues and pull requests", "管理仓库、议题和合并请求";
+        GuestEyebrow => "Runs on Cloudflare Workers", "运行于 Cloudflare Workers";
+        GuestHeadline => "Self-hosted Git for small teams", "小团队的自托管 Git 平台";
+        GuestIntro => "Host repositories, track issues and review changes on your own Shard instance", "在自己的 Shard 实例上托管仓库、跟踪议题和审查代码";
+        ReviewExample => "Review example", "审查示例";
+        ReviewExampleTitle => "Document the local setup", "补充本地搭建说明";
+        ReviewExampleComment => "Install the pinned toolchain before starting the Worker", "启动 Worker 前先安装指定版本的工具链";
         RecentProjects => "Recently updated projects", "最近更新的项目";
-        RecentRepositoriesIntro => "Browse your repositories and public projects, most recently updated first.", "浏览你的仓库和公开项目，最近更新的项目在前。";
-        PublicProjectsIntro => "Browse public projects, most recently updated first.", "浏览公开项目，最近更新的项目在前。";
+        RecentRepositoriesIntro => "Your repositories and public projects, most recently updated first", "你的仓库和公开项目，按最近更新排序";
+        PublicProjectsIntro => "Public repositories, most recently updated first", "公开仓库，按最近更新排序";
         EmptyRepositoryPage => "No repositories on this page", "此页没有仓库";
         NothingHere => "Nothing here yet", "这里暂时没有内容";
         PreviousRepositoryPage => "Go to the previous page to keep browsing.", "返回上一页继续浏览。";
@@ -40,13 +43,6 @@ use crate::models::Ts;
 use std::fmt::{self, Display};
 
 impl Locale {
-    pub fn welcome<'a>(self, name: &'a str) -> impl Display + 'a {
-        fmt::from_fn(move |f| match self {
-            Self::En => write!(f, "Welcome back, {name}"),
-            Self::ZhHans => write!(f, "欢迎回来，{name}"),
-        })
-    }
-
     pub fn member_since(self, joined: &Ts) -> impl Display + '_ {
         fmt::from_fn(move |f| match self {
             Self::En => write!(f, "Member since {joined}"),

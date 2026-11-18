@@ -13,11 +13,7 @@
       <a class="tab" {% if state == "closed" %}aria-current="page"{% endif %} href="{{ closed_url }}">{{ chrome.locale.t(crate::i18n::CommonText::Closed) }}</a>
       <a class="tab" {% if state == "all" %}aria-current="page"{% endif %} href="{{ all_url }}">{{ chrome.locale.t(crate::i18n::CommonText::All) }}</a>
     </nav>
-    <form class="hero__search" method="get" role="search">
-      <input type="hidden" name="state" value="{{ state }}">
-      <input type="search" name="q" value="{{ query }}" placeholder="{{ chrome.locale.t(crate::i18n::CommonText::SearchDiscussion) }}" aria-label="{{ chrome.locale.t(crate::i18n::CommonText::SearchDiscussion) }}">
-      <button type="submit" aria-label="{{ chrome.locale.t(crate::i18n::CommonText::Search) }}">→</button>
-    </form>
+    {% include "discussion_search.html" %}
   </div>
   {% if issues.is_empty() %}
     <div class="card empty">
@@ -28,7 +24,7 @@
     <div class="list">
       {% for issue in issues %}
         <a class="list__row" href="/{{ issue.owner }}/{{ issue.repo }}/{% if issue.is_pull %}pulls{% else %}issues{% endif %}/{{ issue.number }}">
-          <span class="list__icon" aria-hidden="true">{% if issue.is_pull %}⧉{% else %}◎{% endif %}</span>
+          <span class="list__icon" aria-hidden="true"><svg class="icon"><use href="/img/icons.svg#{% if issue.is_pull %}pull{% else %}issue{% endif %}"></use></svg></span>
           <div class="list__main">
             <div class="list__title">{{ issue.title }}</div>
             <div class="list__meta">{{ issue.repo_full }} #{{ issue.number }} · {{ chrome.locale.opened_by(issue.date, issue.author.as_deref().unwrap_or(chrome.locale.t(crate::i18n::CommonText::Ghost))) }}</div>

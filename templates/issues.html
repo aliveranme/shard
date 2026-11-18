@@ -2,7 +2,7 @@
 {% block content %}
 {% include "repo_header.html" %}
 <div class="page">
-  <div class="page-head" style="padding-top:34px">
+  <div class="page-head">
     <div>
       <h1 class="page-title">{% if is_pull %}{{ chrome.locale.t(crate::i18n::CommonText::PullRequests) }}{% else %}{{ chrome.locale.t(crate::i18n::CommonText::Issues) }}{% endif %}</h1>
       <p class="page-sub">
@@ -22,12 +22,7 @@
       <a class="tab" {% if state == "all" %}aria-current="page"{% endif %} href="{{ all_url }}">{{ chrome.locale.t(crate::i18n::CommonText::All) }}</a>
     </nav>
 
-    <form class="hero__search" method="get" role="search">
-      <input type="hidden" name="state" value="{{ state }}">
-      <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M10.68 11.74a6 6 0 0 1-7.922-8.982 6 6 0 0 1 8.982 7.922l3.04 3.04a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215ZM11.5 7a4.499 4.499 0 1 0-8.997 0A4.499 4.499 0 0 0 11.5 7Z"></path></svg>
-      <input type="search" name="q" value="{{ query }}" placeholder="{{ chrome.locale.t(crate::i18n::CommonText::SearchDiscussion) }}" aria-label="{{ chrome.locale.t(crate::i18n::CommonText::SearchDiscussion) }}">
-      <button type="submit" aria-label="{{ chrome.locale.t(crate::i18n::CommonText::Search) }}">→</button>
-    </form>
+    {% include "discussion_search.html" %}
 
     {% if chrome.signed_in %}
       <a class="btn btn--primary" href="/{{ repo.owner_name }}/{{ repo.name }}/{% if is_pull %}pulls{% else %}issues{% endif %}/new">
@@ -53,13 +48,7 @@
     <div class="list">
       {% for issue in issues %}
         <a class="list__row" href="/{{ repo.owner_name }}/{{ repo.name }}/{% if issue.is_pull %}pulls{% else %}issues{% endif %}/{{ issue.number }}">
-          <span class="list__icon" aria-hidden="true">
-            {% if issue.is_pull %}
-              <svg viewBox="0 0 16 16" width="18" height="18"><path fill="currentColor" d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z"></path></svg>
-            {% else %}
-              <svg viewBox="0 0 16 16" width="18" height="18"><path fill="currentColor" d="M8 9.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z"></path><path fill="currentColor" d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Z"></path></svg>
-            {% endif %}
-          </span>
+          <span class="list__icon" aria-hidden="true"><svg class="icon"><use href="/img/icons.svg#{% if issue.is_pull %}pull{% else %}issue{% endif %}"></use></svg></span>
           <div class="list__main">
             <div class="list__title">{{ issue.title }}</div>
             <div class="list__meta">

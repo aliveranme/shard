@@ -7,6 +7,7 @@ catalog! {
         SkipToContent => "Skip to content", "跳转到正文";
         ShardHome => "Shard home", "Shard 首页";
         Primary => "Primary", "主导航";
+        Menu => "Menu", "菜单";
         Explore => "Explore", "探索";
         Issues => "Issues", "议题";
         PullRequests => "Pull requests", "合并请求";
@@ -19,14 +20,14 @@ catalog! {
         HostedOn => "Self-hosted on Cloudflare Workers", "自托管于 Cloudflare Workers";
         Language => "Language", "语言";
         Search => "Search", "搜索";
-        SearchDiscussion => "Search titles, descriptions and comments", "搜索标题、描述和评论";
+        SearchDiscussion => "Search discussions", "搜索讨论";
         Private => "Private", "私有";
         Public => "Public", "公开";
         Open => "Open", "开启";
         Closed => "Closed", "已关闭";
         All => "All", "全部";
         State => "State", "状态";
-        NoDescription => "No description yet.", "暂无描述。";
+        NoDescription => "No description", "暂无描述";
         MarkdownSupported => "Markdown is supported", "支持 Markdown";
         Ghost => "ghost", "已删除的用户";
         Commits => "Commits", "提交";
