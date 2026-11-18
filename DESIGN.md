@@ -167,6 +167,11 @@ the section heading gap is 12px, and the sections are 24px apart. The adaptive
 grid fits both sections when each has at least 22rem. Full hashes wrap in the
 available column and can be selected as text.
 
+The repository icon and header actions center on the first title line. Tabs
+wrap at 800px and below. At 600px and below, list rows with an icon or avatar
+place their status, hash or action beneath the text in the same column. Diff
+line numbers and their column headings align to the end of each column.
+
 Use 8px controls, 12px cards and 16px outer panels. Two zero-blur rings with
 0.5px and 1.5px spreads define panel edges. A darker ring indicates interaction,
 with a separate blue keyboard focus outline. Soft drop shadow belongs to
@@ -174,9 +179,13 @@ floating menus. Native selects use a themed picker where `base-select` is
 supported and the system picker elsewhere. Internal dividers use the shared
 subtle border color.
 
-Interaction feedback takes 150ms, menu, status and reference list reveals take
-200ms, and the homepage entrance and diff-line cue take 360ms. Reduced motion
-retains focus outlines, full-strength state colors and line markers.
+Controls respond in 150ms. Same-origin page navigation cross-fades in 200ms
+with a steady top bar where cross-document view transitions are supported.
+The mobile menu and themed pickers open and close in 200ms where discrete
+transitions are supported. Status messages and reference lists enter in 200ms.
+The homepage entrance and diff target cues take 360ms. With reduced motion,
+navigation and controls respond immediately, with focus outlines and anchor
+markers visible.
 
 The design review follows [Unslop by Damir Sokolovsky](https://x.com/heydamir), CC BY 4.0.
 [License](https://creativecommons.org/licenses/by/4.0/)

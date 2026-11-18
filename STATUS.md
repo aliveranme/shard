@@ -3,7 +3,7 @@
 Living record of what works, what is missing, and how it was verified.
 Update this file whenever a milestone lands or a limitation changes.
 
-**Snapshot:** 2026-11-18 · user avatars, themed pickers, and repository media · local development
+**Snapshot:** 2026-11-18 · page transitions, control motion, and responsive alignment · local development
 
 | Item | Value |
 |---|---|
@@ -37,6 +37,7 @@ Update this file whenever a milestone lands or a limitation changes.
 | Backups | Rehearsed D1 export and restore into isolated persistence and Git bundle restore with matching refs and object IDs. |
 | UI and development | The shared theme follows system appearance. Geist and Shard Han set proportional UI text with tabular figures. JetBrains Mono sets code and Git identifiers, with two-cell Han glyphs in code. Buttons and form controls use calibrated font metrics. The refs grid marks default branches and wraps full annotated-tag object IDs on narrow screens. |
 | Select controls | Themed pickers use native form and keyboard behavior. Browsers without `base-select` use their system picker. |
+| Navigation and motion | Narrow repository tabs wrap and list metadata aligns with its title. Supporting browsers animate same-origin navigation, mobile menus and themed pickers. Reduced motion keeps keyboard focus and diff target markers visible. |
 
 ## Remaining work and prerequisites
 
@@ -119,6 +120,7 @@ Architecture decisions and provider evidence are recorded in [PLAN.md](PLAN.md).
 | 2026-11-18 | `mise run build`, B-end template audit, and Chromium at 1365px, 1089px, 820px, 390px and 320px | Verified system appearance and reduced motion, the 40-unit dark weight offset, local font rendering, responsive refs and settings, empty states, an annotated tag, a long slash branch and keyboard navigation. Narrow home, code, file, review and login pages fit, with long diffs scrolling internally. |
 | 2026-11-18 | `mise run build`, FontTools, B-end template audit and Chromium at 1365px and 320px | Verified proportional UI text, distinct code and path fonts, equal advances for digits 0–9, and the 40-unit dark weight offset. Home, language settings, repository, file and refs pages fit the tested widths. In 3× captures, the visible text of 12 English and Simplified Chinese buttons, fields, tabs and badges centered within 1.1 CSS px of their controls. |
 | 2026-11-18 | `mise run build`, both local Git backends, B-end template audit, and Chromium at 1365px and 390px | All 27 HTTP and Git tests passed. Verified avatar replacement, removal and account deletion, commit-pinned image links, and private media access after a grant and revocation. Chromium verified upload, branch picker selection and Escape, HTML image rendering, and a reference to a pull request. The external HTTPS image used an isolated browser response. |
+| 2026-11-18 | `mise run build`, `mise exec -- npm test`, B-end template audit, and Chromium at 1365px, 820px, 390px and 320px | All 27 HTTP and Git tests passed, including native Git SVG media with sandbox CSP. Chromium verified the 200ms page transition, keyboard menu and picker opening and closing, English language save, and reduced-motion behavior. Tested pages fit the viewport, with repository tabs visible and list badges and hashes aligned. |
 
 ## How to update
 

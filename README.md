@@ -386,8 +386,9 @@ at 03:00 UTC removes expired sessions, tokens, login throttle windows, and email
 
 Shard follows the system's light or dark appearance. Geist and Shard Han set
 interface text with tabular figures. JetBrains Mono sets code, paths and Git
-identifiers. Askama renders the pages. The shared stylesheet provides adaptive
-grids, subtle surface steps and reduced-motion support.
+identifiers. Askama renders the pages. Repository tabs wrap on narrow screens.
+Supporting browsers animate same-origin page changes, menus and native pickers
+according to the system's reduced-motion preference.
 [Design guide](DESIGN.md) · [Palette](static/css/theme.css) · [Stylesheet](static/css/shard.css)
 
 ## Prior art

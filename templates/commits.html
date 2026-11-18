@@ -3,13 +3,15 @@
 {% let repo_nav_branch = crate::util::url_path(branch.as_str()) %}
 {% include "repo_header.html" %}
 <div class="page">
-  <div class="page-head" style="padding-top:32px">
+  <div class="page-head">
     <div>
       <h1 class="page-title">{{ chrome.locale.t(crate::i18n::CommonText::Commits) }}</h1>
       <p class="page-sub">{{ chrome.locale.first_parent_history(branch.as_str()) }}</p>
     </div>
-    {% if let Some(latest) = latest_url %}<a class="btn btn--ghost" href="{{ latest }}">{{ chrome.locale.t(crate::i18n::CommonText::LatestCommits) }}</a>{% endif %}
-    <a class="btn btn--ghost" href="/{{ repo.owner_name }}/{{ repo.name }}?branch={{ repo_nav_branch }}">{{ chrome.locale.t(crate::i18n::RepoText::BackToCode) }}</a>
+    <div class="page-head__actions">
+      {% if let Some(latest) = latest_url %}<a class="btn btn--ghost" href="{{ latest }}">{{ chrome.locale.t(crate::i18n::CommonText::LatestCommits) }}</a>{% endif %}
+      <a class="btn btn--ghost" href="/{{ repo.owner_name }}/{{ repo.name }}?branch={{ repo_nav_branch }}">{{ chrome.locale.t(crate::i18n::RepoText::BackToCode) }}</a>
+    </div>
   </div>
 
   {% if commits.is_empty() %}
