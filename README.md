@@ -1,50 +1,83 @@
-<img src="static/img/logo.svg" width="64" height="64" alt="">
+<h1><img src="assets/readme/shard.svg" width="100%" alt="Shard, a self-hosted Git forge on Cloudflare Workers"></h1>
 
-# Shard
-
-Shard is a self-hosted Git forge for personal projects and small teams on
-Cloudflare Workers. It hosts public and private repositories, issues, and pull
-requests in the same app. Standard Git clients clone, fetch, and push over
-HTTPS. The browser interface supports English and Simplified Chinese.
+Shard brings public and private repositories, issues, and pull request review
+together for personal projects and small teams. Standard Git clients clone,
+fetch, and push over HTTPS. The web interface supports English and Simplified Chinese.
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)][cloudflare-deploy]
 
-[Deploy](#deploy-to-cloudflare) · [First repository](#first-repository) · [Local development](#local-development) · [简体中文](#简体中文)
+[Run locally](#local-development) · [First push](#first-repository) · [Deploy guide](#deploy-to-cloudflare) · [简体中文](#简体中文)
+
+<a href="assets/readme/pull-request.webp"><img src="assets/readme/pull-request.webp" width="100%" alt="Shard pull request with a versioned comparison, changed files, and a review comment linked to an added line"></a>
+
+A line review in `demo/field-notes` on a local Shard instance.
+
+## Local development
+
+Install Git 2.32+ and mise, then run these commands from the checkout.
+
+```sh
+mise install
+mise run setup
+mise run dev
+```
+
+Open <http://localhost:8787>. Wrangler runs D1 and Artifacts locally, so you can
+try Shard without a Cloudflare account.
+
+### First repository
+
+1. Create an account at `/user/sign_up`. Registration is open on the instance.
+2. Choose **New repository** and set its visibility. Create a write token in
+   **Account settings → Access tokens** and save it when Shard displays it.
+3. Copy the repository's clone URL into `SHARD_CLONE_URL`. When Git prompts for
+   the push, enter your Shard username and use the write token as the password.
+
+```sh
+git clone "$SHARD_CLONE_URL" my-repository
+cd my-repository
+printf '# My repository\n' > README.md
+git add README.md
+git commit -m "Initial commit"
+git push -u origin HEAD:main
+```
+
+<details>
+<summary>Build, tests, and editor setup</summary>
+
+`mise run check` type-checks the Worker, `mise run lint` runs Clippy, and
+`mise run build` produces `build/index.js`. `mise run test` builds and tests
+both Git backends with isolated D1 databases and real Git clients. `npm test`
+runs the tests against an existing build. Keep Git on `PATH`, including in CI.
+
+`mise run setup` installs the pinned toolchain, editor tools and npm dependencies.
+For rust-analyzer, set the Cargo target to `wasm32-unknown-unknown`.
+
+</details>
 
 ## Features
 
-- **Repositories** support read and write collaborators, forks, public HTTPS
-  imports, and transfers. Previous Web and Git URLs retain their access checks
-  after rename or transfer. Forks of private repositories remain private.
-  Browse branches, tags, files, and commit history or download a source archive
-  pinned to a commit. The web default branch must exist in Git. Clones follow
-  the Git backend's `HEAD`.
-  File previews show up to 256 KiB. The repository homepage renders README files
-  up to that size, and raw downloads stream the full file.
-- **Issues** support editing, labels, milestones, assignees, state history, and
-  search across titles, bodies, and comments. The inbox shows activity in
-  repositories you can still access.
-- **Pull requests** compare the source branch with its best common ancestor.
-  Authors and writers can update the saved comparison. Approvals, change
-  requests, and line comments link to the version reviewed. Comparisons saved
-  before merge-base support retain their original two-tip diff until updated.
-  Merge locally, push, then verify the integration in Shard.
-- **Accounts and integrations** include scoped Git tokens, commit checks, and
-  signed issue and review webhooks. Account settings support password-confirmed
-  credential changes. Account deletion requires transferring or removing owned
-  repositories and revokes sessions and access tokens.
+- **Browse code** by branch, tag or commit. View the first 256 KiB of a file,
+  stream the full file, or download a source archive pinned to a commit.
+- **Collaborate** with scoped Git tokens, read and write collaborators, forks,
+  public HTTPS imports, and transfers. Existing URLs keep their permission
+  checks after rename or transfer. Private forks stay private.
+- **Review changes** against a common ancestor. Approvals and line comments
+  stay linked to the saved comparison. Merge locally, push, and verify the
+  integration in Shard. Comparisons created before merge-base support keep
+  their two-tip diff until updated.
+- **Organize work** with searchable issues, labels, milestones, assignees, and
+  a permission-aware inbox. Record CI results on commits or receive signed
+  issue and review events through webhooks.
 
 ## Architecture
 
-| Layer | Responsibility |
-|---|---|
-| Cloudflare Workers | Rust compiled to WebAssembly with `workers-rs`. Handles Web and Git requests. |
-| D1 (`DB`) | Accounts, sessions, access tokens, repository metadata, issues, reviews and notifications. |
-| Git storage | Cloudflare Artifacts by default, or an authenticated native Git origin with a persistent disk. |
-| Askama and Workers Static Assets (`ASSETS`) | Server-rendered pages and responsive CSS. [Design guide](DESIGN.md) |
+The Rust Worker serves the web interface and checks repository access before
+forwarding Git traffic. D1 keeps accounts, permissions, issues, and reviews.
+Cloudflare Artifacts stores Git data by default. With `--env native`, an
+authenticated Git origin stores bare repositories on a persistent disk.
 
-See the [project status](STATUS.md) for verified behavior and the
-[Git backend plan](PLAN.md#optional-git-backends) for alternative storage options.
+[Storage design](PLAN.md#optional-git-backends) · [Verified behavior and staging status](STATUS.md)
 
 ## Deploy to Cloudflare
 
@@ -130,25 +163,6 @@ Artifacts repositories from an existing database, retain the original Artifacts
 binding alongside the native origin until those repositories have been migrated.
 [Wrangler environments](https://developers.cloudflare.com/workers/wrangler/environments/) · [Git backend plan](PLAN.md#optional-git-backends)
 
-### First repository
-
-1. Open your instance and create an account at `/user/sign_up`. Registration
-   is open on the instance.
-2. Choose **New repository** and set its visibility. Create a write token in
-   **Account settings → Access tokens** and save it when Shard displays it.
-3. Copy the HTTPS clone URL from the repository page. Use your Shard username
-   and the write token as the password when Git prompts for a push. New
-   repositories use `main` by default.
-
-```sh
-git clone "$SHARD_CLONE_URL" my-repository # Set this to the URL copied from Shard.
-cd my-repository
-printf '# My repository\n' > README.md
-git add README.md
-git commit -m "Initial commit"
-git push -u origin HEAD:main
-```
-
 ### Optional email setup
 
 Set `PUBLIC_ORIGIN` to the HTTPS origin of your instance and `EMAIL_FROM` to an
@@ -166,73 +180,6 @@ Shard 是部署在 Cloudflare 上的自托管 Git 平台，适用于个人项目
 在本地试用无需 Cloudflare 账号。安装 Git 2.32 或更高版本和 mise 后，运行 `mise install`、`mise run setup`、`mise run dev`，打开 `http://localhost:8787`。
 
 需要避开 Artifacts 时，选择 `--env native`，并配置自有 Git 源站、持久磁盘和 D1。详见 [原生 Git 部署说明](#deploy-with-a-native-git-origin)。
-
-## Layout
-
-```
-src/
-  lib.rs            fetch handler + route table
-  auth.rs           sessions, login, git credentials
-  crypto.rs         PBKDF2 / SHA-256 / random tokens via WebCrypto
-  security.rs       same-origin/CSRF checks and browser security headers
-  pagination.rs     bounded list pagination and query-preserving links
-  i18n/             typed UI message catalogs and language negotiation
-  account.rs        account and access-token page models
-  recovery.rs       email verification and password reset
-  artifacts.rs      Rust wrapper over the Artifacts Workers binding
-  git_storage.rs    backend selection and shared Git object operations
-  native_git.rs     authenticated client for the native Git origin
-  refs.rs           read-only branch and tag discovery over Git HTTPS
-  repo_lifecycle.rs stable repository paths, transfers, forks and imports
-  repo_objects.rs   commit detail and source archives
-  pull_base.rs      exact branch tips and bounded common-ancestor lookup
-  pull_diff.rs      file and line differences for a saved comparison
-  pull_review.rs    comparison updates, review decisions and merge verification
-  issue_metadata.rs issue edits and classification
-  notifications.rs inbox and current repository access checks
-  webhooks.rs       signed event delivery from the D1 outbox
-  handlers/
-    web.rs          dashboard, explore, global issue lists
-    auth_handlers.rs registration, login, account language, access tokens
-    repos.rs        create/browse/settings, trees, blobs, commits
-    issues.rs       issue and pull request lists, discussion and state changes
-    git.rs          Git Smart HTTP authorization and proxy
-    checks.rs       authenticated commit check updates
-  templates.rs      Askama page structs
-templates/          Askama page templates
-migrations/         D1 schema
-scripts/            Workers Builds bootstrap and native Git origin
-static/             design-system CSS, logo
-tests/              isolated local HTTP and real Git regression scenarios
-wrangler.jsonc      Worker bindings, scheduled maintenance and assets
-```
-
-## Local development
-
-```sh
-mise install          # Rust and Node versions pinned by the project
-mise run setup        # WebAssembly target, IDE tools, worker-build and dependencies
-mise run dev          # applies local D1 migrations and starts http://localhost:8787
-```
-
-`rust-toolchain.toml` selects the same Rust version for shells and IDEs. Setup
-installs rust-analyzer, Rust sources, rustfmt and Clippy for that toolchain. With
-an editor using rust-analyzer, open the repository root and set its Cargo target
-to `wasm32-unknown-unknown` to match the Worker build.
-
-Mise uses the Wrangler executable installed by `npm ci`. This keeps local
-development and CI on the version pinned by `package-lock.json`.
-
-Run `mise run check` to type-check the Worker, `mise run lint` to run Clippy,
-and `mise run test` to build and verify both Git backends. The tests start
-isolated local simulators, apply D1 migrations, and use real Git clients.
-`npm test` runs the same tests against an existing build. Git must be on
-`PATH`, including in CI.
-
-The Artifacts binding uses Wrangler's local simulator (git 2.32+ must be on
-`PATH`). Local repositories and tokens are separate from deployed ones.
-`cargo check --target wasm32-unknown-unknown` type-checks; `mise run build`
-produces `build/index.js`.
 
 ## Project releases
 
@@ -292,6 +239,11 @@ requires both a write-scoped token and repository write permission. Expired or
 revoked tokens are rejected. Legacy tokens without an expiry remain valid until
 revoked. The secret is shown only at creation. Use it as the password when Git
 prompts. Anonymous clone works for public repositories.
+
+The web default branch must exist in Git. Clones follow the storage backend's
+`HEAD`. Account changes that affect credentials require the current password.
+Before deleting an account, transfer or remove its repositories. Deletion
+revokes the account's sessions and tokens.
 
 Passwords use PBKDF2-SHA256. Browser sessions use HTTP-only cookies. Session and
 token secrets are stored as hashes. Browser forms require session-bound CSRF
@@ -391,19 +343,19 @@ at 03:00 UTC removes expired sessions, tokens, login throttle windows, and email
 - Historical issue closures from before state history was introduced appear without
   an actor.
 
+## Layout
+
+- Worker routes, permissions, and Git backends live in [src/](src/).
+- Server-rendered HTML and styles live in [templates/](templates/) and [static/](static/).
+- D1 schema changes live in [migrations/](migrations/).
+- The build bootstrap and native Git origin live in [scripts/](scripts/).
+- Isolated HTTP and Git scenarios live in [tests/](tests/).
+
 ## Design
 
-The interface implements `DESIGN.md`: a white canvas with warm `#F5F5F0` surfaces,
-amber `#F2C94C` primary actions, lavender `#E6D5F5` accents, maroon emphasis,
-pill-shaped inputs/buttons, 28px cards, a 1200px measure and dotted focus rings.
-Typography uses `Segoe UI` / `Segoe UI Variable Display`; Open AI Sans is
-proprietary and is not bundled. There is no dark theme, matching the reference.
-All UI lives in `static/css/shard.css`; templates hold no styling framework.
-
-Account settings, token management, pagination and discussion history reuse the
-same warm cards, pill controls, settings side navigation and dotted focus rings.
-The CSP blocks scripts and cross-origin form submissions. Inline styles remain
-allowed for the existing server-rendered templates.
+Shard's web UI uses warm surfaces, amber actions, lavender accents, and system
+fonts. Askama renders the HTML and the pages share one stylesheet.
+[Design guide](DESIGN.md) · [Stylesheet](static/css/shard.css)
 
 ## Prior art
 
@@ -413,9 +365,6 @@ allowed for the existing server-rendered templates.
   v2 with Durable Object refs, R2 packs and a streaming push pipeline.
 - [durable-git](https://github.com/littledivy/durable-git) — Git implemented inside a
   Durable Object, optional R2 pack cache, cgit-style surface.
-
-Shard delegates object storage and pack negotiation to the selected Git
-backend and uses its own forge metadata and Git permission checks.
 
 ## Cloudflare API notes (verified 2026-11-17)
 

@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="330" viewBox="0 0 1200 330" role="img" aria-labelledby="title desc">
+  <title id="title">Shard, a self-hosted Git forge on Cloudflare Workers</title>
+  <desc id="desc">A branch diagram connects Shard to D1 for metadata and to a choice of Cloudflare Artifacts or a native Git origin for repositories.</desc>
+  <rect width="1200" height="330" rx="32" fill="#F5F5F0"/>
+
+  <!-- Shard's repository mark from static/img/logo.svg. -->
+  <g id="logo" transform="translate(64 54) scale(1.25)">
+    <rect width="64" height="64" rx="16" fill="#F2C94C"/>
+    <path d="m32 10 20 11-20 11-20-11ZM12 26l17.5 9.6V54L12 44.4Z" fill="#1A1A1A"/>
+    <path d="m52 26-17.5 9.6V54L52 44.4Z" fill="#5C1A1A"/>
+  </g>
+
+  <g id="title-block" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" fill="#1A1A1A">
+    <text x="169" y="122" font-size="94" font-weight="700" letter-spacing="-4">Shard</text>
+    <text x="64" y="214" font-size="55" font-weight="600" letter-spacing="-1">Self-hosted Git forge</text>
+    <text x="64" y="267" font-size="49" fill="#5C1A1A">on Cloudflare Workers</text>
+  </g>
+
+  <g id="storage" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="42" font-weight="600" fill="#1A1A1A">
+    <path d="M653 164h49m0 0V85h138m-138 79v44h70m0 0v-42h68m-68 42v40h68"
+          fill="none" stroke="#5C1A1A" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="653" cy="164" r="10" fill="#F2C94C" stroke="#5C1A1A" stroke-width="4"/>
+    <circle cx="772" cy="208" r="7" fill="#F5F5F0" stroke="#5C1A1A" stroke-width="4"/>
+
+    <rect x="840" y="53" width="296" height="64" rx="32" fill="#FFFFFF"/>
+    <text x="872" y="100">D1</text>
+    <rect x="840" y="134" width="296" height="64" rx="32" fill="#F2C94C"/>
+    <text x="872" y="181">Artifacts</text>
+    <rect x="840" y="216" width="296" height="64" rx="32" fill="#E6D5F5"/>
+    <text x="872" y="263">Native Git</text>
+  </g>
+</svg>
