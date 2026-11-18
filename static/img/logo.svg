@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="shard">
-  <rect width="32" height="32" rx="9" fill="#F2C94C"/>
-  <path d="M16 6.2 24.4 11l-8.4 4.8L7.6 11 16 6.2Z" fill="#1A1A1A"/>
-  <path d="M7.6 13.4 15 17.6v7.2l-7.4-4.2v-7.2Z" fill="#1A1A1A" opacity=".86"/>
-  <path d="M24.4 13.4 17 17.6v7.2l7.4-4.2v-7.2Z" fill="#1A1A1A" opacity=".7"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Shard">
+  <rect width="64" height="64" rx="16" fill="#F2C94C"/>
+  <path d="m32 10 20 11-20 11-20-11Z" fill="#1A1A1A"/>
+  <path d="m12 26 17.5 9.6V54L12 44.4Z" fill="#1A1A1A"/>
+  <path d="m52 26-17.5 9.6V54L52 44.4Z" fill="#5C1A1A"/>
 </svg>

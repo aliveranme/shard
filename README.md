@@ -1,3 +1,5 @@
+<img src="static/img/logo.svg" width="64" height="64" alt="">
+
 # Shard
 
 Shard is a self-hosted Git forge for personal projects and small teams on
