@@ -3,4 +3,5 @@ build/
 node_modules/
 .wrangler/
 .dev.vars
+.dev.vars.*
 *.log

@@ -41,7 +41,7 @@ run = "cargo clippy --locked --target wasm32-unknown-unknown"
 [tasks.test]
 description = "Build and run isolated local HTTP regression tests"
 depends = ["build"]
-run = "node --test tests/http.test.mjs"
+run = "npm test"
 
 [tasks.fmt]
 description = "Format the Rust sources"

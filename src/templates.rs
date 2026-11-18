@@ -249,7 +249,7 @@ pub struct RepoCodePage {
     pub files: Vec<FileRow>,
     pub readme: Option<String>,
     pub last_commit: Option<CommitRow>,
-    pub artifacts_error: Option<String>,
+    pub storage_notice: Option<String>,
     pub clone_url: String,
     pub is_owner: bool,
 }

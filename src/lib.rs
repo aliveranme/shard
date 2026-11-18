@@ -1,7 +1,7 @@
 //! Shard: a self-hosted, Cloudflare-native Git forge.
 //!
-//! Pages and metadata live in D1; repositories live in Artifacts. Git push and
-//! fetch are proxied so users only ever see the forge domain.
+//! Pages and forge metadata live in D1. Git access through the forge domain
+//! uses the storage backend recorded for each repository.
 use worker::*;
 
 mod account;
@@ -11,11 +11,13 @@ mod collaborators;
 mod crypto;
 mod ctx;
 mod db;
+mod git_storage;
 mod handlers;
 mod i18n;
 mod issue_metadata;
 mod markdown;
 mod models;
+mod native_git;
 mod notifications;
 mod templates;
 mod pagination;

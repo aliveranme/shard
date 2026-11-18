@@ -22,14 +22,63 @@ Use the pinned Wrangler simulator and real Git over loopback for validation. App
 | Import | The binding imports [public HTTPS remotes](https://developers.cloudflare.com/artifacts/guides/import-repositories/). Import can complete asynchronously. | Private source credentials have no documented native binding flow. Require a separately authorized Git import path for private sources. |
 | Search and metadata | D1 supports transactional [batches](https://developers.cloudflare.com/d1/worker-api/d1-database/#batch) and [FTS5](https://developers.cloudflare.com/d1/sql-api/sql-statements/#supported-sqlite-extensions). | Repository and issue metadata can be indexed in D1. Code and commit search need a visibility-aware, bounded Git indexing pipeline. |
 | Limits | [Workers](https://developers.cloudflare.com/workers/platform/limits/#memory) have 128 MB per isolate. [Artifacts](https://developers.cloudflare.com/artifacts/platform/limits/) caps pushes at 64 MiB and new repositories at 1 GB. [Streams](https://developers.cloudflare.com/workers/runtime-apis/streams/) reduce buffering within both ceilings. | Show limits to users. Git protocol v2 receive-pack is unavailable upstream. Test the supported clone and push paths locally. |
-| Public operations | [Rate Limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/) is approximate per Cloudflare location. [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) indexes structured events. [D1 Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/) restores metadata in place. | A deployed site needs Workers Paid, an Artifacts namespace, a D1 database, and a `workers.dev` address or an owned custom domain. Keep an independent mirror of Git objects and refs. Production restores need operator authorization. |
+| Public operations | [Rate Limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/) is approximate per Cloudflare location. [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) indexes structured events. [D1 Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/) restores metadata in place. | Use `workers.dev` or an owned custom domain and keep paired backups of D1, Git objects, and refs. |
 | Email | [Email Service](https://developers.cloudflare.com/email-service/get-started/send-emails/) requires Cloudflare DNS and an onboarded sending domain. | Real account verification, password reset and notification delivery require the configured sender and access to a test mailbox. |
+
+## Optional Git backends
+
+Artifacts is the default. The `native` Wrangler environment runs Shard with
+an authenticated native Git origin and no Artifacts binding. D1 stores
+repository visibility, the backend and opaque storage ID, and forge metadata.
+The Shard URLs and permission checks apply in both modes.
+[Native Git deployment](README.md#deploy-with-a-native-git-origin)
+
+| Service | Role in an alternative deployment | Limits that affect this design |
+|---|---|---|
+| R2 | Store immutable packs and indexes, or LFS objects with a separate protocol endpoint. | About 4.995 GiB per single-part upload and 4.995 TiB per multipart object, up to 10,000 parts. Strong object consistency. One concurrent write per second to the same key. Standard free allowance is 10 GB-month, 1 million Class A and 10 million Class B requests per month. [Limits](https://developers.cloudflare.com/r2/platform/limits/) · [Consistency](https://developers.cloudflare.com/r2/reference/consistency/) · [Pricing](https://developers.cloudflare.com/r2/pricing/) |
+| D1 | Keep forge metadata and, if needed, an index of LFS object ownership and size. | 500 MB per database on Free, 10 GB on Paid, 2 MB per row or BLOB, and 50/1,000 D1 queries per invocation. A single database executes queries serially. [Limits](https://developers.cloudflare.com/d1/platform/limits/) |
+| SQLite Durable Objects | Use one per repository to serialize conflicting pushes and atomically publish refs and the pack index. | The storage-full FAQ lists 1 GB per object on Free and 10 GB on Paid. Budget against the lower Free limit because the limits table lists 10 GB without that distinction. Free also has 5 GB total. SQL rows and BLOBs are capped at 8 MB. [Limits and storage-full FAQ](https://developers.cloudflare.com/durable-objects/platform/limits/#what-happens-when-a-durable-object-exceeds-its-storage-limit) |
+| Workers | Route and authorize, stream Git bodies, and run or delegate pack processing. | 128 MB per isolate. HTTP CPU is 10 ms on Free or up to 5 min on Paid. Free has 50 outbound subrequests per invocation, which can constrain native Git reads in large PR comparisons. Inbound body size follows the zone plan, with 100 MB on Free/Pro and 200 MB on Business. [Limits](https://developers.cloudflare.com/workers/platform/limits/) |
+
+For **Cloudflare-only** hosting, pair R2 with per-repository Durable Objects
+and a Git engine. Stage the pack, validate objects and deltas, then commit the
+new refs and the pack index together. A failed push leaves old refs readable.
+Clean up unreferenced packs only after publication or a verified abandoned
+upload. Evaluate [durable-git](https://github.com/littledivy/durable-git) and
+[git-on-cloudflare](https://github.com/zllovesuki/git-on-cloudflare) for protocol
+handling. Shard requires reads by tree and blob SHA, asynchronous import and
+fork handling, and access to immutable PR comparison objects after ref changes.
+The documented durable-git content API resolves reachable objects by commit
+and path, so it needs additional integration for those contracts.
+
+An isolated Wrangler run of `durable-git@0.0.8` stored a pack containing an
+18 MiB fixture in R2 without an Artifacts binding. After restart, a clone
+matched the commit, annotated tag and file bytes. This exercised the Git
+engine on its own. [durable-git content API](https://github.com/littledivy/durable-git/blob/main/docs/api.md)
+
+Native mode uses `git http-backend` and a persistent volume for Git Smart
+HTTP, pack handling and ref locking. The origin also serves repository
+lifecycle and object reads through an authenticated HTTP API.
+[Git HTTP backend](https://git-scm.com/docs/git-http-backend)
+
+Evaluate the same Git and Web workflows before adding a Cloudflare-only
+backend. To move an existing repository, pause writes, copy and verify all
+refs and any retained PR objects, then change its recorded backend. Retain the
+source until the destination and rollback have been verified. Migrate Git LFS
+objects separately from Git refs.
+
+LFS can be added independently of the selected Git backend. The Shard Batch
+endpoint should authorize each repository and operation using the existing Git
+token roles, then issue short-lived operations against a private R2 bucket.
+Verify the declared SHA-256 and size before making an upload visible. Direct
+R2 transfers avoid the Worker's inbound body limit. A basic single PUT is
+subject to R2's single-part limit. [Git LFS Batch API](https://github.com/git-lfs/git-lfs/blob/main/docs/api/batch.md) · [R2 presigned URLs](https://developers.cloudflare.com/r2/api/s3/presigned-urls/)
 
 ## Deployment prerequisites
 
-- Staging requires Workers Paid with Artifacts access and its own D1 database
-  and Artifacts namespace. Use `workers.dev` or an owned HTTPS domain. Verify
-  public Git imports, scheduled delivery, and Artifacts push events there.
+- Use `workers.dev` or an owned HTTPS name for staging. Artifacts staging
+  needs Workers Paid and its own namespace. Native staging needs an HTTPS
+  Git origin and a persistent volume. Use separate D1 state for each stage.
 - Email delivery requires the configured `EMAIL` binding, a verified sending
   domain and a mailbox available for end-to-end verification.
 - Web merges, protected refs and merge queues require an authorized execution

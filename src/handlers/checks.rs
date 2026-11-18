@@ -1,5 +1,5 @@
 use super::common::{RepoRole, load_repo, repo_role};
-use crate::artifacts::{Artifacts, is_object_id};
+use crate::git_storage::{is_object_id, RepoHandle};
 use crate::ctx::AppState;
 use crate::i18n::{CheckText, Locale, Message, RepoText};
 use crate::{auth, db, util};
@@ -140,7 +140,7 @@ pub async fn record(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
     };
 
     let commit = async {
-        let handle = Artifacts::from_env(&state.env)?.get(&repo.artifacts_repo).await?;
+        let handle = RepoHandle::open(&state.env, &repo).await?;
         handle.read_commit(hash).await
     }
     .await;

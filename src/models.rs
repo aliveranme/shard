@@ -79,7 +79,8 @@ pub struct Repo {
     pub name: String,
     pub description: String,
     pub default_branch: String,
-    pub artifacts_repo: String,
+    pub(crate) git_backend: crate::git_storage::GitBackend,
+    pub(crate) storage_id: String,
     pub visibility: String,
     pub next_issue_number: i64,
     pub forked_from: Option<String>,
@@ -96,11 +97,6 @@ impl Repo {
 
     pub fn is_private(&self) -> bool {
         self.visibility == "private"
-    }
-
-    pub fn number_of(&self) -> String {
-        // Stable numeric suffix of the Artifacts repo name, useful for debugging.
-        self.artifacts_repo.clone()
     }
 }
 

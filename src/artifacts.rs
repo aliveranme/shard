@@ -1,44 +1,14 @@
 //! Thin Rust wrapper over the Cloudflare Artifacts Workers binding.
 //!
 //! The binding is a JS RPC capability (JSRPC), so methods are reached through
-//! reflection and awaited through `JsFuture`. Everything returns owned Rust
-//! data; no JS handle escapes this module.
-use js_sys::{Array, Function, Object, Promise, Reflect, Uint8Array};
+//! reflection and awaited through `JsFuture`.
+use crate::git_storage::{is_object_id, BlobRead, Commit, CopyError, CreatedRepo, TreeEntry};
+use js_sys::{Array, Function, Object, Promise, Reflect, Symbol, Uint8Array};
 use serde_json::Value;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use worker::*;
 use worker::web_sys::Blob;
-
-#[derive(Debug, Clone)]
-pub struct CreatedRepo {
-    pub name: String,
-    pub remote: String,
-    pub default_branch: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct Commit {
-    pub hash: String,
-    pub tree: Option<String>,
-    pub message: String,
-    pub author: String,
-    pub timestamp: Option<i64>,
-}
-
-#[derive(Debug, Clone)]
-pub struct TreeEntry {
-    pub name: String,
-    pub is_dir: bool,
-    pub hash: String,
-    pub size: Option<u64>,
-    pub mode: &'static str,
-}
-
-pub enum BlobRead {
-    Bytes(Vec<u8>),
-    TooLarge,
-}
 
 pub struct Artifacts {
     obj: JsValue,
@@ -100,9 +70,45 @@ impl Artifacts {
         Ok(RepoHandle { obj })
     }
 
-    pub async fn delete(&self, name: &str) -> Result<bool> {
-        let obj = call_async(&self.obj, "delete", &[JsValue::from_str(name)]).await?;
-        Ok(obj.as_bool().unwrap_or(false))
+    pub(crate) async fn delete(&self, name: &str) -> std::result::Result<(), CopyError> {
+        call(&self.obj, "delete", &[JsValue::from_str(name)]).await.map_err(copy_error)?;
+        Ok(())
+    }
+
+    pub(crate) async fn start_copy(
+        &self, name: &str, description: &str, source: Option<&str>, url: &str,
+    ) -> std::result::Result<(), CopyError> {
+        let opts = Object::new();
+        let set = |object: &Object, key: &str, value: &JsValue| {
+            Reflect::set(object, &JsValue::from_str(key), value).map_err(copy_error)
+        };
+        set(&opts, "description", &JsValue::from_str(description))?;
+        set(&opts, "readOnly", &JsValue::FALSE)?;
+        if let Some(source) = source {
+            set(&opts, "defaultBranchOnly", &JsValue::FALSE)?;
+            let obj = call(&self.obj, "get", &[JsValue::from_str(source)]).await.map_err(copy_error)?;
+            let repo = RepoHandle { obj };
+            call(&repo.obj, "fork", &[JsValue::from_str(name), opts.into()]).await.map_err(copy_error)?;
+        } else {
+            let upstream = Object::new();
+            set(&upstream, "url", &JsValue::from_str(url))?;
+            let target = Object::new();
+            set(&target, "name", &JsValue::from_str(name))?;
+            set(&target, "opts", &opts)?;
+            let params = Object::new();
+            set(&params, "source", &upstream)?;
+            set(&params, "target", &target)?;
+            call(&self.obj, "import", &[params.into()]).await.map_err(copy_error)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn copy_info(&self, name: &str) -> std::result::Result<CreatedRepo, CopyError> {
+        let obj = call(&self.obj, "get", &[JsValue::from_str(name)]).await.map_err(copy_error)?;
+        let repo = RepoHandle { obj };
+        let info = call(&repo.obj, "info", &[]).await.map_err(copy_error)?;
+        let field = |key| field_string(&info, &[key]).filter(|value| !value.is_empty()).ok_or(CopyError::Unknown);
+        Ok(CreatedRepo { name: field("name")?, remote: field("remote")?, default_branch: field("defaultBranch")? })
     }
 }
 
@@ -195,12 +201,6 @@ impl RepoHandle {
         Ok(Some(parents))
     }
 
-    pub async fn read_tree(&self, hash: &str) -> Result<Vec<TreeEntry>> {
-        self.read_tree_bounded(hash, u32::MAX).await?.ok_or_else(|| {
-            Error::RustError("Git tree exceeds the entry limit".into())
-        })
-    }
-
     /// `None` means the budget is exhausted. Missing objects are errors.
     pub async fn read_tree_bounded(&self, hash: &str, limit: u32) -> Result<Option<Vec<TreeEntry>>> {
         let value = call_async(&self.obj, "readTree", &[JsValue::from_str(hash)]).await?;
@@ -213,28 +213,12 @@ impl RepoHandle {
         }
         let mut entries = Vec::with_capacity(items.length() as usize);
         for item in items.iter() {
-            let name = field_string(&item, &["name"])
-                .filter(|name| !name.is_empty() && !name.contains('/') && name != "." && name != "..");
-            let mode = field_string(&item, &["mode"]).and_then(|mode| match mode.as_str() {
-                "040000" | "40000" => Some("040000"),
-                "100644" => Some("100644"),
-                "100755" => Some("100755"),
-                "120000" => Some("120000"),
-                "160000" => Some("160000"),
-                _ => None,
-            });
-            let hash = field_string(&item, &["hash", "sha", "id"]).filter(|id| is_object_id(id));
-            let (Some(name), Some(mode), Some(hash)) = (name, mode, hash) else {
-                return Err(Error::RustError("Invalid Git tree entry".into()));
-            };
-            entries.push(TreeEntry {
-                name,
-                is_dir: mode == "040000",
-                mode,
-                hash,
-                size: Reflect::get(&item, &JsValue::from_str("size"))
-                    .ok().and_then(|value| value.as_f64()).map(|size| size as u64),
-            });
+            let name = field_string(&item, &["name"]).unwrap_or_default();
+            let mode = field_string(&item, &["mode"]).unwrap_or_default();
+            let hash = field_string(&item, &["hash", "sha", "id"]).unwrap_or_default();
+            let size = Reflect::get(&item, &JsValue::from_str("size"))
+                .ok().and_then(|value| value.as_f64()).map(|size| size as u64);
+            entries.push(TreeEntry::new(name, &mode, hash, size)?);
         }
         Ok(Some(entries))
     }
@@ -254,34 +238,42 @@ impl RepoHandle {
         Ok(BlobRead::Bytes(Uint8Array::new(&buffer).to_vec()))
     }
 
-    pub async fn head_commit(&self, git_ref: &str) -> Result<Option<Commit>> {
-        Ok(self.log(git_ref, 1).await?.into_iter().next())
-    }
-
 }
 
-pub(crate) fn is_object_id(hash: &str) -> bool {
-    hash.len() == 40 && hash.bytes().all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+impl Drop for RepoHandle {
+    fn drop(&mut self) {
+        if let Some(dispose) = Reflect::get(&self.obj, Symbol::dispose().as_ref())
+            .ok().and_then(|method| method.dyn_into::<Function>().ok())
+        {
+            let _ = dispose.call0(&self.obj);
+        }
+    }
+}
+
+fn copy_error(error: JsValue) -> CopyError {
+    match field_string(&error, &["code"]).as_deref() {
+        Some("IMPORT_IN_PROGRESS" | "FORK_IN_PROGRESS") => CopyError::Pending,
+        Some("NOT_FOUND") => CopyError::Missing,
+        Some("ALREADY_EXISTS") => CopyError::Collision,
+        Some("INVALID_INPUT" | "INVALID_REPO_NAME" | "INVALID_URL" | "REMOTE_AUTH_REQUIRED" | "UPSTREAM_UNAVAILABLE" | "MEMORY_LIMIT") => CopyError::Rejected,
+        _ => CopyError::Unknown,
+    }
 }
 
 async fn call_async(obj: &JsValue, method: &str, args: &[JsValue]) -> Result<JsValue> {
-    let function = Reflect::get(obj, &JsValue::from_str(method))
-        .map_err(js_error)?
-        .dyn_into::<Function>()
-        .map_err(|_| {
-            Error::RustError(format!(
-                "Artifacts binding has no `{method}` method (binding not deployed?)"
-            ))
-        })?;
+    call(obj, method, args).await.map_err(js_error)
+}
+
+async fn call(obj: &JsValue, method: &str, args: &[JsValue]) -> std::result::Result<JsValue, JsValue> {
+    let function = Reflect::get(obj, &JsValue::from_str(method))?.dyn_into::<Function>()
+        .map_err(|_| js_sys::Error::new(&format!("binding has no `{method}` method")))?;
     let call_args = Array::new();
     for arg in args {
         call_args.push(arg);
     }
-    let output = function.apply(obj, &call_args).map_err(js_error)?;
-    let promise = output.dyn_into::<Promise>().map_err(|_| {
-        Error::RustError(format!("Artifacts `{method}` did not return a promise"))
-    })?;
-    JsFuture::from(promise).await.map_err(js_error)
+    let promise = function.apply(obj, &call_args)?.dyn_into::<Promise>()
+        .map_err(|_| js_sys::Error::new(&format!("`{method}` did not return a promise")))?;
+    JsFuture::from(promise).await
 }
 
 fn field_string(obj: &JsValue, names: &[&str]) -> Option<String> {

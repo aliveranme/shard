@@ -18,7 +18,9 @@ HTTPS. The browser interface supports English and Simplified Chinese.
   after rename or transfer. Forks of private repositories remain private.
   Browse branches, tags, files, and commit history or download a source archive
   pinned to a commit. The web default branch must exist in Git. Clones follow
-  the Artifacts remote `HEAD`.
+  the Git backend's `HEAD`.
+  File previews show up to 256 KiB. The repository homepage renders README files
+  up to that size, and raw downloads stream the full file.
 - **Issues** support editing, labels, milestones, assignees, state history, and
   search across titles, bodies, and comments. The inbox shows activity in
   repositories you can still access.
@@ -38,15 +40,15 @@ HTTPS. The browser interface supports English and Simplified Chinese.
 |---|---|
 | Cloudflare Workers | Rust compiled to WebAssembly with `workers-rs`. Handles Web and Git requests. |
 | D1 (`DB`) | Accounts, sessions, access tokens, repository metadata, issues, reviews and notifications. |
-| Cloudflare Artifacts (`ARTIFACTS`) | Git objects and refs. Each Shard repository has its own Artifacts repository. |
+| Git storage | Cloudflare Artifacts by default, or an authenticated native Git origin with a persistent disk. |
 | Askama and Workers Static Assets (`ASSETS`) | Server-rendered pages and responsive CSS. [Design guide](DESIGN.md) |
 
-Local verification and the delivery plan cover tested workflows and remaining
-platform requirements. [Project status](STATUS.md) · [Delivery plan](PLAN.md)
+See the [project status](STATUS.md) for verified behavior and the
+[Git backend plan](PLAN.md#optional-git-backends) for alternative storage options.
 
 ## Deploy to Cloudflare
 
-Shard requires a Cloudflare account on **Workers Paid** with Artifacts access.
+The default Artifacts deployment requires **Workers Paid** with Artifacts access.
 The Worker can use its `workers.dev` address or a Cloudflare custom domain.
 [Artifacts pricing](https://developers.cloudflare.com/artifacts/platform/pricing/) · [Custom domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)
 
@@ -87,6 +89,47 @@ Copy the database ID into `d1_databases[0].database_id` in `wrangler.jsonc`.
 If you chose another database name, update `database_name` and keep the binding
 named `DB`. Run `mise run deploy` to apply remote migrations and deploy.
 
+### Deploy with a native Git origin
+
+Choose the `native` Wrangler environment to use a Git server you operate. It
+uses D1, static assets and a rate limiter on Cloudflare, and stores bare Git
+repositories on the origin's disk. Repository URLs and Shard token scopes are
+the same in both modes. New repositories and imports use `GIT_BACKEND`. A fork
+uses its source's backend. Existing repositories retain their recorded backend.
+
+1. Run `node scripts/git-origin.mjs` on a host with the pinned Node version and
+   Git 2.32 or later. Set `SHARD_GIT_DIRECTORY` to a dedicated directory on a
+   persistent volume and `SHARD_GIT_TOKEN` to a randomly generated shared
+   secret. The service defaults to `127.0.0.1:8793`. Run one process per volume
+   and put it behind an HTTPS reverse proxy that streams request bodies.
+2. In `env.native` in `wrangler.jsonc`, set `NATIVE_GIT_ORIGIN` to the proxy's
+   HTTPS origin and set `d1_databases[0].database_id` and `database_name` for
+   this instance. Set the Worker's `NATIVE_GIT_TOKEN` secret to the same value
+   as `SHARD_GIT_TOKEN`. Use a dedicated origin directory and token per instance.
+3. Apply migrations and deploy the same environment:
+
+   ```sh
+   mise exec -- npx wrangler secret put NATIVE_GIT_TOKEN --env native
+   mise exec -- npx wrangler d1 migrations apply DB --env native --remote
+   mise exec -- npx wrangler deploy --env native
+   ```
+
+For Windows or Linux local development, start the origin with a disposable
+directory and token. Put `NATIVE_GIT_TOKEN` in `.dev.vars.native` and run:
+
+```sh
+mise exec -- npx wrangler d1 migrations apply DB --env native --local
+mise exec -- npx wrangler dev --env native --local
+```
+
+Native imports accept final public HTTPS Git URLs from `github.com`,
+`gitlab.com` and `codeberg.org` by default. Administrators can replace that list
+with `SHARD_GIT_IMPORT_HOSTS` on the origin, using comma-separated trusted
+hostnames. Back up the origin volume separately from D1. To keep serving legacy
+Artifacts repositories from an existing database, retain the original Artifacts
+binding alongside the native origin until those repositories have been migrated.
+[Wrangler environments](https://developers.cloudflare.com/workers/wrangler/environments/) · [Git backend plan](PLAN.md#optional-git-backends)
+
 ### First repository
 
 1. Open your instance and create an account at `/user/sign_up`. Registration
@@ -116,11 +159,13 @@ the account. [Cloudflare Email Service](https://developers.cloudflare.com/email-
 
 ## 简体中文
 
-Shard 是部署在 Cloudflare 上的自托管 Git 平台，适用于个人项目和小团队。数据库保存账户、权限、议题和审查记录，Git 对象由 Artifacts 管理。界面语言可在页脚或账户设置中切换。
+Shard 是部署在 Cloudflare 上的自托管 Git 平台，适用于个人项目和小团队。D1 保存账户、权限、议题和审查记录。Git 默认使用 Artifacts，也可配置原生 Git 源站。界面语言可在页脚或账号设置中切换。
 
 点击顶部的 **Deploy to Cloudflare** 徽章，选择 Cloudflare 账户，连接 GitHub 或 GitLab，并确认 Worker 和 D1 数据库名称。Cloudflare 会复制源码、创建 D1 数据库、构建 Worker 并应用迁移。部署需要开通 **Workers Paid** 并可使用 Artifacts。 [官方部署按钮文档](https://developers.cloudflare.com/workers/platform/deploy-buttons/)
 
 在本地试用无需 Cloudflare 账号。安装 Git 2.32 或更高版本和 mise 后，运行 `mise install`、`mise run setup`、`mise run dev`，打开 `http://localhost:8787`。
+
+需要避开 Artifacts 时，选择 `--env native`，并配置自有 Git 源站、持久磁盘和 D1。详见 [原生 Git 部署说明](#deploy-with-a-native-git-origin)。
 
 ## Layout
 
@@ -135,6 +180,8 @@ src/
   account.rs        account and access-token page models
   recovery.rs       email verification and password reset
   artifacts.rs      Rust wrapper over the Artifacts Workers binding
+  git_storage.rs    backend selection and shared Git object operations
+  native_git.rs     authenticated client for the native Git origin
   refs.rs           read-only branch and tag discovery over Git HTTPS
   repo_lifecycle.rs stable repository paths, transfers, forks and imports
   repo_objects.rs   commit detail and source archives
@@ -149,12 +196,12 @@ src/
     auth_handlers.rs registration, login, account language, access tokens
     repos.rs        create/browse/settings, trees, blobs, commits
     issues.rs       issue and pull request lists, discussion and state changes
-    git.rs          Git smart-HTTP proxy to Artifacts
+    git.rs          Git Smart HTTP authorization and proxy
     checks.rs       authenticated commit check updates
   templates.rs      Askama page structs
 templates/          Askama page templates
 migrations/         D1 schema
-scripts/            Workers Builds toolchain bootstrap
+scripts/            Workers Builds bootstrap and native Git origin
 static/             design-system CSS, logo
 tests/              isolated local HTTP and real Git regression scenarios
 wrangler.jsonc      Worker bindings, scheduled maintenance and assets
@@ -177,10 +224,10 @@ Mise uses the Wrangler executable installed by `npm ci`. This keeps local
 development and CI on the version pinned by `package-lock.json`.
 
 Run `mise run check` to type-check the Worker, `mise run lint` to run Clippy,
-and `mise run test` to build and run the HTTP regression suite. Tests start
-their own local simulator, apply all migrations in a temporary directory, and
-remove it afterward. They use isolated local data. `npm test` runs the same suite
-against an existing build. Git must be on `PATH`, including in CI.
+and `mise run test` to build and verify both Git backends. The tests start
+isolated local simulators, apply D1 migrations, and use real Git clients.
+`npm test` runs the same tests against an existing build. Git must be on
+`PATH`, including in CI.
 
 The Artifacts binding uses Wrangler's local simulator (git 2.32+ must be on
 `PATH`). Local repositories and tokens are separate from deployed ones.
@@ -204,6 +251,9 @@ and ID in the extracted `wrangler.json`, following the
 npx --yes wrangler@4.164.0 d1 migrations apply DB --remote
 npx --yes wrangler@4.164.0 deploy
 ```
+
+For native mode, follow the origin and secret setup above, use the packaged
+`scripts/git-origin.mjs`, and add `--env native` to both Wrangler commands.
 
 [Release workflow](.github/workflows/release.yml) · [GitHub Releases](https://github.com/aliveranme/shard/releases)
 
@@ -230,11 +280,10 @@ reads at most 21 commits. “Latest commits” returns to the selected branch ti
 
 ## Git access
 
-Shard never stores objects itself. On clone/fetch/push it:
-
-1. authenticates the git client (HTTP basic `username:token` or bearer token),
-2. mints a short-lived Artifacts repo token (1 h, `read` for fetch, `write` for push),
-3. streams the smart-HTTP request body and response through the Artifacts remote.
+Shard checks the Git client's Shard token and repository access, then streams
+the Smart HTTP request and response through its recorded Git backend.
+Artifacts requests use a short-lived repository token. Native origin requests
+use the instance's shared secret. Git clients use the Shard URL in both modes.
 
 Create tokens under `/user/settings/tokens`, choosing read/write scope and a
 7/30/90/365-day lifetime (30 days by default). In a private repo, owners and
@@ -249,6 +298,14 @@ token secrets are stored as hashes. Browser forms require session-bound CSRF
 tokens and same-origin requests. Failed logins are limited to eight per
 source/account pair within 15 minutes. Recovery pages send only the site origin
 as referrer. Git smart HTTP returns an empty HTTP 404 for a missing `.git` repository.
+
+### Git LFS
+
+Shard stores the Git LFS pointer in Git history. Its HTTPS remote has no LFS
+Batch API, so a normal Git LFS push or checkout cannot transfer the file itself.
+`GIT_LFS_SKIP_SMUDGE=1 git clone "$SHARD_CLONE_URL"` can retrieve the pointers.
+Configure a separate LFS endpoint with `lfs.url` to transfer the actual files.
+[Git LFS server discovery](https://github.com/git-lfs/git-lfs/blob/main/docs/api/server-discovery.md)
 
 ## Interface language
 
@@ -278,7 +335,7 @@ The accepted states are `pending`, `success`, `failure` and `error`. Each contex
 has one current result per commit, shown in the commit detail. A successful write
 returns `204`.
 
-For signed issue and review events, set `WEBHOOK_REPO` to the stable Artifacts
+For signed issue and review events, set `WEBHOOK_REPO` to the stable Git storage
 repository name, `WEBHOOK_ENDPOINT` to the receiver's HTTPS URL, and
 `WEBHOOK_SECRET` as a Worker secret. Add `"* * * * *"` to `triggers.crons` alongside
 the daily maintenance schedule. Verify `X-Shard-Signature` as `sha256=` followed
@@ -289,8 +346,8 @@ attempt count and last HTTP status. The Worker attempts delivery up to six times
 ## Backup and restore
 
 Pause writes while taking a paired D1 and Git backup. Keep the SQL and each Git
-mirror in private storage outside the workspace. Record the D1 `repos.artifacts_repo`
-value for each mirror so a replacement namespace can preserve repository bindings.
+mirror in private storage outside the workspace. Record each repository's
+`repos.git_backend` and stable storage ID (`repos.artifacts_repo`) from D1.
 
 For a loopback rehearsal, set `SHARD_SOURCE_D1` to the local persistence directory,
 `SHARD_RESTORE_D1` to an empty persistence path, and `SHARD_BACKUP` to an absolute
@@ -309,8 +366,9 @@ git -C "$SHARD_REPO_BACKUP/restored.git" fsck --full
 
 Compare D1 row counts and check that `git for-each-ref` returns the same names and
 object IDs in both mirrors. For an empty repository, retain the mirror and its
-D1 record. Production recovery includes restoring or provisioning the Artifacts
-repositories under their expected names before serving the restored database.
+D1 record. Restore storage to the expected IDs before serving the restored
+database. For native storage, preserve the bare-repository volume, including
+objects from deleted branches that archived pull request comparisons still use.
 [D1 export and import](https://developers.cloudflare.com/d1/best-practices/import-export-data/) · [D1 Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/)
 
 Worker responses include `X-Request-ID` for log correlation. Daily maintenance
@@ -356,10 +414,8 @@ allowed for the existing server-rendered templates.
 - [durable-git](https://github.com/littledivy/durable-git) — Git implemented inside a
   Durable Object, optional R2 pack cache, cgit-style surface.
 
-Shard delegates object storage and pack negotiation to Artifacts, so it implements
-only the smart-HTTP proxy plus forge metadata. The useful patterns borrowed here are
-owner profile listings, safe raw-file serving, branch-scoped URLs and explicit
-file-level change lists.
+Shard delegates object storage and pack negotiation to the selected Git
+backend and uses its own forge metadata and Git permission checks.
 
 ## Cloudflare API notes (verified 2026-11-17)
 

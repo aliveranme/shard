@@ -1,4 +1,4 @@
-use crate::artifacts::{is_object_id, BlobRead, RepoHandle, TreeEntry};
+use crate::git_storage::{is_object_id, BlobRead, RepoHandle, TreeEntry};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::ops::Range;

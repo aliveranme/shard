@@ -1,5 +1,6 @@
 use crate::ctx::AppState;
 use crate::handlers::common::{not_found, page_title, visible_repo};
+use crate::git_storage::{CopyError, GitBackend, GitStorage};
 use crate::i18n::{CommonText, LifecycleText as Text, RepoText};
 use crate::models::Repo;
 use crate::pagination::{PageRequest, Pagination, PAGE_SIZE};
@@ -8,7 +9,7 @@ use crate::util::{form_bool, form_value, js_int, js_text, now, redirect, valid_s
 use crate::{crypto, db};
 use askama::Template;
 use serde::Deserialize;
-use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::{future_to_promise, JsFuture};
 use worker::*;
 
@@ -313,14 +314,15 @@ pub async fn respond_transfer(req: Request, ctx: RouteContext<AppState>) -> Resu
 struct CopyJob {
     id: i64,
     name: String,
-    artifacts_repo: String,
+    storage_id: String,
+    git_backend: GitBackend,
     kind: String,
     state: String,
     created_at: i64,
     repo_id: Option<i64>,
 }
 
-const COPY_SELECT: &str = "SELECT id, name, artifacts_repo, kind, state, created_at, repo_id FROM repo_copies c";
+const COPY_SELECT: &str = "SELECT id, name, artifacts_repo AS storage_id, git_backend, kind, state, created_at, repo_id FROM repo_copies c";
 
 #[derive(Template)]
 #[template(path = "repo_copy_form.html")]
@@ -437,8 +439,7 @@ fn public_https(raw: &str) -> Option<Url> {
     let url = Url::parse(raw).ok()?;
     let host = url.domain()?.trim_end_matches('.');
     let (domain, suffix) = host.rsplit_once('.')?;
-    // Git performs the HTTPS fetch in Artifacts. Only send public DNS-style
-    // names, and do not forward credentials or optional URL components.
+    // Accept public DNS-style names. The Git provider applies its upstream policy.
     if domain.is_empty()
         || matches!(suffix, "localhost" | "local" | "localdomain" | "internal" | "lan" | "onion" | "home" | "arpa")
         || !suffix.bytes().any(|byte| byte.is_ascii_alphabetic())
@@ -494,21 +495,23 @@ async fn start_copy(
     if !valid_slug(&destination.name) {
         return render_copy_form(state, source, destination, source_url, Some((Text::InvalidName, 400)));
     }
-    let artifacts = artifacts_binding(state);
-    if artifacts.is_null() || artifacts.is_undefined() {
+    let backend = source.map_or_else(|| GitBackend::selected(&state.env), |repo| Ok(repo.git_backend));
+    let storage = backend.and_then(|backend| Ok((backend, GitStorage::from_env(&state.env, backend)?)));
+    let Ok((backend, storage)) = storage else {
         return render_copy_form(state, source, destination, source_url, Some((Text::CopyUnknown, 503)));
-    }
-    let storage = format!("shard-copy-{}", &crypto::random_token()?[..32]);
+    };
+    let storage_id = format!("shard-copy-{}", &crypto::random_token()?[..32]);
     let database = state.db()?;
     let inserted = db::first::<Identity>(
         &database,
         "INSERT INTO repo_copies (owner_id, name, description, visibility, private_fork,
-                                  artifacts_repo, kind, source_id, created_at)
+                                  artifacts_repo, kind, source_id, created_at, git_backend)
          SELECT ?1, ?2, ?3, ?4, COALESCE((SELECT visibility = 'private' FROM repos WHERE id = ?7), 0),
-                ?5, ?6, ?7, ?8
+                ?5, ?6, ?7, ?8, ?9
          WHERE NOT EXISTS (SELECT 1 FROM repo_paths WHERE owner_id = ?1 AND name = ?2 COLLATE NOCASE)
            AND (?7 IS NULL OR EXISTS (
              SELECT 1 FROM repos s JOIN users u ON u.id = ?1 WHERE s.id = ?7
+               AND s.git_backend = ?9
                AND (s.visibility = 'public' OR s.owner_id = ?1 OR u.is_admin = 1 OR EXISTS (
                  SELECT 1 FROM repo_collaborators rc WHERE rc.repo_id = s.id AND rc.user_id = ?1
                ))
@@ -519,10 +522,11 @@ async fn start_copy(
             js_text(&destination.name),
             js_text(&destination.description),
             js_text(if destination.private { "private" } else { "public" }),
-            js_text(&storage),
+            js_text(&storage_id),
             js_text(if source.is_some() { "fork" } else { "import" }),
             source.map_or(JsValue::NULL, |repo| js_int(repo.id)),
             js_int(now()),
+            js_text(backend.name()),
         ],
     )
     .await?;
@@ -536,14 +540,14 @@ async fn start_copy(
     };
     let id = inserted.id;
     let status_path = format!("{COPIES}/{id}");
-    let source_repo = source.map_or_else(String::new, |repo| repo.artifacts_repo.clone());
+    let source_repo = source.map(|repo| repo.storage_id.clone());
     let source_url = source_url.to_owned();
     let submission = future_to_promise(async move {
-        let result = artifact_start(&artifacts, &storage, &destination.description, &source_repo, &source_url).await;
-        let next = match result.as_ref().err().map(artifact_error) {
+        let result = storage.start_copy(&storage_id, &destination.description, source_repo.as_deref(), &source_url).await;
+        let next = match result.err() {
             // Another repo owns this opaque identity. Never inspect or delete it.
-            Some(ArtifactError::Collision) => "failed",
-            Some(ArtifactError::Missing | ArtifactError::Rejected) => "discard",
+            Some(CopyError::Collision) => "failed",
+            Some(CopyError::Missing | CopyError::Rejected) => "discard",
             _ => "pending",
         };
         db::run(
@@ -559,7 +563,7 @@ async fn start_copy(
     let background = submission.clone();
     state.worker_ctx.wait_until(async move {
         if JsFuture::from(background).await.is_err() {
-            console_error!("Unable to record Artifacts copy submission {id}");
+            console_error!("Unable to record Git copy submission {id}");
         }
     });
     if JsFuture::from(submission).await.is_err() {
@@ -682,28 +686,27 @@ async fn reconcile_copy(state: &AppState, job: &CopyJob) -> Result<bool> {
     if matches!(job.state.as_str(), "failed" | "ready") {
         return Ok(false);
     }
-    let artifacts = artifacts_binding(state);
-    if artifacts.is_null() || artifacts.is_undefined() {
+    let Ok(storage) = GitStorage::from_env(&state.env, job.git_backend) else {
         return Ok(true);
-    }
+    };
     let database = state.db()?;
     let id = [js_int(job.id)];
     if job.state == "discard" {
-        return clean_copy(state, &artifacts, job).await;
+        return clean_copy(state, &storage, job).await;
     }
 
-    // An interrupted start can be recovered by the opaque Artifacts name.
+    // An interrupted start can be recovered by the opaque storage ID.
     // A missing target while the start call is in flight proves nothing.
     let starting = job.state == "starting";
-    match artifact_info(&artifacts, &job.artifacts_repo).await {
-        Err(error) => match artifact_error(&error) {
-            ArtifactError::Missing if starting => {
+    match storage.copy_info(&job.storage_id).await {
+        Err(error) => match error {
+            CopyError::Missing if starting => {
                 return Ok(now().saturating_sub(job.created_at) >= 30);
             }
-            ArtifactError::Missing => {
+            CopyError::Missing => {
                 db::run(&database, "UPDATE repo_copies SET state = 'failed' WHERE id = ? AND state = 'pending'", &id).await?;
             }
-            ArtifactError::Pending => {
+            CopyError::Pending => {
                 if starting {
                     db::run(&database, "UPDATE repo_copies SET state = 'pending' WHERE id = ? AND state = 'starting'", &id).await?;
                 }
@@ -711,16 +714,7 @@ async fn reconcile_copy(state: &AppState, job: &CopyJob) -> Result<bool> {
             _ => return Ok(true),
         },
         Ok(info) => {
-            let Some(name) = artifact_field(&info, "name") else {
-                return Ok(true);
-            };
-            let Some(remote) = artifact_field(&info, "remote") else {
-                return Ok(true);
-            };
-            let Some(branch) = artifact_field(&info, "defaultBranch") else {
-                return Ok(true);
-            };
-            if name != job.artifacts_repo {
+            if info.name != job.storage_id {
                 return Ok(true);
             }
             if starting {
@@ -729,14 +723,14 @@ async fn reconcile_copy(state: &AppState, job: &CopyJob) -> Result<bool> {
             db::run(
                 &database,
                 "INSERT INTO repos (owner_id, name, description, default_branch, artifacts_repo, artifacts_remote,
-                                    visibility, forked_from, created_at, updated_at, private_fork)
+                                    visibility, forked_from, created_at, updated_at, private_fork, git_backend)
                  SELECT c.owner_id, c.name, c.description, ?2, c.artifacts_repo, ?3,
                         CASE WHEN c.private_fork = 1 THEN 'private' ELSE c.visibility END,
-                        CASE WHEN c.private_fork = 0 THEN u.username || '/' || s.name END, ?4, ?4, c.private_fork
+                        CASE WHEN c.private_fork = 0 THEN u.username || '/' || s.name END, ?4, ?4, c.private_fork, c.git_backend
                  FROM repo_copies c JOIN repo_copy_access a ON a.id = c.id
                  LEFT JOIN repos s ON s.id = c.source_id LEFT JOIN users u ON u.id = s.owner_id
                  WHERE c.id = ?1 AND c.state = 'pending' AND a.allowed = 1",
-                &[js_int(job.id), js_text(&branch), js_text(&remote), js_int(now())],
+                &[js_int(job.id), js_text(&info.default_branch), js_text(&info.remote), js_int(now())],
             )
             .await?;
             // Claim cleanup only if publication did not occur and access was lost.
@@ -748,18 +742,16 @@ async fn reconcile_copy(state: &AppState, job: &CopyJob) -> Result<bool> {
             )
             .await?;
             if discard.is_some() {
-                return clean_copy(state, &artifacts, job).await;
+                return clean_copy(state, &storage, job).await;
             }
         }
     }
     Ok(false)
 }
 
-async fn clean_copy(state: &AppState, artifacts: &JsValue, job: &CopyJob) -> Result<bool> {
-    if let Err(error) = artifact_delete(artifacts, &job.artifacts_repo).await {
-        if artifact_error(&error) != ArtifactError::Missing {
-            return Ok(true);
-        }
+async fn clean_copy(state: &AppState, storage: &GitStorage, job: &CopyJob) -> Result<bool> {
+    if storage.delete(&job.storage_id).await.is_err() {
+        return Ok(true);
     }
     db::run(
         &state.db()?,
@@ -768,76 +760,4 @@ async fn clean_copy(state: &AppState, artifacts: &JsValue, job: &CopyJob) -> Res
     )
     .await?;
     Ok(false)
-}
-
-#[derive(PartialEq, Eq)]
-enum ArtifactError {
-    Pending,
-    Missing,
-    Collision,
-    Rejected,
-    Unknown,
-}
-
-fn artifacts_binding(state: &AppState) -> JsValue {
-    js_sys::Reflect::get(state.env.as_ref(), &js_text("ARTIFACTS")).unwrap_or(JsValue::UNDEFINED)
-}
-
-fn artifact_field(value: &JsValue, key: &str) -> Option<String> {
-    js_sys::Reflect::get(value, &js_text(key)).ok()?.as_string().filter(|value| !value.is_empty())
-}
-
-fn artifact_error(error: &JsValue) -> ArtifactError {
-    match artifact_field(error, "code").as_deref() {
-        Some("IMPORT_IN_PROGRESS" | "FORK_IN_PROGRESS") => ArtifactError::Pending,
-        Some("NOT_FOUND") => ArtifactError::Missing,
-        Some("ALREADY_EXISTS") => ArtifactError::Collision,
-        Some("INVALID_INPUT" | "INVALID_REPO_NAME" | "INVALID_URL" | "REMOTE_AUTH_REQUIRED" | "UPSTREAM_UNAVAILABLE" | "MEMORY_LIMIT") => ArtifactError::Rejected,
-        _ => ArtifactError::Unknown,
-    }
-}
-
-// Preserve structured errors across the JS boundary and release both RPC
-// handles promptly. The binding's initial token is intentionally discarded.
-#[wasm_bindgen(inline_js = r#"
-export async function shard_artifact_start(binding, name, description, sourceRepo, sourceUrl) {
-    const opts = { description, readOnly: false };
-    if (!sourceRepo) {
-        await binding.import({ source: { url: sourceUrl }, target: { name, opts } });
-        return;
-    }
-    const repo = await binding.get(sourceRepo);
-    try {
-        await repo.fork(name, { ...opts, defaultBranchOnly: false });
-    } finally {
-        repo[Symbol.dispose]?.();
-    }
-}
-export async function shard_artifact_info(binding, name) {
-    const repo = await binding.get(name);
-    try {
-        return await repo.info();
-    } finally {
-        repo[Symbol.dispose]?.();
-    }
-}
-export async function shard_artifact_delete(binding, name) {
-    await binding.delete(name);
-}
-"#)]
-extern "C" {
-    #[wasm_bindgen(catch, js_name = shard_artifact_start)]
-    async fn artifact_start(
-        binding: &JsValue,
-        name: &str,
-        description: &str,
-        source_repo: &str,
-        source_url: &str,
-    ) -> std::result::Result<(), JsValue>;
-
-    #[wasm_bindgen(catch, js_name = shard_artifact_info)]
-    async fn artifact_info(binding: &JsValue, name: &str) -> std::result::Result<JsValue, JsValue>;
-
-    #[wasm_bindgen(catch, js_name = shard_artifact_delete)]
-    async fn artifact_delete(binding: &JsValue, name: &str) -> std::result::Result<(), JsValue>;
 }

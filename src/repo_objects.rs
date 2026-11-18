@@ -1,4 +1,4 @@
-use crate::artifacts::{Artifacts, BlobRead, Commit, RepoHandle, is_object_id};
+use crate::git_storage::{is_object_id, BlobRead, Commit, RepoHandle};
 use crate::ctx::AppState;
 use crate::handlers::common::{can_admin, not_found, page_title, visible_repo};
 use crate::i18n::{CommonText, RepoObjectText, RepoText};
@@ -62,7 +62,7 @@ async fn load_commit(ctx: &RouteContext<AppState>) -> std::result::Result<(Repo,
     if !is_object_id(hash) {
         return Err(ObjectError::CommitMissing);
     }
-    let handle = Artifacts::from_env(&ctx.data.env)?.get(&repo.artifacts_repo).await?;
+    let handle = RepoHandle::open(&ctx.data.env, &repo).await?;
     let commit = handle.read_commit(hash).await?.ok_or(ObjectError::CommitMissing)?;
     Ok((repo, handle, commit))
 }

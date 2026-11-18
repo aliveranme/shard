@@ -1,5 +1,5 @@
 use super::common::{can_admin, not_found, page_title, visible_repo};
-use crate::artifacts::{Artifacts, Commit, RepoHandle, TreeEntry};
+use crate::git_storage::{Commit, GitBackend, GitStorage, RepoHandle, TreeEntry};
 use crate::ctx::AppState;
 use crate::crypto;
 use crate::db;
@@ -12,10 +12,7 @@ use crate::templates::{
     SettingsPage,
 };
 use crate::util;
-use js_sys::Uint8Array;
 use std::borrow::Cow;
-use wasm_bindgen_futures::JsFuture;
-use worker::web_sys::Blob;
 use worker::*;
 
 const PREVIEW_BYTES: usize = 256 * 1024;
@@ -76,25 +73,23 @@ pub async fn create(_req: Request, ctx: RouteContext<AppState>) -> Result<Respon
         return invalid(RepoText::DuplicateName);
     }
 
-    let artifacts = match Artifacts::from_env(&state.env) {
-        Ok(a) => a,
+    let storage = GitBackend::selected(&state.env)
+        .and_then(|backend| Ok((backend, GitStorage::from_env(&state.env, backend)?)));
+    let (backend, storage) = match storage {
+        Ok(storage) => storage,
         Err(error) => return invalid(log_failure("initialize repository storage", error, RepoText::CreateFailed)),
     };
-    // Internal Artifacts name is opaque and immutable; the forge-facing name can change later.
-    let internal = format!(
-        "shard-{}-{}",
-        name.to_lowercase().replace(['.', '_'], "-"),
-        &crypto::random_token()?[..10]
-    );
-    let created = match artifacts.create(&internal, &description).await {
+    // Storage identity stays stable across repository renames and transfers.
+    let internal = format!("shard-{}", &crypto::random_token()?[..32]);
+    let created = match storage.create(&internal, &description).await {
         Ok(created) => created,
         Err(error) => return invalid(log_failure("create repository storage", error, RepoText::CreateFailed)),
     };
 
     let inserted = db::run(
         &database,
-        "INSERT INTO repos (owner_id, name, description, default_branch, artifacts_repo, artifacts_remote, visibility, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO repos (owner_id, name, description, default_branch, artifacts_repo, artifacts_remote, visibility, created_at, updated_at, git_backend)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         &[
             util::js_int(user.id),
             util::js_text(&name),
@@ -105,13 +100,14 @@ pub async fn create(_req: Request, ctx: RouteContext<AppState>) -> Result<Respon
             util::js_text(if private { "private" } else { "public" }),
             util::js_int(util::now()),
             util::js_int(util::now()),
+            util::js_text(backend.name()),
         ],
     )
     .await;
 
     if let Err(error) = inserted {
-        if let Err(cleanup_error) = artifacts.delete(&created.name).await {
-            console_log!("repository rollback failed: {cleanup_error}");
+        if let Err(cleanup_error) = storage.delete(&created.name).await {
+            console_log!("repository rollback failed: {cleanup_error:?}");
         }
         return invalid(log_failure("insert repository", error, RepoText::CreateFailed));
     }
@@ -141,19 +137,6 @@ fn branch_choices(default: &str, current: &str) -> Vec<String> {
     }
 }
 
-async fn storage_handle(state: &AppState, repository: &str) -> Result<RepoHandle> {
-    Artifacts::from_env(&state.env)?.get(repository).await
-}
-
-async fn file_blob(state: &AppState, repository: &str, branch: &str, path: &str) -> Result<Option<Blob>> {
-    storage_handle(state, repository).await?.read_file(branch, path).await
-}
-
-async fn blob_bytes(blob: &Blob) -> Result<Vec<u8>> {
-    let buffer = JsFuture::from(blob.array_buffer()).await.map_err(Error::from)?;
-    Ok(Uint8Array::new(&buffer).to_vec())
-}
-
 fn requested_path(ctx: &RouteContext<AppState>) -> Option<Cow<'_, str>> {
     // Worker routing leaves wildcard path parameters percent-encoded.
     urlencoding::decode(ctx.param("path").map_or("", String::as_str)).ok()
@@ -170,7 +153,7 @@ pub async fn references(_req: Request, ctx: RouteContext<AppState>) -> Result<Re
     let Some(repo) = visible_repo(state, owner, name).await? else {
         return repository_not_found(state);
     };
-    let loaded = match storage_handle(state, &repo.artifacts_repo).await {
+    let loaded = match RepoHandle::open(&state.env, &repo).await {
         Ok(handle) => refs::load(&handle).await,
         Err(_) => Err(RefsError::Unavailable),
     };
@@ -210,7 +193,7 @@ pub async fn tree(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
     let branches = branch_choices(&repo.default_branch, &branch);
 
     let loaded = async {
-        let handle = storage_handle(&state, &repo.artifacts_repo).await?;
+        let handle = RepoHandle::open(&state.env, &repo).await?;
         let Some((entries, commit)) = load_dir(&handle, &branch, &path).await? else {
             return Ok(None);
         };
@@ -221,7 +204,7 @@ pub async fn tree(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
         Ok(Some((entries, commit, readme)))
     }
     .await;
-    let (files, last_commit, readme, artifacts_error) = match loaded {
+    let (files, last_commit, readme, storage_notice) = match loaded {
         Ok(Some((entries, commit, readme))) => (
             entries.into_iter().map(|entry| file_row_at(entry, &path)).collect(),
             commit.map(commit_row),
@@ -253,7 +236,7 @@ pub async fn tree(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
         files,
         readme,
         last_commit,
-        artifacts_error,
+        storage_notice,
         clone_url,
         is_owner,
     };
@@ -275,18 +258,13 @@ pub async fn file(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
     let branch_url = util::url_path(&branch);
     let is_owner = can_admin(&state, &repo);
     let preview = async {
-        let Some(blob) = file_blob(&state, &repo.artifacts_repo, &branch, &path).await? else {
+        let handle = RepoHandle::open(&state.env, &repo).await?;
+        let Some(file) = handle.read_file(&branch, &path, Some(PREVIEW_BYTES)).await? else {
             return Ok(None);
         };
-        let size = blob.size() as u64;
-        let truncated = size > PREVIEW_BYTES as u64;
-        let prefix = if truncated {
-            blob.slice_with_f64_and_f64(0.0, PREVIEW_BYTES as f64)
-                .map_err(Error::from)?
-        } else {
-            blob
-        };
-        Ok(Some((blob_bytes(&prefix).await?, size, truncated)))
+        let size = file.size();
+        let bytes = file.bytes(PREVIEW_BYTES).await?;
+        Ok(Some((bytes, size, size > PREVIEW_BYTES as u64)))
     }.await;
     let (bytes, size, truncated) = match preview {
         Ok(Some(preview)) => preview,
@@ -328,8 +306,11 @@ pub async fn raw(req: Request, ctx: RouteContext<AppState>) -> Result<Response> 
     };
     let branch = util::query_param(&req, "branch")
         .unwrap_or_else(|| repo.default_branch.clone());
-    let blob = match file_blob(&state, &repo.artifacts_repo, &branch, &path).await {
-        Ok(Some(blob)) => blob,
+    let file = async {
+        RepoHandle::open(&state.env, &repo).await?.read_file(&branch, &path, None).await
+    }.await;
+    let file = match file {
+        Ok(Some(file)) => file,
         Ok(None) => return not_found(&state, state.locale.t(RepoText::FileNotFound)),
         Err(error) => return storage_error(&state, "read raw file", error),
     };
@@ -343,7 +324,7 @@ pub async fn raw(req: Request, ctx: RouteContext<AppState>) -> Result<Response> 
         format!("inline; filename*=UTF-8''{}", urlencoding::encode(filename))
     };
     headers.set("Content-Disposition", &disposition)?;
-    Ok(Response::from_body(ResponseBody::Stream(blob.stream()))?.with_headers(headers))
+    Ok(file.into_response()?.with_headers(headers))
 }
 
 pub async fn commits(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
@@ -359,11 +340,11 @@ pub async fn commits(req: Request, ctx: RouteContext<AppState>) -> Result<Respon
         return crate::templates::error_response(&Chrome::new(&state), 400, state.locale.t(RepoText::InvalidCursor));
     }
     let is_owner = can_admin(&state, &repo);
-    let handle = match storage_handle(&state, &repo.artifacts_repo).await {
+    let handle = match RepoHandle::open(&state.env, &repo).await {
         Ok(handle) => handle,
         Err(error) => return storage_error(&state, "open commit history", error),
     };
-    // Artifacts log accepts a commit hash as its ref and walks first parents.
+    // The Git backend accepts a commit hash as its ref and walks first parents.
     // The extra commit is the inclusive start of the next page, so every call
     // reads at most 21 commits regardless of how far back the history goes.
     let mut history = match handle.log(start.as_deref().unwrap_or(&branch), (PAGE_SIZE + 1) as u32).await {
@@ -453,7 +434,7 @@ pub async fn update_settings(_req: Request, ctx: RouteContext<AppState>) -> Resu
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| repo.default_branch.clone());
     if default_branch != repo.default_branch {
-        let inventory = match storage_handle(&state, &repo.artifacts_repo).await {
+        let inventory = match RepoHandle::open(&state.env, &repo).await {
             Ok(handle) => refs::load(&handle).await,
             Err(error) => {
                 console_log!("repository: verify web default branch: {error}");
@@ -510,15 +491,17 @@ pub async fn delete(_req: Request, ctx: RouteContext<AppState>) -> Result<Respon
     if confirmation != repo.name {
         return util::redirect(&format!("{settings_url}?error=confirm-deletion"));
     }
-    let deleted = async {
-        Artifacts::from_env(&state.env)?.delete(&repo.artifacts_repo).await
-    }.await;
-    if let Err(error) = deleted {
-        console_log!("repository: delete Git storage: {error}");
+    let storage = match GitStorage::from_env(&state.env, repo.git_backend) {
+        Ok(storage) => storage,
+        Err(error) => {
+            console_log!("repository: initialize Git storage for deletion: {error}");
+            return util::redirect(&format!("{settings_url}?error=delete-storage-failed"));
+        }
+    };
+    if let Err(error) = storage.delete(&repo.storage_id).await {
+        console_log!("repository: delete Git storage: {error:?}");
         return util::redirect(&format!("{settings_url}?error=delete-storage-failed"));
     }
-    // A false result means Git storage is already absent, allowing a retry
-    // after storage deletion succeeded but a previous D1 deletion failed.
     let deleted = async {
         let database = state.db()?;
         db::run(&database, "DELETE FROM repos WHERE id = ?", &[util::js_int(repo.id)]).await
@@ -562,9 +545,13 @@ async fn load_dir(
 
 async fn load_readme(handle: &RepoHandle, commit: &str) -> Option<String> {
     for candidate in ["README.md", "readme.md", "Readme.md", "README"] {
-        let content = match handle.read_file(commit, candidate).await {
-            Ok(Some(blob)) if blob.size() <= PREVIEW_BYTES as f64 => blob_bytes(&blob).await,
-            Ok(_) => continue,
+        let content = match handle.read_file(commit, candidate, Some(PREVIEW_BYTES)).await {
+            Ok(Some(file)) if file.size() <= PREVIEW_BYTES as u64 => file.bytes(PREVIEW_BYTES).await,
+            Ok(Some(file)) => {
+                file.discard();
+                continue;
+            }
+            Ok(None) => continue,
             Err(error) => Err(error),
         };
         match content {

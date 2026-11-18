@@ -1,14 +1,12 @@
 //! Git smart-HTTP proxy.
 //!
-//! Shard never stores objects itself: it authenticates the git client, mints a
-//! short-lived Artifacts repo token and streams the request to the repository's
-//! Artifacts remote. Clone URLs stay on the forge domain.
+//! Authenticate against Shard and stream Git requests to the recorded backend.
 use super::common::{RepoRole, not_found, repo_role};
-use crate::artifacts::Artifacts;
+use crate::git_storage::{GitBackend, GitStorage};
 use crate::auth;
 use crate::ctx::AppState;
 use crate::db;
-use crate::i18n::{CollaboratorText, CommonText};
+use crate::i18n::{CollaboratorText, CommonText, RepoText};
 use crate::util;
 use worker::*;
 
@@ -16,8 +14,9 @@ use worker::*;
 struct GitRepo {
     id: i64,
     owner_id: i64,
-    artifacts_repo: String,
-    artifacts_remote: String,
+    git_backend: GitBackend,
+    storage_id: String,
+    saved_remote: String,
     visibility: String,
 }
 
@@ -44,7 +43,8 @@ async fn proxy(req: Request, ctx: RouteContext<AppState>, service: &str) -> Resu
     let database = state.db()?;
     let repo: Option<GitRepo> = db::first(
         &database,
-        "SELECT r.id, r.owner_id, r.artifacts_repo, r.artifacts_remote, r.visibility
+        "SELECT r.id, r.owner_id, r.git_backend, r.artifacts_repo AS storage_id,
+            r.artifacts_remote AS saved_remote, r.visibility
            FROM repo_paths p JOIN users pu ON pu.id = p.owner_id JOIN repos r ON r.id = p.repo_id
           WHERE pu.username = ? COLLATE NOCASE AND p.name = ? COLLATE NOCASE",
         &[util::js_text(&owner), util::js_text(repo_name)],
@@ -77,42 +77,21 @@ async fn proxy(req: Request, ctx: RouteContext<AppState>, service: &str) -> Resu
         }
     }
 
-    let artifacts = match Artifacts::from_env(&state.env) {
-        Ok(artifacts) => artifacts,
-        Err(e) => return upstream_error("artifacts binding", &e),
+    let storage = match GitStorage::from_env(&state.env, repo.git_backend) {
+        Ok(storage) => storage,
+        Err(error) => return upstream_error(state, &error),
     };
-    let handle = match artifacts.get(&repo.artifacts_repo).await {
+    let handle = match storage.get(&repo.storage_id).await {
         Ok(handle) => handle,
-        Err(e) => return upstream_error("artifacts get", &e),
+        Err(error) => return upstream_error(state, &error),
     };
-    let token = match handle
-        .create_token(if write { "write" } else { "read" }, 3600)
-        .await
-    {
-        Ok(token) => token,
-        Err(e) => return upstream_error("artifacts token", &e),
-    };
-    let remote = match handle.remote().await {
-        Ok(remote) => remote,
-        Err(_) => repo.artifacts_remote.clone(),
-    };
-    if remote.is_empty() {
-        return Response::error("Artifacts remote is unavailable", 503);
-    }
-
-    let mut url = format!("{}/{}", remote.trim_end_matches('/'), service);
-    if !query.is_empty() {
-        url.push('?');
-        url.push_str(query);
-    }
 
     let headers = Headers::new();
-    for name in ["content-type", "accept", "git-protocol", "user-agent"] {
+    for name in ["content-type", "content-encoding", "accept", "git-protocol", "user-agent"] {
         if let Some(value) = util::header(&req, name) {
             headers.set(name, &value)?;
         }
     }
-    headers.set("Authorization", &format!("Bearer {token}"))?;
 
     let method = req.method();
     // Forward the original Workers stream without copying pack data into Wasm.
@@ -126,19 +105,12 @@ async fn proxy(req: Request, ctx: RouteContext<AppState>, service: &str) -> Resu
         body,
         headers,
         method,
-        redirect: RequestRedirect::Manual,
         ..Default::default()
     };
-    let outbound = match Request::new_with_init(&url, &init) {
-        Ok(request) => request,
-        Err(e) => return upstream_error("git request", &e),
-    };
-    let mut upstream = match Fetch::Request(outbound).send().await {
+    let upstream = match handle.git_request(service, query, write, &repo.saved_remote, init).await {
         Ok(response) => response,
-        Err(e) => return upstream_error("git fetch", &e),
+        Err(error) => return upstream_error(state, &error),
     };
-
-    let status = upstream.status_code();
     let response_headers = Headers::new();
     for name in [
         "content-type",
@@ -154,15 +126,14 @@ async fn proxy(req: Request, ctx: RouteContext<AppState>, service: &str) -> Resu
     if private {
         response_headers.set("Cache-Control", "no-store")?;
     }
-    let stream = upstream.stream()?;
-    Ok(Response::from_stream(stream)?
-        .with_status(status)
-        .with_headers(response_headers))
+    Ok(upstream.with_headers(response_headers))
 }
 
-fn upstream_error(stage: &str, error: &Error) -> Result<Response> {
-    console_log!("git proxy: {stage}: {error}");
-    Response::error(format!("{stage}: {error}"), 502)
+fn upstream_error(state: &AppState, error: &Error) -> Result<Response> {
+    console_log!("git proxy: {error}");
+    let mut response = Response::error(state.locale.t(RepoText::StorageUnavailable), 502)?;
+    response.headers_mut().set("Cache-Control", "no-store")?;
+    Ok(response)
 }
 
 fn hidden_repo() -> Result<Response> {

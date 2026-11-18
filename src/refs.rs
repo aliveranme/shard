@@ -1,4 +1,4 @@
-use crate::artifacts::{is_object_id, RepoHandle};
+use crate::git_storage::{is_object_id, RepoHandle};
 use crate::models::Repo;
 use crate::templates::Chrome;
 use askama::Template;
@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use worker::web_sys::ReadableStreamDefaultReader;
-use worker::{Fetch, Headers, Method, Request, RequestInit, RequestRedirect, ResponseBody};
+use worker::{Headers, RequestInit, ResponseBody};
 
 const MAX_BYTES: usize = 256 * 1024;
 const MAX_RECORDS: usize = 512;
@@ -54,22 +54,15 @@ fn unavailable(stage: &str) -> RefsError {
 }
 
 pub(crate) async fn load(handle: &RepoHandle) -> Result<Inventory, RefsError> {
-    let remote = handle.remote().await.map_err(|_| unavailable("resolve remote"))?;
-    let token = handle.create_token("read", 3600).await.map_err(|_| unavailable("mint read token"))?;
-    let url = format!("{}/info/refs?service=git-upload-pack", remote.trim_end_matches('/'));
     let headers = Headers::new();
-    headers.set("Authorization", &format!("Bearer {token}")).map_err(|_| unavailable("set authorization header"))?;
     headers.set("Accept", ADVERTISEMENT).map_err(|_| unavailable("set accept header"))?;
     // Omit Git-Protocol so upload-pack advertises refs directly, without v2 negotiation.
     let init = RequestInit {
-        method: Method::Get,
         headers,
-        // Workers supports manual and follow. The status check below rejects redirects.
-        redirect: RequestRedirect::Manual,
         ..Default::default()
     };
-    let request = Request::new_with_init(&url, &init).map_err(|_| unavailable("construct discovery request"))?;
-    let response = Fetch::Request(request).send().await.map_err(|_| unavailable("fetch advertisement"))?;
+    let response = handle.git_request("info/refs", "service=git-upload-pack", false, "", init)
+        .await.map_err(|_| unavailable("fetch advertisement"))?;
     let status = response.status_code();
     if status != 200 {
         worker::console_log!("repository references: advertisement returned HTTP {status}");

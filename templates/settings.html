@@ -62,7 +62,7 @@
         <div class="card card--warm">
           <h2 class="card__title">{{ chrome.locale.t(crate::i18n::RepoText::GitStorage) }}</h2>
           <p class="card__sub">{{ chrome.locale.t(crate::i18n::RepoText::StorageHelp) }}</p>
-          <div class="token-value"><code>{{ repo.artifacts_repo }}</code></div>
+          <div class="token-value">{{ chrome.locale.t(repo.git_backend.label()) }} · <code>{{ repo.storage_id }}</code></div>
         </div>
       </section>
 

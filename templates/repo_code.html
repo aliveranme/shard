@@ -26,7 +26,7 @@
         </div>
       </div>
 
-      {% if let Some(note) = artifacts_error %}
+      {% if let Some(note) = storage_notice %}
         <div class="alert alert--warn" role="alert">
           {{ note }}
         </div>
@@ -42,15 +42,15 @@
         </div>
       {% endif %}
 
-      {% if files.is_empty() && artifacts_error.is_none() && !crumbs.is_empty() %}
+      {% if files.is_empty() && storage_notice.is_none() && !crumbs.is_empty() %}
         <div class="card empty">
           <h2 class="empty__title">{{ chrome.locale.t(crate::i18n::RepoText::EmptyDirectory) }}</h2>
         </div>
-      {% else if files.is_empty() && artifacts_error.is_none() && branch.as_str() != repo.default_branch.as_str() %}
+      {% else if files.is_empty() && storage_notice.is_none() && branch.as_str() != repo.default_branch.as_str() %}
         <div class="card empty">
           <h2 class="empty__title">{{ chrome.locale.t(crate::i18n::RepoText::EmptyBranch) }}</h2>
         </div>
-      {% else if files.is_empty() && artifacts_error.is_none() %}
+      {% else if files.is_empty() && storage_notice.is_none() %}
         <div class="card card--warm empty" style="margin-top:22px;text-align:left">
           <h2 class="empty__title">{{ chrome.locale.t(crate::i18n::RepoText::EmptyRepository) }}</h2>
           <p class="muted" style="margin-bottom:16px">{{ chrome.locale.t(crate::i18n::RepoText::PushBranch) }}</p>

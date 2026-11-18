@@ -2,14 +2,16 @@
 
 ## Project and scope
 
-Shard is a Rust Git forge on Cloudflare Workers. D1 stores forge metadata; Cloudflare Artifacts stores Git repositories. Askama renders the HTML; `static/css/shard.css` is the shared stylesheet. Read `README.md`, `STATUS.md` and `DESIGN.md` before changing behavior. Preserve unrelated local changes. Never deploy, create paid resources, or delete user data without an explicit request.
+Shard is a Rust Git forge on Cloudflare Workers. D1 stores forge metadata. Git uses Cloudflare Artifacts by default or an optional native Git origin. Askama renders the HTML and `static/css/shard.css` is the shared stylesheet. Read `README.md`, `STATUS.md` and `DESIGN.md` before changing behavior. Preserve unrelated local changes. Never deploy, create paid resources, or delete user data without an explicit request.
 
 ## Architecture
 
 - `src/lib.rs`: Worker events and route registration.
 - `src/ctx.rs` holds request-scoped authentication, locale, CSRF token and parsed form data.
 - `src/handlers/`: HTTP behavior and authorization; use the existing `common`, `db`, `auth` and `util` helpers.
-- `src/artifacts.rs`: the Artifacts binding boundary. The binding has no merge, branch enumeration or object-write API. Do not invent unsupported functionality.
+- `src/git_storage.rs`: shared Git backend boundary. Persist the backend with its repository and copy jobs.
+- `src/artifacts.rs`: the Artifacts binding adapter. The binding has no merge, branch enumeration or object-write API.
+- `src/native_git.rs` and `scripts/git-origin.mjs`: authenticated native Git transport and bare-repository management.
 - `src/templates.rs` and `templates/`: typed page models and autoescaped HTML. Only render sanitized Markdown as safe HTML.
 - `src/i18n/` defines typed interface messages. Add user-facing UI text, accessibility labels, and browser errors to the matching catalog with both translations. Keep interpolated phrases whole.
 - `migrations/`: append forward-only D1 migrations; never rewrite an applied migration.
@@ -32,7 +34,7 @@ Use the pinned mise toolchain. Standard commands:
 - `mise run lint` runs Clippy for the wasm Worker. `mise run fmt` runs rustfmt.
 - `mise run build`: produce the Worker bundle.
 - `mise run dev`: run the local simulator at `http://localhost:8787`.
-- `mise run test`: run the HTTP regression suite against an isolated local simulator.
+- `mise run test` runs isolated HTTP and real Git regressions for both storage modes.
 - `mise run deploy` and Cloudflare Workers Builds use `npm run deploy` to apply
   migrations to the `DB` binding and publish the Worker. See [README.md](README.md#deploy-to-cloudflare).
 

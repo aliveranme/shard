@@ -1,6 +1,6 @@
 use super::common::{can_admin, forbidden, not_found, page_title, visible_repo};
 use super::common::can_write;
-use crate::artifacts::{is_object_id, Artifacts};
+use crate::git_storage::{is_object_id, RepoHandle};
 use crate::ctx::AppState;
 use crate::db;
 use crate::i18n::{CommonText, DiscussionText, Locale};
@@ -218,10 +218,7 @@ async fn create(_req: Request, ctx: RouteContext<AppState>, kind: &str) -> Resul
     }
 
     let snapshot = if kind == "pull" {
-        let comparison = async {
-            Artifacts::from_env(&state.env)?.get(&repo.artifacts_repo).await
-        }.await;
-        let handle = match comparison {
+        let handle = match RepoHandle::open(&state.env, &repo).await {
             Ok(handle) => handle,
             Err(error) => {
                 console_log!("pull request setup: could not open Git repository: {error}");
@@ -380,7 +377,7 @@ async fn detail(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result
         let selected = util::query_param(&req, "file");
         let snapshot = viewed.as_ref().map_or(&pull.snapshot, |(_, snapshot)| snapshot);
         let comparison = async {
-            let handle = Artifacts::from_env(&state.env)?.get(&repo.artifacts_repo).await?;
+            let handle = RepoHandle::open(&state.env, &repo).await?;
             if current_open {
                 match pull_base::branch_tips(&handle, &pull.base_branch, &pull.head_branch).await {
                     Ok((base, head)) => {

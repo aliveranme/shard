@@ -16,7 +16,7 @@ catalog! {
         SignOut => "Sign out", "退出登录";
         SignIn => "Sign in", "登录";
         CreateAccount => "Create account", "创建账号";
-        HostedOn => "Self-hosted on Cloudflare Workers, D1 and Artifacts", "基于 Cloudflare Workers、D1 与 Artifacts 自托管";
+        HostedOn => "Self-hosted on Cloudflare Workers", "自托管于 Cloudflare Workers";
         Language => "Language", "语言";
         Search => "Search", "搜索";
         SearchDiscussion => "Search titles, descriptions and comments", "搜索标题、描述和评论";

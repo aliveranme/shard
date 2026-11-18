@@ -10,7 +10,7 @@
     "directory": "./static",
     "binding": "ASSETS"
   },
-  // Git storage: every shard repo is an Artifacts repo in this namespace.
+  // Default Git storage for the Cloudflare deploy button and local simulator.
   "artifacts": [
     { "binding": "ARTIFACTS", "namespace": "shard" }
   ],
@@ -33,5 +33,26 @@
   "observability": {
     "enabled": true,
     "logs": { "invocation_logs": false }
+  },
+  "env": {
+    "native": {
+      "vars": {
+        "GIT_BACKEND": "native",
+        "NATIVE_GIT_ORIGIN": "http://127.0.0.1:8793"
+      },
+      "secrets": { "required": ["NATIVE_GIT_TOKEN"] },
+      "artifacts": [],
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "shard-native",
+          "database_id": "00000000-0000-0000-0000-000000000000",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "ratelimits": [
+        { "name": "REQUEST_LIMITER", "namespace_id": "2002", "simple": { "limit": 300, "period": 60 } }
+      ]
+    }
   }
 }

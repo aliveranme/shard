@@ -9,10 +9,10 @@ catalog! {
         NoMatchingRepositories => "No matching repositories", "没有匹配的仓库";
         TryAnotherSearch => "Try a different search.", "请尝试更换搜索关键词。";
         WorkHeadline => "Your work, at the edge.", "边缘上的开发空间";
-        WorkIntro => "Repositories, issues and pull requests in one place. Git lives in Cloudflare Artifacts and metadata sits in D1.", "在同一处管理仓库、议题和合并请求。Git 存储在 Cloudflare Artifacts，元数据存储在 D1。";
+        WorkIntro => "Manage your repositories, issues and pull requests in one place.", "在同一处管理仓库、议题和合并请求。";
         GuestEyebrow => "Self-hosted Git on Cloudflare", "在 Cloudflare 自托管 Git";
         GuestHeadline => "Ship code. Keep the forge.", "自主托管代码";
-        GuestIntro => "A Git forge with issues and pull requests, built on Workers, Artifacts and D1.", "基于 Workers、Artifacts 和 D1 的 Git 托管平台，支持议题和合并请求。";
+        GuestIntro => "A self-hosted Git forge for repositories, issues and pull requests.", "支持仓库、议题和合并请求的自托管 Git 平台。";
         RecentProjects => "Recently updated projects", "最近更新的项目";
         RecentRepositoriesIntro => "Browse your repositories and public projects, most recently updated first.", "浏览你的仓库和公开项目，最近更新的项目在前。";
         PublicProjectsIntro => "Browse public projects, most recently updated first.", "浏览公开项目，最近更新的项目在前。";

@@ -1,4 +1,4 @@
-use crate::artifacts::{is_object_id, Artifacts, RepoHandle};
+use crate::git_storage::{is_object_id, RepoHandle};
 use crate::ctx::AppState;
 use crate::db;
 use crate::handlers::common::{can_write, forbidden, not_found, visible_repo};
@@ -118,7 +118,7 @@ async fn mutate(ctx: RouteContext<AppState>, operation: Operation) -> Result<Res
     if !issue.is_open() {
         return conflict();
     }
-    let handle = Artifacts::from_env(&state.env)?.get(&repo.artifacts_repo).await?;
+    let handle = RepoHandle::open(&state.env, &repo).await?;
     let Comparison::Complete(files) = pull_diff::compare(&handle, diff_base, head).await? else {
         return conflict();
     };
@@ -167,7 +167,7 @@ async fn refresh_comparison(
     pull: &Pull,
     actor: i64,
 ) -> Result<Response> {
-    let handle = match Artifacts::from_env(&state.env)?.get(&repo.artifacts_repo).await {
+    let handle = match RepoHandle::open(&state.env, repo).await {
         Ok(handle) => handle,
         Err(cause) => {
             console_log!("pull comparison: could not open Git repository: {cause}");
@@ -235,7 +235,7 @@ async fn record_merge(
         return error(state, 409, DiscussionText::ReviewConflict);
     };
     let verified = async {
-        let handle = Artifacts::from_env(&state.env)?.get(&repo.artifacts_repo).await?;
+        let handle = RepoHandle::open(&state.env, repo).await?;
         integrated_tip(&handle, &pull.base_branch, base, head).await
     }.await;
     let tip = match verified {

@@ -1,4 +1,4 @@
-use crate::artifacts::{is_object_id, RepoHandle};
+use crate::git_storage::{is_object_id, RepoHandle};
 use crate::i18n::DiscussionText;
 use crate::refs::{self, RefsError};
 use std::collections::{HashMap, VecDeque};

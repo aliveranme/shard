@@ -6,7 +6,7 @@ use wasm_bindgen::JsValue;
 use worker::*;
 
 pub const REPO_COLUMNS: &str = "r.id, r.owner_id, u.username AS owner_name, r.name, r.description,
-    r.default_branch, r.artifacts_repo, r.visibility, r.next_issue_number, r.forked_from,
+    r.default_branch, r.git_backend, r.artifacts_repo AS storage_id, r.visibility, r.next_issue_number, r.forked_from,
     r.created_at, r.updated_at,
     (SELECT COUNT(*) FROM issues i WHERE i.repo_id = r.id AND i.kind = 'issue' AND i.state = 'open') AS open_issues,
     (SELECT COUNT(*) FROM issues i WHERE i.repo_id = r.id AND i.kind = 'pull' AND i.state = 'open') AS open_pulls";

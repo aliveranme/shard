@@ -43,8 +43,9 @@ jobs:
         run: |
           package_name="shard-${RELEASE_TAG}-worker"
           export PACKAGE_DIR="$RUNNER_TEMP/$package_name"
-          mkdir -p "$PACKAGE_DIR" "$RUNNER_TEMP/release"
+          mkdir -p "$PACKAGE_DIR/scripts" "$RUNNER_TEMP/release"
           cp -R build static migrations "$PACKAGE_DIR/"
+          cp scripts/git-origin.mjs "$PACKAGE_DIR/scripts/"
           mise exec -- node <<'JS'
           const { writeFileSync } = require('node:fs');
           const { join } = require('node:path');

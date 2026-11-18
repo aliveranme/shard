@@ -3,13 +3,13 @@
 Living record of what works, what is missing, and how it was verified.
 Update this file whenever a milestone lands or a limitation changes.
 
-**Snapshot: 2026-11-18** · repository collaboration, pull request review, and operations · local development
+**Snapshot:** 2026-11-18 · selectable Git storage and release packaging · local development
 
 | Item | Value |
 |---|---|
 | Runtime | Rust 1.100.0, `worker` 0.9.0, `worker-build` 0.9.0 |
 | Tooling | Node 26.13.1, Wrangler 4.164.0, mise |
-| Storage | D1 (`shard`) + Artifacts namespace `shard` |
+| Storage | D1 with Cloudflare Artifacts by default. The `native` environment uses an authenticated Git origin with persistent disk. |
 | UI | `static/css/shard.css` implementing `DESIGN.md` |
 | Deployment | Deploy to Cloudflare and Wrangler scripts are configured. Production verification is pending. |
 | Source | [aliveranme/shard](https://github.com/aliveranme/shard) |
@@ -24,9 +24,10 @@ Update this file whenever a milestone lands or a limitation changes.
 | Access tokens | Read/write scopes, expiry and revocation, one-time secret display, last usage, and legacy credential compatibility. |
 | Repository access | Owners grant read or write access. Private visibility is enforced for Web, Git, search, downloads, and notification reads. Revocation removes access on subsequent requests. |
 | Repository lifecycle | Rename and accepted transfers preserve existing Web and Git routes. Forks preserve Git refs. The import form rejects sources outside its public HTTPS URL policy. |
-| Web default branch | Settings accept an existing Git branch and explain that clones follow the Artifacts remote `HEAD`. |
+| Web default branch | Settings accept an existing Git branch. Clones follow the Git backend's `HEAD`. |
 | Git transport | Smart HTTP request and response bodies are streamed. Private clone requires a credential, and push also requires write scope and repository write access. |
-| Code browsing | Branch and tag inventory, branch-scoped trees and files, cursor-paginated first-parent history, parent links, and commit-pinned source TAR downloads. |
+| Native Git origin | The `native` Wrangler environment passes Git push, clone, fetch, branch and tag browsing, raw downloads, pull request line diffs, and access revocation. Forked refs and files stay readable after source deletion. |
+| Code browsing | Branch and tag inventory, branch-scoped trees and files, cursor-paginated first-parent history, parent links, and commit-pinned source TAR downloads. File previews read at most 256 KiB, README rendering uses the displayed commit, and raw downloads stream full files. |
 | Pull requests | Common-ancestor file and line diffs. Authors and writers can explicitly update open comparisons. Review links retain the saved diff and line. Writers can verify integration after pushing a merge. |
 | Issues and search | Edit, label, assign, milestone, close/reopen, and search across titles, bodies, and comments. Paginated discussions preserve actor attribution. |
 | Notifications and integrations | Permission-aware inbox, one current CI result per commit and context, and signed webhook retries using stable event IDs. |
@@ -38,12 +39,12 @@ Update this file whenever a milestone lands or a limitation changes.
 
 | Area | Requirement |
 |---|---|
-| Deployment | End-to-end deployment requires Workers Paid with Artifacts access. Verify the hosted build, live Git operations, public imports, scheduled delivery, and restore in staging. |
+| Deployment | Artifacts staging needs Workers Paid and an Artifacts namespace. Native staging needs an HTTPS Git origin and a persistent volume. Hosted builds, production Git operations, public imports, scheduled delivery and restore still need staging verification. |
 | Email | An onboarded sending domain, an `EMAIL` binding, and an available mailbox to verify real delivery. |
 | Merge automation | Web merges, protected refs and merge queues need a component that can update a validated target ref atomically. Current merge verification relies on reachable commit IDs. |
 | Repository search | Code and commit search require a bounded permission-aware index. A push event subscription can drive ingestion, with staging needed to exercise push delivery. |
 | Forge workflows | Organizations, teams, releases, issue templates, reactions, and watch/star controls. |
-| Git protocol | Verify shallow and partial clones on Artifacts. LFS and receive-pack v2 depend on provider support. |
+| Git protocol | Verify shallow and partial clones on Artifacts. Shard's Git HTTPS remote does not expose an LFS Batch API. Verify production Artifacts separately. |
 | Operations | Public deployment metrics, webhook retention, token-list pagination, and further CSP tightening after moving inline styles. |
 | UI | Dark theme needs a corresponding design specification. |
 
@@ -60,12 +61,11 @@ Architecture decisions and provider evidence are recorded in [PLAN.md](PLAN.md).
 ## Technical debt / risks
 
 - `Router` is rebuilt per request; routes allocate strings. Move to a cached router with request-scoped state.
-- Repository create is not transactional across Artifacts + D1: Artifacts repo is deleted best-effort if the D1 insert fails.
-- Repository deletion spans Artifacts and D1; if D1 fails after storage deletion succeeds, metadata can remain for a deleted repository.
+- Repository creation and deletion span D1 and Git storage. Creation attempts to remove storage after a failed metadata insert. Deletion can leave metadata if D1 fails after storage has been removed.
 - PR comparisons bound ancestry reads, tree depth, entry count and tree reads. Historical diffs require the original Git objects to remain available.
 - Token lists remain unpaginated; accounts with many tokens can produce large settings pages.
 - Request IDs link client responses to handler errors. Production latency, Git transfer size and throttling metrics still need live measurements.
-- Claims of "public read" rely on the proxy; the Artifacts remote URL/token never reaches clients.
+- The Worker mediates repository access. Git clients receive neither the Artifacts repository token nor the native origin's shared secret.
 
 ## Verification log
 
@@ -108,6 +108,11 @@ Architecture decisions and provider evidence are recorded in [PLAN.md](PLAN.md).
 | 2026-11-18 | Migration 0013 and Ego Browser, desktop and 390px | Updated an existing PR from version 1 to 2 in Simplified Chinese, followed a historical comment to its original line, and verified that long lines scroll within the diff. |
 | 2026-11-18 | Clean Linux Workers Builds rehearsal and Wrangler dry run | Installed the pinned Rust/Wasm toolchain, built the bundle, resolved all four bindings, and applied all 13 migrations to an isolated D1 database with a different name. |
 | 2026-11-18 | Published GitHub README badge | Cloudflare opened the Shard configuration with a new D1 database option and prefilled `npm run build` and `npm run deploy`. |
+| 2026-11-18 | Git LFS 3.7.0 over loopback | Shard returned HTTP 400 for upload and download Batch requests. A regular push left the ref absent. After a pointer-only push, regular checkout failed during smudge and a skip-smudge clone retrieved the pointer. The local Artifacts remote returned HTTP 404 for Batch. |
+| 2026-11-18 | Wasm check and isolated HTTP/Git suite | 23 tests passed, including a bounded large-file preview, full raw bytes, binary preview and slash-named branch browsing. |
+| 2026-11-18 | Prebuilt native Worker dry run and workflow lint | The archive includes the origin script. Wrangler resolved native D1, rate limiting and static assets without an Artifacts binding. The default Artifacts regression suite still passed all 23 tests. |
+| 2026-11-18 | Independent R2 Git engine rehearsal | `durable-git` stored an 18 MiB pack in local R2. A clone after restart matched the commit ID, annotated tag and file contents. |
+| 2026-11-18 | Isolated native Git and Chromium settings | The native suite passed all 3 reported tests. The origin required its own credential, rejected an unlisted import host and preserved repository permissions through rename and revocation. English and Simplified Chinese storage settings fit 1365px and 390px widths. |
 
 ## How to update
 
