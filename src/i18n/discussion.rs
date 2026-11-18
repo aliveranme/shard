@@ -27,8 +27,13 @@ catalog! {
         ChooseHeadBranch => "Choose the branch that contains your changes.", "请选择包含你的变更的源分支。";
         BranchesMustDiffer => "Head and base branches must differ.", "源分支和目标分支不能相同。";
         GitUnavailable => "Git storage is unavailable.", "Git 存储暂不可用。";
-        ReadHeadBranchFailed => "Could not read the head branch.", "无法读取源分支。";
-        ReadBaseBranchFailed => "Could not read the base branch.", "无法读取目标分支。";
+        HeadBranchNotFound => "The source branch does not exist in this repository.", "此仓库中没有该源分支。";
+        BaseBranchNotFound => "The target branch does not exist in this repository.", "此仓库中没有该目标分支。";
+        CompareRefsLimited => "The repository exceeds the reference discovery limit.", "此仓库超出了引用读取上限。";
+        MergeBaseMissing => "Git history is incomplete. The comparison base could not be determined.", "Git 历史不完整，无法确定对比基准。";
+        MergeBaseUnrelated => "The branches have no common ancestor.", "这两个分支没有共同祖先。";
+        MergeBaseAmbiguous => "The branches have more than one best common ancestor. Merge the target into the source branch, then try again.", "这两个分支有多个最佳共同祖先。请将目标分支合入源分支后重试。";
+        MergeBaseLimited => "The common ancestor could not be determined within the Git history read limit.", "在 Git 历史读取上限内无法确定共同祖先。";
         AllocateNumberFailed => "Could not allocate an issue number.", "无法分配编号。";
         StateChangeForbidden => "Only the author or a repository owner can change this state.", "只有作者或仓库所有者可以更改此状态。";
         InvalidState => "State must be open or closed.", "状态只能是开启或已关闭。";
@@ -42,6 +47,14 @@ catalog! {
         MergeInto => "into", "合并到";
         HeadCommit => "Head commit", "源分支提交";
         BaseCommit => "Base commit", "目标分支提交";
+        MergeBase => "Common ancestor", "共同祖先";
+        BranchesAdvanced => "The source or target branch has moved. This comparison still shows the saved commits.", "源分支或目标分支已更新。当前对比仍显示已保存的提交。";
+        LegacyComparison => "This comparison uses the two saved branch tips. Updating it will compare from their common ancestor.", "当前对比使用已保存的两个分支顶端。更新后将以共同祖先为基准。";
+        RefreshComparison => "Update comparison", "更新对比";
+        RefreshForbidden => "Only the author or a repository writer can update this comparison.", "只有作者或仓库写入者可以更新此对比。";
+        RefreshIntegrated => "The target already contains the latest source commit. Verify integration from the saved comparison.", "目标分支已包含最新的源提交。请在已保存的对比中验证合并。";
+        HistoricalComparison => "Review comparison", "审查时的对比";
+        CurrentComparison => "View current comparison", "查看当前对比";
         Discussion => "Discussion", "讨论";
         LeaveComment => "Leave a comment", "发表评论";
         Comment => "Comment", "发表评论";
@@ -85,7 +98,7 @@ catalog! {
         ReviewLine => "Changed line", "变更行";
         ReviewForbidden => "Only repository writers can record a decision on another author's pull request.", "只有仓库写入者可以审查其他作者的合并请求。";
         ReviewInvalid => "Select a review decision or a changed line, with a valid comment.", "请选择审查结论或变更行，并填写有效评论。";
-        ReviewConflict => "This comparison can no longer be reviewed.", "此对比已无法审查。";
+        ReviewConflict => "This comparison can no longer be changed or reviewed. Open the current comparison and try again.", "此对比已无法更改或审查。请打开当前对比后重试。";
         VerifyMerge => "Verify merge on base branch", "验证目标分支中的合并";
         MergeForbidden => "Only repository writers can verify a merge.", "只有仓库写入者可以验证合并。";
         MergeVerified => "Verified integration in Git", "已验证提交合入 Git";
@@ -186,10 +199,10 @@ impl Locale {
         })
     }
 
-    pub fn branch_has_no_commits(self, branch: &str) -> impl Display + '_ {
+    pub fn comparison_version(self, version: &i64) -> impl Display + '_ {
         fmt::from_fn(move |f| match self {
-            Self::En => write!(f, "Branch `{branch}` has no commits in this repository."),
-            Self::ZhHans => write!(f, "此仓库中的分支 `{branch}` 没有提交记录。"),
+            Self::En => write!(f, "Comparison {version}"),
+            Self::ZhHans => write!(f, "对比版本 {version}"),
         })
     }
 }

@@ -137,11 +137,27 @@ pub struct Pull {
     pub issue_id: i64,
     pub head_branch: String,
     pub base_branch: String,
-    pub head_commit: Option<String>,
-    pub base_commit: Option<String>,
+    #[serde(flatten)]
+    pub snapshot: PullSnapshot,
     pub merged: i64,
     pub merged_at: Option<Ts>,
     pub merge_commit: Option<String>,
+}
+
+#[derive(Clone, Deserialize)]
+pub struct PullSnapshot {
+    pub head_commit: Option<String>,
+    pub base_commit: Option<String>,
+    pub merge_base: Option<String>,
+    pub comparison_version: i64,
+}
+
+impl PullSnapshot {
+    pub fn diff_tips(&self) -> Option<(&str, &str)> {
+        let base = self.base_commit.as_deref()?;
+        let head = self.head_commit.as_deref()?;
+        Some((self.merge_base.as_deref().unwrap_or(base), head))
+    }
 }
 
 #[derive(Clone, Deserialize)]

@@ -27,7 +27,7 @@ Update this file whenever a milestone lands or a limitation changes.
 | Web default branch | Settings accept an existing Git branch and explain that clones follow the Artifacts remote `HEAD`. |
 | Git transport | Smart HTTP request and response bodies are streamed. Private clone requires a credential, and push also requires write scope and repository write access. |
 | Code browsing | Branch and tag inventory, branch-scoped trees and files, cursor-paginated first-parent history, parent links, and commit-pinned source TAR downloads. |
-| Pull requests | Fixed commit pair, bounded file and line diffs, explicit missing and limited states, review decisions and comments on changed lines. Writers can verify integration after pushing a merge. |
+| Pull requests | Common-ancestor file and line diffs. Authors and writers can explicitly update open comparisons. Review links retain the saved diff and line. Writers can verify integration after pushing a merge. |
 | Issues and search | Edit, label, assign, milestone, close/reopen, and search across titles, bodies, and comments. Paginated discussions preserve actor attribution. |
 | Notifications and integrations | Permission-aware inbox, one current CI result per commit and context, and signed webhook retries using stable event IDs. |
 | Maintenance | Per-source limits, `X-Request-ID` correlation, and daily removal of expired sessions, tokens, throttle windows, and email links. |
@@ -62,7 +62,7 @@ Architecture decisions and provider evidence are recorded in [PLAN.md](PLAN.md).
 - `Router` is rebuilt per request; routes allocate strings. Move to a cached router with request-scoped state.
 - Repository create is not transactional across Artifacts + D1: Artifacts repo is deleted best-effort if the D1 insert fails.
 - Repository deletion spans Artifacts and D1; if D1 fails after storage deletion succeeds, metadata can remain for a deleted repository.
-- PR comparisons bound tree depth, entry count and reads per comparison. Large comparisons surface the limit in the UI.
+- PR comparisons bound ancestry reads, tree depth, entry count and tree reads. Historical diffs require the original Git objects to remain available.
 - Token lists remain unpaginated; accounts with many tokens can produce large settings pages.
 - Request IDs link client responses to handler errors. Production latency, Git transfer size and throttling metrics still need live measurements.
 - Claims of "public read" rely on the proxy; the Artifacts remote URL/token never reaches clients.
@@ -104,6 +104,8 @@ Architecture decisions and provider evidence are recorded in [PLAN.md](PLAN.md).
 | 2026-11-18 | Local D1 and Git restore | Imported D1 users, routes, PRs, and notification counts matched the source. The restored Git mirror passed `git fsck --full` with identical refs and object IDs. |
 | 2026-11-18 | `mise exec -- node --test tests/http.test.mjs` | 22 isolated HTTP and Git scenarios passed, with 23 passing Node test results. The suite covered collaborator revocation, immutable PR comparisons, verified integration, CI result updates, email link replay, and signed webhook retries. |
 | 2026-11-18 | HTTP and Git regression, Chromium at 390px and 1365px | Rejected missing branches, tags and revision expressions. Saved a slash-named web default and confirmed the remote `HEAD` was unchanged. |
+| 2026-11-18 | Wasm release build and focused HTTP/Git regression | Excluded target-only changes, rejected ambiguous ancestry and stale review forms, allowed one concurrent update, preserved historical line links, and verified an actual Git merge. |
+| 2026-11-18 | Migration 0013 and Ego Browser, desktop and 390px | Updated an existing PR from version 1 to 2 in Simplified Chinese, followed a historical comment to its original line, and verified that long lines scroll within the diff. |
 
 ## How to update
 

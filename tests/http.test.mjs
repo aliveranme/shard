@@ -446,6 +446,16 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
         title: "A tag is not a branch", base_branch: "main", head_branch: tag,
       });
       assert.notEqual(tagged.status, 302);
+
+      await git("-C", worktree, "checkout", "main");
+      await writeFile(join(worktree, "TARGET-ONLY.txt"), "A change only on the target branch.\n");
+      await git("-C", worktree, "add", "TARGET-ONLY.txt");
+      await git("-C", worktree, "-c", "core.hooksPath=", "commit", "--no-verify", "-m", "Advance only the target");
+      await git("-C", worktree, "push", "origin", "main");
+      const common = (await git("-C", worktree, "merge-base", "main", "feature/readme")).stdout.trim();
+      const initialTarget = (await git("-C", worktree, "rev-parse", "main")).stdout.trim();
+      await git("-C", worktree, "checkout", "feature/readme");
+
       const createdPull = await viewer.post(`${history}/pulls/new`, {
         title: "Review a slash branch", body: "Review this feature.", base_branch: "main", head_branch: "feature/readme",
       });
@@ -454,6 +464,9 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       const pull = await owner.get(pullUrl);
       assert.match(pull.body, /\?file=FEATURE.md#file-diff/);
       assert.match(pull.body, /\?file=docs%20and%20examples%2Frelease%2520notes.txt#file-diff/);
+      assert.doesNotMatch(pull.body, /TARGET-ONLY\.txt/);
+      assert.match(pull.body, new RegExp(`Base commit</span><code[^>]*>${initialTarget}</code>`));
+      assert.match(pull.body, new RegExp(`Common ancestor</span><code[^>]*>${common}</code>`));
       const readme = await owner.get(`${pullUrl}?file=README.md`);
       assert.match(readme.body, /diff-table__deleted[\s\S]*# History 20/);
       assert.match(readme.body, /diff-table__added[\s\S]*# Updated branch/);
@@ -463,49 +476,86 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       assert.match((await owner.get(`${pullUrl}?file=IMAGE.bin`)).body, /binary or non-UTF-8/);
       assert.match((await owner.get(`${pullUrl}?file=LARGE.txt`)).body, /exceeds the line diff size limit/);
 
-      const fields = Object.fromEntries([...readme.body.matchAll(/name="(base_commit|head_commit)" value="([a-f0-9]{40})"/g)]
-        .map(([, name, value]) => [name, value]));
-      assert.equal(fields.base_commit, (await git("-C", worktree, "rev-parse", "main")).stdout.trim());
-      assert.equal(fields.head_commit, (await git("-C", worktree, "rev-parse", "feature/readme")).stdout.trim());
+      const comparison = (body) => body.match(/name="comparison_version" value="(\d+)"/)?.[1];
+      const fields = { comparison_version: comparison(readme.body) };
+      assert.equal(fields.comparison_version, "1");
+      const updateUrl = `${pullUrl}/comparison`;
       const reviews = `${pullUrl}/reviews`;
       assert.equal((await viewer.post(reviews, { ...fields, decision: "approved" })).status, 403);
-      assert.equal((await owner.post(reviews, { ...fields, head_commit: "f".repeat(40), decision: "approved" })).status, 409);
+      assert.equal((await owner.post(reviews, { ...fields, comparison_version: "0", decision: "approved" })).status, 409);
       assert.equal((await owner.post(reviews, { ...fields, decision: "merge_verified" })).status, 409);
       const decision = await owner.post(reviews, { ...fields, decision: "approved", body: "Approval for the saved pair." });
       redirected(decision);
       assert.match((await owner.get(decision.location)).body, /Approved this comparison[\s\S]*Approval for the saved pair/);
       const lineComment = { ...fields, decision: "line_comment", path: "README.md", line: "new:2", body: "Comment for the exact line." };
+      assert.equal((await viewer.post(reviews, { ...lineComment, path: "TARGET-ONLY.txt", line: "old:1" })).status, 400);
       assert.equal((await viewer.post(reviews, { ...lineComment, line: "new:900" })).status, 400);
       const comment = await viewer.post(reviews, lineComment);
       redirected(comment);
       const review = await viewer.get(comment.location);
-      assert.match(review.body, /\?file=README\.md#diff-new-2/);
+      const historicalLink = pageLink(review.body, "file", "README.md");
+      assert.equal(historicalLink.hash, "#diff-new-2");
       assert.match(review.body, /Comment for the exact line/);
 
       await writeFile(join(worktree, "LATER.txt"), "Changed after review started.\n");
-      await git("-C", worktree, "add", "LATER.txt");
+      await writeFile(join(worktree, "README.md"), "# Updated after refresh\nA different line after refresh.\n");
+      await git("-C", worktree, "add", "LATER.txt", "README.md");
       await git("-C", worktree, "-c", "core.hooksPath=", "commit", "--no-verify", "-m", "Advance the head");
       await git("-C", worktree, "push", "origin", "feature/readme");
+      const updatedHead = (await git("-C", worktree, "rev-parse", "feature/readme")).stdout.trim();
       await git("-C", worktree, "checkout", "main");
       await writeFile(join(worktree, "README.md"), "# Moved base\n");
       await git("-C", worktree, "add", "README.md");
       await git("-C", worktree, "-c", "core.hooksPath=", "commit", "--no-verify", "-m", "Advance the base");
       await git("-C", worktree, "push", "origin", "main");
-      assert.doesNotMatch((await owner.get(pullUrl)).body, /LATER\.txt/);
       const frozen = await owner.get(`${pullUrl}?file=README.md`);
+      assert.match(frozen.body, /The source or target branch has moved/);
+      assert.doesNotMatch(frozen.body, /LATER\.txt/);
       assert.match(frozen.body, /# History 20/);
       assert.doesNotMatch(frozen.body, /# Moved base/);
+      assert.equal(comparison(frozen.body), fields.comparison_version);
+      const observer = await signup("reviewobserver");
+      assert.doesNotMatch((await observer.get(pullUrl)).body, /Update comparison/);
+      assert.equal((await observer.post(updateUrl, fields)).status, 403);
+      assert.equal((await viewer.post(updateUrl, fields, { csrf: false })).status, 403);
 
-      assert.equal((await owner.post(reviews, { ...fields, decision: "merge_verified" })).status, 409);
-      // Integrate the exact head that was reviewed as a non-first parent.
-      await git("-C", worktree, "merge", "--no-ff", "-X", "theirs", fields.head_commit, "-m", "Integrate the reviewed branch");
+      const updates = await Promise.all([viewer.post(updateUrl, fields), viewer.post(updateUrl, fields)]);
+      assert.deepEqual(updates.map(({ status }) => status).sort(), [302, 409]);
+      assert.equal(updates.find(({ status }) => status === 302).location, `${pullUrl}#pull-comparison`);
+      const current = await owner.get(`${pullUrl}?file=README.md`);
+      const currentFields = { comparison_version: comparison(current.body) };
+      assert.equal(currentFields.comparison_version, "2");
+      assert.match(current.body, /LATER\.txt/);
+      assert.match(current.body, /# History 20/);
+      assert.match(current.body, /# Updated after refresh/);
+      assert.doesNotMatch(current.body, /# Moved base|TARGET-ONLY\.txt/);
+      assert.equal((await owner.post(reviews, { ...fields, decision: "approved" })).status, 409);
+      assert.equal((await viewer.post(reviews, lineComment)).status, 409);
+
+      const historical = await owner.get(new URL(`${pullUrl}${historicalLink.search}`, base));
+      assert.match(historical.body, /Review comparison/);
+      assert.match(historical.body, /Comparison 1/);
+      assert.match(historical.body, /id="diff-new-2"[\s\S]*literal text/);
+      assert.doesNotMatch(historical.body, /# Updated after refresh|LATER\.txt|name="comparison_version"/);
+      assert.match(historical.body, /file=FEATURE\.md#file-diff/);
+      const otherFile = pageLink(historical.body, "file", "FEATURE.md");
+      assert.equal(otherFile.searchParams.get("review"), historicalLink.searchParams.get("review"));
+      assert.match(historical.body, /View current comparison/);
+      assert.equal((await owner.get(`${pullUrl}?review=9007199254740992`)).status, 404);
+
+      assert.equal((await owner.post(reviews, { ...currentFields, decision: "merge_verified" })).status, 409);
+      // Integrate the current source as a non-first parent.
+      await git("-C", worktree, "merge", "--no-ff", "-X", "theirs", updatedHead, "-m", "Integrate the reviewed branch");
       await git("-C", worktree, "push", "origin", "main");
-      const merged = await owner.post(reviews, { ...fields, decision: "merge_verified" });
+      const integrated = await owner.post(updateUrl, currentFields);
+      assert.equal(integrated.status, 409);
+      assert.match(integrated.body, /The target already contains the latest source commit/);
+      const merged = await owner.post(reviews, { ...currentFields, decision: "merge_verified" });
       redirected(merged);
       assert.match((await owner.get(merged.location)).body, /Verified integration in Git/);
       const mergeTip = (await git("-C", worktree, "rev-parse", "main")).stdout.trim();
       assert.match((await owner.get(`${history}/commit/${mergeTip}`)).body,
-        new RegExp(`/commit/${fields.head_commit}\\?branch=main`));
+        new RegExp(`/commit/${updatedHead}\\?branch=main`));
       assert.equal((await owner.post(`${pullUrl}/state`, { state: "open" })).status, 409);
       await git("-C", worktree, "checkout", "-b", "feature/deep");
       const deep = join(worktree, ...Array.from({ length: 14 }, (_, index) => `d${index}`));
@@ -526,11 +576,25 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       assert.match(empty.location, /^\/suiteowner\/history\/pulls\/1/);
 
       await cli(["d1", "execute", "shard", "--local", "--persist-to", persistence,
-        "--command", `UPDATE pulls SET base_commit = '${"f".repeat(40)}'
+        "--command", `UPDATE pulls SET merge_base = '${"f".repeat(40)}'
           WHERE issue_id = (SELECT id FROM issues WHERE title = 'Deep comparison')`]);
       const unavailable = await owner.get(deepPull.location);
       assert.match(unavailable.body, /saved comparison commits are unavailable/);
       assert.doesNotMatch(unavailable.body, /No file changes/);
+
+      const treeId = (await git("-C", worktree, "rev-parse", "HEAD^{tree}")).stdout.trim();
+      const commit = async (message, ...parents) => (await git("-C", worktree, "commit-tree", treeId,
+        ...parents.flatMap((parent) => ["-p", parent]), "-m", message)).stdout.trim();
+      const leftParent = await commit("Left parent", featureCommit);
+      const rightParent = await commit("Right parent", featureCommit);
+      const leftTip = await commit("Left merge", leftParent, rightParent);
+      const rightTip = await commit("Right merge", rightParent, leftParent);
+      await git("-C", worktree, "push", "origin", `${leftTip}:refs/heads/compare/left`, `${rightTip}:refs/heads/compare/right`);
+      const crisscross = await owner.post(`${history}/pulls/new`, {
+        title: "Ambiguous history", base_branch: "compare/left", head_branch: "compare/right",
+      });
+      assert.notEqual(crisscross.status, 302);
+      assert.match(crisscross.body, /more than one best common ancestor/);
     });
 
     await t.test("private repository grants govern Git, issue classification and notifications", async () => {

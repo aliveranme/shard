@@ -36,15 +36,33 @@
   </div>
 
   {% if let Some(pull) = pull %}
-    <div class="pull-banner">
+    <div class="pull-banner" id="pull-comparison">
+      <span class="badge badge--count">{{ chrome.locale.comparison_version(pull.snapshot.comparison_version) }}</span>
+      {% if viewed_review.is_some() %}
+        <span>{{ chrome.locale.t(crate::i18n::DiscussionText::HistoricalComparison) }}</span>
+        <a href="/{{ repo.owner_name }}/{{ repo.name }}/pulls/{{ issue.number }}#pull-comparison">{{ chrome.locale.t(crate::i18n::DiscussionText::CurrentComparison) }}</a>
+      {% endif %}
       <span>{{ chrome.locale.t(crate::i18n::DiscussionText::MergeFrom) }}</span>
       <code dir="ltr">{{ pull.head_branch }}</code>
       <span class="muted">{{ chrome.locale.t(crate::i18n::DiscussionText::MergeInto) }}</span>
       <code dir="ltr">{{ pull.base_branch }}</code>
-      {% if let Some(head) = pull.head_commit %}<span class="muted">· {{ chrome.locale.t(crate::i18n::DiscussionText::HeadCommit) }}</span><code dir="ltr" title="{{ head }}">{{ head }}</code>{% endif %}
-      {% if let Some(base) = pull.base_commit %}<span class="muted">· {{ chrome.locale.t(crate::i18n::DiscussionText::BaseCommit) }}</span><code dir="ltr" title="{{ base }}">{{ base }}</code>{% endif %}
+      {% if let Some(head) = pull.snapshot.head_commit %}<span class="muted">· {{ chrome.locale.t(crate::i18n::DiscussionText::HeadCommit) }}</span><code dir="ltr">{{ head }}</code>{% endif %}
+      {% if let Some(base) = pull.snapshot.base_commit %}<span class="muted">· {{ chrome.locale.t(crate::i18n::DiscussionText::BaseCommit) }}</span><code dir="ltr">{{ base }}</code>{% endif %}
+      {% if let Some(base) = pull.snapshot.merge_base %}<span class="muted">· {{ chrome.locale.t(crate::i18n::DiscussionText::MergeBase) }}</span><code dir="ltr">{{ base }}</code>{% endif %}
       {% if let Some(merged) = pull.merged_at.as_ref() %}<span class="badge badge--merged">{{ chrome.locale.merged_when(merged) }}</span>{% endif %}
       {% if let Some(tip) = pull.merge_commit %}<span class="muted">{{ chrome.locale.t(crate::i18n::DiscussionText::VerifiedTip) }}</span><code dir="ltr">{{ tip }}</code>{% endif %}
+    </div>
+  {% endif %}
+  {% if let Some(message) = comparison_notice %}
+    <div class="pull-banner">
+      <p role="status">{{ message }}</p>
+      {% if can_refresh_comparison %}
+        <form method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/pulls/{{ issue.number }}/comparison">
+          {% include "csrf.html" %}
+          {% include "pull_snapshot_fields.html" %}
+          <button class="btn btn--ghost btn--sm" type="submit">{{ chrome.locale.t(crate::i18n::DiscussionText::RefreshComparison) }}</button>
+        </form>
+      {% endif %}
     </div>
   {% endif %}
 
@@ -88,8 +106,7 @@
       {% include "pagination.html" %}
       {% include "pull_review_form.html" %}
 
-
-      {% if chrome.signed_in %}
+      {% if viewed_review.is_none() && chrome.signed_in %}
         <form class="form card" method="post"
               action="/{{ repo.owner_name }}/{{ repo.name }}/{% if issue.is_pull() %}pulls{% else %}issues{% endif %}/{{ issue.number }}/comments?comments_page={{ pagination.page }}">
           {% include "csrf.html" %}
@@ -99,7 +116,7 @@
           </div>
           <button class="btn btn--primary" type="submit">{{ chrome.locale.t(crate::i18n::DiscussionText::Comment) }}</button>
         </form>
-      {% else %}
+      {% else if viewed_review.is_none() %}
         <div class="card card--warm empty">
           <p class="empty__title">{{ chrome.locale.t(crate::i18n::DiscussionText::JoinDiscussion) }}</p>
           <p style="margin-bottom:16px">{% if issue.is_pull() %}{{ chrome.locale.t(crate::i18n::DiscussionText::SignInToCommentOnPull) }}{% else %}{{ chrome.locale.t(crate::i18n::DiscussionText::SignInToCommentOnIssue) }}{% endif %}</p>
@@ -134,7 +151,7 @@
             <div class="side-list">
               {% for file in changed %}
                 <div class="side-row">
-                  <a href="?file={{ file.url_path }}#file-diff"><code>{{ file.path }}</code></a>
+                  <a href="?{% if let Some(id) = viewed_review %}review={{ id }}&amp;{% endif %}file={{ file.url_path }}#file-diff"><code>{{ file.path }}</code></a>
                   <span class="badge badge--{{ file.status() }}">{{ chrome.locale.diff_status(file.status()) }}</span>
                 </div>
               {% endfor %}

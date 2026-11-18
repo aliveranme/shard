@@ -30,8 +30,9 @@ src/
   refs.rs           read-only branch and tag discovery over Git HTTPS
   repo_lifecycle.rs stable repository paths, transfers, forks and imports
   repo_objects.rs   commit detail and source archives
-  pull_diff.rs      comparisons between two saved commits
-  pull_review.rs    review decisions, line comments and merge verification
+  pull_base.rs      exact branch tips and bounded common-ancestor lookup
+  pull_diff.rs      file and line differences for a saved comparison
+  pull_review.rs    comparison updates, review decisions and merge verification
   issue_metadata.rs issue edits and classification
   notifications.rs inbox and current repository access checks
   webhooks.rs       signed event delivery from the D1 outbox
@@ -177,10 +178,14 @@ escape the output, including interpolated values.
 - Issues support editing, labels, a milestone, an assignee, Markdown discussion,
   state history, and search across titles, bodies and comments. The inbox surfaces
   new issue, discussion and review activity based on current access.
-- Pull requests capture the base and head commit IDs at creation. The UI shows a
-  file list and text diffs for that pair. Reviewers can approve, request changes,
-  or comment on changed lines. After a local merge and push, a writer can verify
-  that both saved commits are ancestors of the current target tip.
+- Pull requests save both branch tips and their best common ancestor at creation.
+  File and line diffs compare the common ancestor to the source tip, excluding
+  target-only changes. Pushes leave the saved comparison in place. The author
+  or a repository writer can choose **Update comparison** on an open request.
+  Decisions and line comments link to the exact comparison they reviewed.
+  Pre-existing comparisons retain their two-tip diff until updated.
+  After a local merge and push, a writer can verify that both saved branch tips
+  are ancestors of the current target tip.
 - Personal access tokens have read/write scopes, expiry, last usage, and revocation.
   Session and access-token secrets are stored as hashes.
 - Browser forms use session-bound CSRF tokens and same-origin checks. Recovery
@@ -237,10 +242,12 @@ repositories under their expected names before serving the restored database.
 
 ## Limits
 
-- Pull request comparisons explicitly report missing objects and traversal limits.
-  Text diffs cover UTF-8 files up to 96 KiB and 512 lines per side. Merge
-  verification uses bounded ancestry traversal, so the original commit IDs must
-  still be reachable after integration.
+- Pull request comparisons report missing Git objects and traversal limits.
+  Shard requires a unique best common ancestor and reports unrelated branches
+  or multiple best common ancestors explicitly. Text diffs cover UTF-8 files
+  up to 96 KiB and 512 lines per side. Historical diffs depend on the saved Git
+  objects remaining available. Merge verification separately uses bounded
+  ancestry traversal and requires the saved branch tips to be reachable.
 - Branch and tag discovery reads at most 512 advertised refs within 256 KiB.
   Create, update and delete refs through Git.
 - Source downloads contain regular files and directories up to 16 MiB and 2,000

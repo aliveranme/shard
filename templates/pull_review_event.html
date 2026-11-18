@@ -6,9 +6,9 @@
     </div>
   </div>
   <div class="markup">
-    <p class="pull-diff__path muted"><code dir="ltr">{{ review.base }}…{{ review.head }}</code></p>
+    <p class="pull-diff__path muted"><a href="?review={{ entry.id }}#pull-comparison">{{ chrome.locale.comparison_version(review.version) }}</a> · <code dir="ltr">{{ review.base }}…{{ review.head }}</code></p>
     {% if let Some(line) = review.line %}
-      <p><a class="pull-diff__path" href="?file={{ line.url_path }}#diff-{{ line.side }}-{{ line.line }}"><code>{{ line.path }}</code> · {% if line.side == "old" %}{{ chrome.locale.t(crate::i18n::DiscussionText::OldLine) }}{% else %}{{ chrome.locale.t(crate::i18n::DiscussionText::NewLine) }}{% endif %} {{ line.line }}</a></p>
+      <p><a class="pull-diff__path" href="?review={{ entry.id }}&amp;file={{ line.url_path }}#diff-{{ line.side }}-{{ line.line }}"><code>{{ line.path }}</code> · {% if line.side == "old" %}{{ chrome.locale.t(crate::i18n::DiscussionText::OldLine) }}{% else %}{{ chrome.locale.t(crate::i18n::DiscussionText::NewLine) }}{% endif %} {{ line.line }}</a></p>
     {% endif %}
     {% if entry.action != "merge_verified" %}{{ entry.html|safe }}{% endif %}
   </div>

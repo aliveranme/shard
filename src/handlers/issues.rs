@@ -5,8 +5,9 @@ use crate::ctx::AppState;
 use crate::db;
 use crate::i18n::{CommonText, DiscussionText, Locale};
 use crate::markdown;
-use crate::models::{Issue, Pull, Repo, Ts};
+use crate::models::{Issue, Pull, PullSnapshot, Repo, Ts};
 use crate::pagination::{query_url, PageRequest, PAGE_SIZE};
+use crate::pull_base;
 use crate::pull_diff::{self, Comparison, FileDiff};
 use crate::templates::{
     render, Chrome, DiscussionRow, FilePreview, IssueNewPage, IssuePage, IssueRow, IssuesPage, PullView,
@@ -216,44 +217,29 @@ async fn create(_req: Request, ctx: RouteContext<AppState>, kind: &str) -> Resul
         }
     }
 
-    let mut head_commit: Option<String> = None;
-    let mut base_commit: Option<String> = None;
-    if kind == "pull" {
-        let artifacts = match Artifacts::from_env(&state.env) {
-            Ok(artifacts) => artifacts,
-            Err(error) => {
-                console_log!("pull request setup: could not configure Git storage: {error}");
-                return invalid(locale.t(DiscussionText::GitUnavailable).into());
-            }
-        };
-        let handle = match artifacts.get(&repo.artifacts_repo).await {
+    let snapshot = if kind == "pull" {
+        let comparison = async {
+            Artifacts::from_env(&state.env)?.get(&repo.artifacts_repo).await
+        }.await;
+        let handle = match comparison {
             Ok(handle) => handle,
             Err(error) => {
                 console_log!("pull request setup: could not open Git repository: {error}");
                 return invalid(locale.t(DiscussionText::GitUnavailable).into());
             }
         };
-        head_commit = match handle.head_commit(&format!("refs/heads/{head_branch}")).await {
-            Ok(commit) => commit.map(|c| c.hash).filter(|hash| is_object_id(hash)),
-            Err(error) => {
-                console_log!("pull request setup: could not read the head branch: {error}");
-                return invalid(locale.t(DiscussionText::ReadHeadBranchFailed).into());
-            }
+        let (base, head) = match pull_base::branch_tips(&handle, &base_branch, &head_branch).await {
+            Ok(tips) => tips,
+            Err(message) => return invalid(locale.t(message).into()),
         };
-        base_commit = match handle.head_commit(&format!("refs/heads/{base_branch}")).await {
-            Ok(commit) => commit.map(|c| c.hash).filter(|hash| is_object_id(hash)),
-            Err(error) => {
-                console_log!("pull request setup: could not read the base branch: {error}");
-                return invalid(locale.t(DiscussionText::ReadBaseBranchFailed).into());
-            }
+        let merge_base = match pull_base::find(&handle, &base, &head).await {
+            Ok(merge_base) => merge_base,
+            Err(error) => return invalid(locale.t(error.message()).into()),
         };
-        if head_commit.is_none() {
-            return invalid(locale.branch_has_no_commits(&head_branch).to_string());
-        }
-        if base_commit.is_none() {
-            return invalid(locale.branch_has_no_commits(&base_branch).to_string());
-        }
-    }
+        Some((base, head, merge_base))
+    } else {
+        None
+    };
 
     let database = state.db()?;
     #[derive(serde::Deserialize)]
@@ -272,14 +258,14 @@ async fn create(_req: Request, ctx: RouteContext<AppState>, kind: &str) -> Resul
             util::js_int(user.id), now.clone(), now, util::js_int(repo.id),
         ])?,
     ];
-    if let (Some(base), Some(head)) = (base_commit, head_commit) {
+    if let Some((base, head, merge_base)) = snapshot {
         statements.push(database.prepare(
-            "INSERT INTO pulls (issue_id, head_branch, base_branch, head_commit, base_commit, merged)
-             SELECT i.id, ?, ?, ?, ?, 0 FROM issues i JOIN repos r ON r.id = i.repo_id
+            "INSERT INTO pulls (issue_id, head_branch, base_branch, head_commit, base_commit, merge_base)
+             SELECT i.id, ?, ?, ?, ?, ? FROM issues i JOIN repos r ON r.id = i.repo_id
               WHERE r.id = ? AND i.number = r.next_issue_number - 1",
         ).bind(&[
             util::js_text(&head_branch), util::js_text(&base_branch), util::js_text(&head),
-            util::js_text(&base), util::js_int(repo.id),
+            util::js_text(&base), util::js_text(&merge_base), util::js_int(repo.id),
         ])?);
     }
     let results = database.batch(statements).await?;
@@ -331,14 +317,14 @@ async fn detail(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result
     let mut entries: Vec<DiscussionEntry> = db::all(
         &database,
         "SELECT c.id AS id, c.body, 'comment' AS kind, c.created_at AS created_at, u.username AS author_name, 0 AS item_order,
-                NULL AS base, NULL AS head, NULL AS path, NULL AS side, NULL AS line
+                NULL AS base, NULL AS head, NULL AS comparison_version, NULL AS path, NULL AS side, NULL AS line
            FROM comments c LEFT JOIN users u ON u.id = c.author_id WHERE c.issue_id = ?1
          UNION ALL
-         SELECT e.id, '', e.event, e.created_at, u.username, 1, NULL, NULL, NULL, NULL, NULL
+         SELECT e.id, '', e.event, e.created_at, u.username, 1, NULL, NULL, NULL, NULL, NULL, NULL
            FROM issue_events e LEFT JOIN users u ON u.id = e.actor_id WHERE e.issue_id = ?1
          UNION ALL
          SELECT p.id, p.body, p.decision, p.created_at, u.username, 2,
-                p.base_commit, p.head_commit, p.path, p.side, p.line
+                COALESCE(p.merge_base, p.base_commit), p.head_commit, p.comparison_version, p.path, p.side, p.line
            FROM pull_reviews p LEFT JOIN users u ON u.id = p.actor_id WHERE p.issue_id = ?1
          ORDER BY created_at ASC, item_order ASC, id ASC LIMIT ?2 OFFSET ?3",
         &[
@@ -349,10 +335,29 @@ async fn detail(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result
     .await?;
     let locale = state.locale;
     let pagination = request_page.finish(&req, &mut entries, Some("discussion"))?;
+    let viewed = if kind == "pull" {
+        if let Some(review) = util::query_param(&req, "review") {
+            let id = review.parse::<i64>().ok().filter(|id| (1..=9_007_199_254_740_991).contains(id));
+            let Some(id) = id else { return not_found(&state, locale.t(CommonText::NotFound)) };
+            let snapshot: Option<PullSnapshot> = db::first(
+                &database,
+                "SELECT head_commit, base_commit, merge_base, comparison_version
+                   FROM pull_reviews WHERE issue_id = ? AND id = ?",
+                &[util::js_int(issue.id), util::js_int(id)],
+            ).await?;
+            let Some(snapshot) = snapshot else { return not_found(&state, locale.t(CommonText::NotFound)) };
+            Some((id, snapshot))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let pull: Option<Pull> = if kind == "pull" {
         db::first(
             &database,
-            "SELECT issue_id, head_branch, base_branch, head_commit, base_commit, merged, merged_at, merge_commit
+            "SELECT issue_id, head_branch, base_branch, head_commit, base_commit, merge_base,
+                    comparison_version, merged, merged_at, merge_commit
                FROM pulls WHERE issue_id = ?",
             &[util::js_int(issue.id)],
         )
@@ -360,20 +365,42 @@ async fn detail(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result
     } else {
         None
     };
+    let merged = pull.as_ref().is_some_and(|pull| pull.merged != 0);
+    let current_open = pull.is_some() && viewed.is_none() && !merged && issue.is_open();
+    let writer = pull.is_some() && viewed.is_none() && !merged && can_write(&state, &repo).await?;
+    let author = state.user_id().is_some_and(|id| Some(id) == issue.author_id);
+    let mut comparison_notice = None;
+    let mut can_refresh_comparison = false;
 
     let mut changed = Vec::new();
     let mut diff_error = None;
     let mut preview = None;
     let mut preview_missing = false;
-    if kind == "pull" {
+    if let Some(pull) = &pull {
         let selected = util::query_param(&req, "file");
+        let snapshot = viewed.as_ref().map_or(&pull.snapshot, |(_, snapshot)| snapshot);
         let comparison = async {
-            let Some((base, head)) = pull.as_ref().and_then(|pull| {
-                pull.base_commit.as_deref().zip(pull.head_commit.as_deref())
-            }) else {
+            let handle = Artifacts::from_env(&state.env)?.get(&repo.artifacts_repo).await?;
+            if current_open {
+                match pull_base::branch_tips(&handle, &pull.base_branch, &pull.head_branch).await {
+                    Ok((base, head)) => {
+                        let moved = snapshot.base_commit.as_deref() != Some(base.as_str())
+                            || snapshot.head_commit.as_deref() != Some(head.as_str());
+                        comparison_notice = if moved {
+                            Some(locale.t(DiscussionText::BranchesAdvanced))
+                        } else if snapshot.merge_base.is_none() {
+                            Some(locale.t(DiscussionText::LegacyComparison))
+                        } else {
+                            None
+                        };
+                        can_refresh_comparison = (author || writer) && (moved || snapshot.merge_base.is_none());
+                    }
+                    Err(message) => comparison_notice = Some(locale.t(message)),
+                }
+            }
+            let Some((base, head)) = snapshot.diff_tips() else {
                 return Ok(Comparison::MissingSnapshot);
             };
-            let handle = Artifacts::from_env(&state.env)?.get(&repo.artifacts_repo).await?;
             let comparison = pull_diff::compare(&handle, base, head).await?;
             if let (Comparison::Complete(files), Some(path)) = (&comparison, selected) {
                 if let Ok(index) = files.binary_search_by(|file| file.path.cmp(&path)) {
@@ -403,17 +430,22 @@ async fn detail(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result
         }
     }
 
-    let merged = pull.as_ref().is_some_and(|pull| pull.merged != 0);
-    let can_edit = !merged && state.user.as_ref().is_some_and(|user| {
-        Some(user.id) == issue.author_id || can_admin(&state, &repo)
-    });
+    let can_edit = viewed.is_none() && !merged && (author || can_admin(&state, &repo));
     let has_snapshot = pull.as_ref().is_some_and(|pull| {
-        pull.base_commit.as_deref().is_some_and(is_object_id)
-            && pull.head_commit.as_deref().is_some_and(is_object_id)
+        pull.snapshot.base_commit.as_deref().is_some_and(is_object_id)
+            && pull.snapshot.head_commit.as_deref().is_some_and(is_object_id)
     });
-    let can_verify_merge = has_snapshot && !merged && can_write(&state, &repo).await?;
-    let can_comment_on_diff = has_snapshot && !merged && state.user.is_some() && issue.is_open() && diff_error.is_none();
-    let can_review = can_comment_on_diff && can_verify_merge && state.user_id() != issue.author_id;
+    let can_verify_merge = has_snapshot && writer;
+    let can_comment_on_diff = current_open && has_snapshot && state.user.is_some() && diff_error.is_none();
+    let can_review = can_comment_on_diff && writer && !author;
+    let (viewed_review, historical) = viewed.unzip();
+    let pull = pull.map(|pull| {
+        let mut model = PullView::from_pull(pull);
+        if let Some(snapshot) = historical {
+            model.snapshot = snapshot;
+        }
+        model
+    });
     let is_owner = can_admin(&state, &repo);
     let page = IssuePage {
         chrome: Chrome::new(&state),
@@ -424,11 +456,14 @@ async fn detail(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result
         body_html: markdown::render(&issue.body),
         discussion: entries.into_iter().map(|entry| entry.into_row(locale)).collect(),
         pagination,
-        pull: pull.as_ref().map(PullView::from_pull),
+        pull,
         changed,
         preview,
         preview_missing,
         diff_error,
+        viewed_review,
+        comparison_notice,
+        can_refresh_comparison,
         metadata: if issue.is_pull() { None } else { Some(crate::issue_metadata::load(&state, &repo, &issue).await?) },
         can_review,
         can_comment_on_diff,
@@ -566,6 +601,7 @@ struct DiscussionEntry {
     created_at: Ts,
     base: Option<String>,
     head: Option<String>,
+    comparison_version: Option<i64>,
     path: Option<String>,
     side: Option<String>,
     line: Option<i64>,
@@ -574,8 +610,8 @@ struct DiscussionEntry {
 impl DiscussionEntry {
     fn into_row(self, locale: Locale) -> DiscussionRow {
         let is_comment = self.kind == "comment";
-        let review = self.base.zip(self.head).map(|(base, head)| ReviewContext {
-            base, head,
+        let review = self.base.zip(self.head).zip(self.comparison_version).map(|((base, head), version)| ReviewContext {
+            base, head, version,
             line: match (self.path, self.side, self.line) {
                 (Some(path), Some(side), Some(line)) => Some(ReviewLine {
                     url_path: util::url_path(&path), path, side, line,

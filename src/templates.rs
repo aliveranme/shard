@@ -1,6 +1,6 @@
 use crate::ctx::AppState;
 use crate::i18n::Locale;
-use crate::models::{Issue, Pull, Repo, Ts};
+use crate::models::{Issue, Pull, PullSnapshot, Repo, Ts};
 use crate::pagination::Pagination;
 use crate::pull_diff::{ChangedFile, FileDiff};
 use askama::Template;
@@ -133,6 +133,7 @@ pub struct DiscussionRow {
 pub struct ReviewContext {
     pub base: String,
     pub head: String,
+    pub version: i64,
     pub line: Option<ReviewLine>,
 }
 
@@ -153,23 +154,21 @@ pub struct FilePreview {
 pub struct PullView {
     pub head_branch: String,
     pub base_branch: String,
-    pub head_commit: Option<String>,
-    pub base_commit: Option<String>,
+    pub snapshot: PullSnapshot,
     pub merged: bool,
     pub merged_at: Option<Ts>,
     pub merge_commit: Option<String>,
 }
 
 impl PullView {
-    pub fn from_pull(pull: &Pull) -> Self {
+    pub fn from_pull(pull: Pull) -> Self {
         Self {
-            head_branch: pull.head_branch.clone(),
-            base_branch: pull.base_branch.clone(),
-            head_commit: pull.head_commit.clone(),
-            base_commit: pull.base_commit.clone(),
+            head_branch: pull.head_branch,
+            base_branch: pull.base_branch,
+            snapshot: pull.snapshot,
             merged: pull.merged == 1,
             merged_at: pull.merged_at,
-            merge_commit: pull.merge_commit.clone(),
+            merge_commit: pull.merge_commit,
         }
     }
 }
@@ -323,6 +322,9 @@ pub struct IssuePage {
     pub preview: Option<FilePreview>,
     pub preview_missing: bool,
     pub diff_error: Option<&'static str>,
+    pub viewed_review: Option<i64>,
+    pub comparison_notice: Option<&'static str>,
+    pub can_refresh_comparison: bool,
     pub metadata: Option<crate::issue_metadata::IssueMetadata>,
     pub can_review: bool,
     pub can_comment_on_diff: bool,

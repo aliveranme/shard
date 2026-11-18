@@ -1,4 +1,3 @@
 {% if let Some(pull) = pull %}
-  {% if let Some(base) = pull.base_commit %}<input type="hidden" name="base_commit" value="{{ base }}">{% endif %}
-  {% if let Some(head) = pull.head_commit %}<input type="hidden" name="head_commit" value="{{ head }}">{% endif %}
+  <input type="hidden" name="comparison_version" value="{{ pull.snapshot.comparison_version }}">
 {% endif %}

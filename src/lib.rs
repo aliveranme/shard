@@ -19,6 +19,7 @@ mod models;
 mod notifications;
 mod templates;
 mod pagination;
+mod pull_base;
 mod pull_diff;
 mod pull_review;
 mod recovery;
@@ -126,6 +127,7 @@ fn routes(router: Router<AppState>) -> Router<AppState> {
         .post_async("/:owner/:repo/pulls/new", handlers::issues::create_pull)
         .get_async("/:owner/:repo/pulls/:number", handlers::issues::detail_pull)
         .post_async("/:owner/:repo/pulls/:number/reviews", pull_review::submit)
+        .post_async("/:owner/:repo/pulls/:number/comparison", pull_review::refresh)
         .post_async(
             "/:owner/:repo/pulls/:number/comments",
             handlers::issues::comment,
