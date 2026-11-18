@@ -1,0 +1,8 @@
+<form method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/watch">
+  {% include "csrf.html" %}
+  <button class="btn btn--ghost btn--sm" type="submit" name="active" value="{% if repo.watched == 1 %}0{% else %}1{% endif %}">{% if repo.watched == 1 %}{{ chrome.locale.t(crate::i18n::RepoFeatureText::Unwatch) }}{% else %}{{ chrome.locale.t(crate::i18n::RepoFeatureText::Watch) }}{% endif %}</button>
+</form>
+<form method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/star">
+  {% include "csrf.html" %}
+  <button class="btn btn--ghost btn--sm" type="submit" name="active" value="{% if repo.starred == 1 %}0{% else %}1{% endif %}">{% if repo.starred == 1 %}{{ chrome.locale.t(crate::i18n::RepoFeatureText::Unstar) }}{% else %}{{ chrome.locale.t(crate::i18n::RepoFeatureText::Star) }}{% endif %}</button>
+</form>

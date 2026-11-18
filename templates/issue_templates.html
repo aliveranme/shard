@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "repo_header.html" %}
+<div class="page">
+  <header class="page-head">
+    <h1 class="page-title">{{ chrome.locale.t(crate::i18n::RepoFeatureText::IssueTemplates) }}</h1>
+    {% if editor.is_none() %}<a class="btn btn--primary" href="{{ settings_url }}/issue-templates?edit=new">{{ chrome.locale.t(crate::i18n::RepoFeatureText::NewIssueTemplate) }}</a>{% endif %}
+  </header>
+  <div class="settings-layout">
+    <nav class="settings-nav" aria-label="{{ chrome.locale.t(crate::i18n::RepoText::RepositorySettings) }}">
+      <a href="{{ settings_url }}">{{ chrome.locale.t(crate::i18n::RepoText::General) }}</a>
+      <a href="{{ settings_url }}/issues">{{ chrome.locale.t(crate::i18n::IssueMetadataText::Catalog) }}</a>
+      <a href="{{ settings_url }}/issue-templates" aria-current="page">{{ chrome.locale.t(crate::i18n::RepoFeatureText::IssueTemplates) }}</a>
+    </nav>
+    <div class="settings-main">
+      {% if let Some(message) = error %}
+        <div class="alert alert--error" role="alert">{{ message }}</div>
+      {% endif %}
+      {% if let Some(values) = editor %}
+        <form class="form card" method="post" action="{{ settings_url }}/issue-templates">
+          {% include "csrf.html" %}
+          {% if let Some(id) = values.id %}
+            <input type="hidden" name="id" value="{{ id }}">
+            <input type="hidden" name="version" value="{{ values.version }}">
+          {% endif %}
+          <h2 class="card__title">{% if values.id.is_some() %}{{ chrome.locale.t(crate::i18n::RepoFeatureText::EditIssueTemplate) }}{% else %}{{ chrome.locale.t(crate::i18n::RepoFeatureText::NewIssueTemplate) }}{% endif %}</h2>
+          <div class="field">
+            <label for="template-name">{{ chrome.locale.t(crate::i18n::RepoFeatureText::IssueTemplateName) }}</label>
+            <input class="input" id="template-name" name="name" value="{{ values.name }}" required dir="auto">
+          </div>
+          <div class="field">
+            <label for="template-title">{{ chrome.locale.t(crate::i18n::RepoFeatureText::IssueTemplateTitle) }}</label>
+            <input class="input" id="template-title" name="title" value="{{ values.title }}" dir="auto">
+          </div>
+          <div class="field">
+            <label for="template-body">{{ chrome.locale.t(crate::i18n::RepoFeatureText::IssueTemplateBody) }}</label>
+            <textarea class="textarea" id="template-body" name="body" placeholder="{{ chrome.locale.t(crate::i18n::CommonText::MarkdownSupported) }}" dir="auto">
+{{ values.body }}</textarea>
+          </div>
+          <div class="form__actions">
+            <button class="btn btn--primary" type="submit">{{ chrome.locale.t(crate::i18n::IssueMetadataText::SaveChanges) }}</button>
+            <a class="btn btn--ghost" href="{{ settings_url }}/issue-templates">{{ chrome.locale.t(crate::i18n::DiscussionText::Cancel) }}</a>
+          </div>
+        </form>
+        {% if let Some(id) = values.id %}
+          <details class="card card--danger">
+            <summary>{{ chrome.locale.t(crate::i18n::RepoFeatureText::RemoveIssueTemplate) }}</summary>
+            <form class="form" method="post" action="{{ settings_url }}/issue-templates/{{ id }}/delete" style="margin-block-start: 12px">
+              {% include "csrf.html" %}
+              <input type="hidden" name="version" value="{{ values.version }}">
+              <p>{{ chrome.locale.t(crate::i18n::RepoFeatureText::RemoveIssueTemplateHelp) }}</p>
+              <button class="btn btn--danger" type="submit">{{ chrome.locale.t(crate::i18n::RepoFeatureText::RemoveIssueTemplate) }}</button>
+            </form>
+          </details>
+        {% endif %}
+      {% else if choices.is_empty() %}
+        <p class="card empty">{{ chrome.locale.t(crate::i18n::RepoFeatureText::NoIssueTemplates) }}</p>
+      {% else %}
+        <ul class="list refs-list" role="list">
+          {% for choice in choices %}
+            <li><a class="list__row" href="{{ settings_url }}/issue-templates?edit={{ choice.id }}">
+              <span class="list__main"><span class="list__title"><bdi>{{ choice.name }}</bdi></span></span>
+              <svg class="icon" aria-hidden="true"><use href="/img/icons.svg#arrow-right"></use></svg>
+            </a></li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

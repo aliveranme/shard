@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "repo_header.html" %}
+<div class="page">
+  <header class="page-head">
+    <h1 class="page-title">{{ chrome.locale.t(crate::i18n::RepoFeatureText::Releases) }}</h1>
+    {% if writer %}
+      <a class="btn btn--primary" href="/{{ repo.owner_name }}/{{ repo.name }}/releases/new">{{ chrome.locale.t(crate::i18n::RepoFeatureText::NewRelease) }}</a>
+    {% endif %}
+  </header>
+  {% if releases.is_empty() %}
+    <p class="card empty">{{ chrome.locale.t(crate::i18n::RepoFeatureText::NoReleases) }}</p>
+  {% else %}
+    <ul class="list refs-list" role="list">
+      {% for release in releases %}
+      <li>
+        <a class="list__row" href="/{{ repo.owner_name }}/{{ repo.name }}/releases/{{ release.id }}">
+          <svg class="icon" aria-hidden="true"><use href="/img/icons.svg#tag"></use></svg>
+          <div class="list__main">
+            <div class="list__title"><bdi>{{ release.title }}</bdi></div>
+            <div class="list__meta"><bdi class="mono">{{ release.tag_name }}</bdi></div>
+          </div>
+          {% if let Some(date) = release.published_at %}
+            <time class="badge" datetime="{{ date }}">{{ date }}</time>
+          {% else %}
+            <span class="badge">{{ chrome.locale.t(crate::i18n::RepoFeatureText::ReleaseDraft) }}</span>
+          {% endif %}
+        </a>
+      </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+  {% include "pagination.html" %}
+</div>
+{% endblock %}

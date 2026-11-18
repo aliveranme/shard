@@ -30,6 +30,7 @@ mod pull_diff;
 mod pull_review;
 mod recovery;
 mod refs;
+mod repo_features;
 mod repo_lifecycle;
 mod repo_objects;
 mod repo_search;

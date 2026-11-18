@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "repo_header.html" %}
+<div class="page settings-main">
+  <header class="page-head">
+    <div>
+      <a href="{{ release_url }}">{{ chrome.locale.t(crate::i18n::RepoFeatureText::Releases) }}</a>
+      <h1 class="page-title">{{ heading }}</h1>
+    </div>
+  </header>
+  {% if let Some(message) = error %}
+    <div class="alert alert--error" role="alert">{{ message }}</div>
+  {% endif %}
+  {% if let Some(message) = tag_notice %}
+    <p class="alert alert--warn" role="status">{{ message }}</p>
+  {% endif %}
+  {% if current.is_none() && tags.is_empty() && tag_notice.is_none() %}
+    <p class="card empty">{{ chrome.locale.t(crate::i18n::RepoFeatureText::NoTags) }}</p>
+  {% endif %}
+  <form class="form card" method="post" action="{{ release_url }}/{% if let Some(release) = current %}{{ release.id }}/edit{% else %}new{% endif %}">
+    {% if let Some(release) = current %}<input type="hidden" name="version" value="{{ release.version }}">{% endif %}
+    {% include "csrf.html" %}
+    {% if published %}
+      <div class="field">
+        <span class="label">{{ chrome.locale.t(crate::i18n::RepoFeatureText::GitTag) }}</span>
+        <bdi class="mono refs-row__hash">{{ fields.tag_name }}</bdi>
+      </div>
+    {% else %}
+      <div class="field">
+        <label for="tag-name">{{ chrome.locale.t(crate::i18n::RepoFeatureText::GitTag) }}</label>
+        <select class="select mono" id="tag-name" name="tag_name" required dir="ltr">
+          <option value="">{{ chrome.locale.t(crate::i18n::RepoFeatureText::ChooseTag) }}</option>
+          {% if missing_selection %}<option value="{{ fields.tag_name }}" selected>{{ fields.tag_name }}</option>{% endif %}
+          {% for tag in tags %}
+            <option value="{{ tag.name }}"{% if tag.name == fields.tag_name %} selected{% endif %}>{{ tag.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    {% endif %}
+    <div class="field">
+      <label for="release-title">{{ chrome.locale.t(crate::i18n::DiscussionText::Title) }}</label>
+      <input class="input" id="release-title" name="title" value="{{ fields.title }}" required dir="auto">
+    </div>
+    <div class="field">
+      <label for="release-notes">{{ chrome.locale.t(crate::i18n::RepoFeatureText::ReleaseNotes) }}</label>
+      <textarea class="textarea" id="release-notes" name="notes" placeholder="{{ chrome.locale.t(crate::i18n::CommonText::MarkdownSupported) }}" dir="auto">
+{{ fields.notes }}</textarea>
+    </div>
+    <div class="form__actions">
+      {% if let Some(release) = current %}
+        {% if release.published_at.is_some() %}
+          <button class="btn btn--primary" type="submit">{{ chrome.locale.t(crate::i18n::IssueMetadataText::SaveChanges) }}</button>
+        {% else %}
+          <button class="btn btn--ghost" type="submit">{{ chrome.locale.t(crate::i18n::RepoFeatureText::SaveDraft) }}</button>
+          <button class="btn btn--primary" type="submit" name="action" value="publish"{% if tags.is_empty() %} disabled{% endif %}>{{ chrome.locale.t(crate::i18n::RepoFeatureText::PublishRelease) }}</button>
+        {% endif %}
+        <a class="btn btn--ghost" href="{{ release_url }}/{{ release.id }}">{{ chrome.locale.t(crate::i18n::DiscussionText::Cancel) }}</a>
+      {% else %}
+        <button class="btn btn--primary" type="submit"{% if tags.is_empty() %} disabled{% endif %}>{{ chrome.locale.t(crate::i18n::RepoFeatureText::SaveDraft) }}</button>
+        <a class="btn btn--ghost" href="{{ release_url }}">{{ chrome.locale.t(crate::i18n::DiscussionText::Cancel) }}</a>
+      {% endif %}
+    </div>
+  </form>
+  {% if let Some(release) = current %}
+    <details class="card card--danger">
+      <summary>{{ chrome.locale.t(crate::i18n::RepoFeatureText::RemoveRelease) }}</summary>
+      <form class="form" method="post" action="{{ release_url }}/{{ release.id }}/delete" style="margin-block-start: 12px">
+        {% include "csrf.html" %}
+        <input type="hidden" name="version" value="{{ release.version }}">
+        <p>{{ chrome.locale.t(crate::i18n::RepoFeatureText::RemoveReleaseHelp) }}</p>
+        <button class="btn btn--danger" type="submit">{{ chrome.locale.t(crate::i18n::RepoFeatureText::RemoveRelease) }}</button>
+      </form>
+    </details>
+  {% endif %}
+</div>
+{% endblock %}

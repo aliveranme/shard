@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page">
+  <header class="page-head">
+    <h1 class="page-title">{{ chrome.locale.t(crate::i18n::RepoFeatureText::StarredRepositories) }}</h1>
+  </header>
+  {% if repos.is_empty() %}
+    <p class="card empty">{{ chrome.locale.t(crate::i18n::RepoFeatureText::NoStarredRepositories) }}</p>
+  {% else %}
+    {% let show_counts = true %}
+    {% let show_updated = true %}
+    {% include "repo_cards.html" %}
+  {% endif %}
+  {% include "pagination.html" %}
+</div>
+{% endblock %}

@@ -1,0 +1,53 @@
+catalog! {
+    RepoFeatureText {
+        Releases => "Releases", "发行版本";
+        NewRelease => "New release", "新建发行版本";
+        EditRelease => "Edit release", "编辑发行版本";
+        NoReleases => "No releases on this page.", "此页暂无发行版本。";
+        ReleaseDraft => "Draft", "草稿";
+        GitTag => "Git tag", "Git 标签";
+        ChooseTag => "Choose a tag", "选择标签";
+        NoTags => "Push a Git tag before creating a release.", "请先推送一个 Git 标签以创建发行版本。";
+        ReleaseNotes => "Release notes", "发行说明";
+        SaveDraft => "Save draft", "保存草稿";
+        PublishRelease => "Publish release", "发布版本";
+        RemoveRelease => "Remove release", "移除发行版本";
+        RemoveReleaseHelp => "This removes the release page and its notes.", "此操作会移除发行页面和发行说明。";
+        MissingRelease => "Release not found.", "未找到发行版本。";
+        ReleaseWriteRequired => "Repository write access is required to manage releases.", "管理发行版本需要仓库写入权限。";
+        InvalidReleaseTitle => "Enter a release title of up to 200 characters.", "请输入不超过 200 个字符的发行标题。";
+        ReleaseNotesTooLong => "Release notes must be 64 KiB or smaller.", "发行说明不能超过 64 KiB。";
+        TagMustPointToCommit => "Choose an existing Git tag that points to a commit.", "请选择指向提交的现有 Git 标签。";
+        ReleaseTagUsed => "This tag already has a release.", "此标签已有对应的发行版本。";
+        ReleaseChanged => "This release changed. Reload it and try again.", "此发行版本已更改。请重新加载后再试。";
+        IssueTemplates => "Issue templates", "议题模板";
+        NewIssueTemplate => "New template", "新建模板";
+        EditIssueTemplate => "Edit template", "编辑模板";
+        IssueTemplate => "Issue template", "议题模板";
+        NoIssueTemplates => "No issue templates yet.", "暂无议题模板。";
+        IssueTemplateName => "Template name", "模板名称";
+        IssueTemplateTitle => "Default issue title", "默认议题标题";
+        IssueTemplateBody => "Default issue description", "默认议题描述";
+        RemoveIssueTemplate => "Remove template", "移除模板";
+        RemoveIssueTemplateHelp => "This removes the template from the new issue form.", "此操作会从新建议题表单中移除此模板。";
+        MissingIssueTemplate => "Issue template not found.", "未找到议题模板。";
+        InvalidIssueTemplateName => "Enter a template name of up to 100 characters.", "请输入不超过 100 个字符的模板名称。";
+        InvalidIssueTemplateTitle => "The default issue title must be 200 characters or fewer.", "默认议题标题不能超过 200 个字符。";
+        IssueTemplateBodyTooLong => "The default issue description must be 64 KiB or smaller.", "默认议题描述不能超过 64 KiB。";
+        IssueTemplateNameUsed => "A template with this name already exists.", "已有同名模板。";
+        IssueTemplateChanged => "This template changed. Reload it and try again.", "此模板已更改。请重新加载后再试。";
+        BlankIssue => "Blank issue", "空白议题";
+        ApplyIssueTemplate => "Apply template", "应用模板";
+        ApplyIssueTemplateHelp => "Applying a template fills empty fields.", "应用模板会填入空白字段。";
+        Reactions => "Reactions", "回应";
+        Upvote => "Upvote", "赞成";
+        Downvote => "Downvote", "反对";
+        InvalidReaction => "Choose an available reaction.", "请选择可用的回应。";
+        Watch => "Watch", "关注";
+        Unwatch => "Unwatch", "取消关注";
+        Star => "Star", "收藏";
+        Unstar => "Unstar", "取消收藏";
+        StarredRepositories => "Starred repositories", "收藏的仓库";
+        NoStarredRepositories => "No starred repositories on this page.", "此页暂无收藏的仓库。";
+    }
+}

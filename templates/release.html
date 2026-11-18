@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "repo_header.html" %}
+<div class="page">
+  <header class="page-head">
+    <div>
+      <a href="/{{ repo.owner_name }}/{{ repo.name }}/releases">{{ chrome.locale.t(crate::i18n::RepoFeatureText::Releases) }}</a>
+      <h1 class="page-title"><bdi>{{ release.title }}</bdi></h1>
+      <div class="repo-head__meta">
+        <span class="badge"><bdi class="mono">{{ release.tag_name }}</bdi></span>
+        {% if let Some(date) = release.published_at %}
+          <time datetime="{{ date }}">{{ date }}</time>
+        {% else %}
+          <span class="badge">{{ chrome.locale.t(crate::i18n::RepoFeatureText::ReleaseDraft) }}</span>
+        {% endif %}
+      </div>
+    </div>
+    {% if writer %}
+      <a class="btn btn--ghost" href="/{{ repo.owner_name }}/{{ repo.name }}/releases/{{ release.id }}/edit">{{ chrome.locale.t(crate::i18n::RepoFeatureText::EditRelease) }}</a>
+    {% endif %}
+  </header>
+  <div class="form card">
+    <div class="form__actions">
+      <a class="btn btn--ghost" href="/{{ repo.owner_name }}/{{ repo.name }}/archive/{{ release.commit_hash }}">{{ chrome.locale.t(crate::i18n::RepoObjectText::DownloadSource) }}</a>
+      <a class="btn btn--ghost" href="/{{ repo.owner_name }}/{{ repo.name }}/commit/{{ release.commit_hash }}">{{ chrome.locale.t(crate::i18n::RepoObjectText::Commit) }}</a>
+    </div>
+    {% if !notes_html.is_empty() %}<div class="markup">{{ notes_html|safe }}</div>{% endif %}
+  </div>
+</div>
+{% endblock %}

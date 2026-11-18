@@ -1,0 +1,13 @@
+<div class="field">
+  <label for="issue-template">{{ chrome.locale.t(crate::i18n::RepoFeatureText::IssueTemplate) }}</label>
+  <div class="form__actions">
+    <select class="select" id="issue-template" name="issue_template" aria-describedby="issue-template-help">
+      <option value="">{{ chrome.locale.t(crate::i18n::RepoFeatureText::BlankIssue) }}</option>
+      {% for choice in issue_templates %}
+        <option value="{{ choice.id }}"{% if choice.is_selected(selected_issue_template.as_ref()) %} selected{% endif %}>{{ choice.name }}</option>
+      {% endfor %}
+    </select>
+    <button class="btn btn--ghost" type="submit" name="apply_issue_template" value="1" formnovalidate>{{ chrome.locale.t(crate::i18n::RepoFeatureText::ApplyIssueTemplate) }}</button>
+  </div>
+  <span class="help" id="issue-template-help">{{ chrome.locale.t(crate::i18n::RepoFeatureText::ApplyIssueTemplateHelp) }}</span>
+</div>
