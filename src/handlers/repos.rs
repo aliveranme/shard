@@ -395,6 +395,9 @@ pub async fn settings(req: Request, ctx: RouteContext<AppState>) -> Result<Respo
             Some("delete-storage-failed") => Some(RepoText::DeleteStorageFailed),
             Some("delete-failed") => Some(RepoText::DeleteFailed),
             Some("save-failed") => Some(RepoText::SaveFailed),
+            Some("branch-not-found") => Some(RepoText::DefaultBranchNotFound),
+            Some("branch-check-limit") => Some(RepoText::RefsLimit),
+            Some("branch-check-unavailable") => Some(RepoText::StorageUnavailable),
             _ => None,
         }.map(|key| state.locale.t(key).into()),
         message: util::query_param(&req, "saved").filter(|value| value == "1"),
@@ -422,6 +425,24 @@ pub async fn update_settings(_req: Request, ctx: RouteContext<AppState>) -> Resu
     let default_branch = util::form_value(form, "default_branch")
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| repo.default_branch.clone());
+    if default_branch != repo.default_branch {
+        let inventory = match storage_handle(&state, &repo.artifacts_repo).await {
+            Ok(handle) => refs::load(&handle).await,
+            Err(error) => {
+                console_log!("repository: verify web default branch: {error}");
+                Err(RefsError::Unavailable)
+            }
+        };
+        let error = match inventory {
+            Ok(refs) if refs.branches.iter().any(|branch| branch.name == default_branch) => None,
+            Ok(_) => Some("branch-not-found"),
+            Err(RefsError::Limit) => Some("branch-check-limit"),
+            Err(RefsError::Unavailable) => Some("branch-check-unavailable"),
+        };
+        if let Some(error) = error {
+            return util::redirect(&format!("/{}/{}/settings?error={error}", repo.owner_name, repo.name));
+        }
+    }
 
     let updated = async {
         let database = state.db()?;

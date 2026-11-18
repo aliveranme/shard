@@ -19,6 +19,9 @@ catalog! {
         Size => "Size", "大小";
         About => "About", "关于";
         DefaultBranch => "Default branch", "默认分支";
+        WebDefaultBranch => "Default branch on the web", "网页默认分支";
+        WebDefaultBranchHelp => "Used for browsing and as the initial target of new pull requests. Git clones follow the remote HEAD managed by Artifacts.", "用于网页浏览和新合并请求的初始目标分支。Git 克隆使用 Artifacts 管理的远端 HEAD。";
+        DefaultBranchNotFound => "Push the branch to this repository before setting it as the web default.", "请先将该分支推送到此仓库，再将它设为网页默认分支。";
         Visibility => "Visibility", "可见性";
         Updated => "Updated", "更新时间";
         Clone => "Clone", "克隆";

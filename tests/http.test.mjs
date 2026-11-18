@@ -384,6 +384,28 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
         assert.ok(refs.body.includes(oid));
       }
       assert.equal((await new Client().get(`${privateRepo}/refs`)).status, 404);
+
+      const settingsPath = `${history}/settings`;
+      const gitHead = async () => (await git("-C", worktree, "ls-remote", "--symref", "origin", "HEAD")).stdout;
+      const remoteHead = await gitHead();
+      assert.match(remoteHead, /ref: refs\/heads\/main\s+HEAD/);
+      for (const invalid of [tag, "feature/missing", "main~1"]) {
+        const rejected = await owner.post(settingsPath, {
+          default_branch: invalid, description: "Must not be saved", visibility: "private",
+        });
+        redirected(rejected);
+        const page = await owner.get(rejected.location);
+        assert.match(page.body, /Push the branch to this repository/);
+        assert.doesNotMatch(page.body, /Must not be saved/);
+      }
+      assert.equal((await new Client().get(history)).status, 200);
+      const saved = await owner.post(settingsPath, { default_branch: "feature/readme", visibility: "public" });
+      redirected(saved);
+      assert.match((await owner.get(saved.location)).body, /Git clones follow the remote HEAD/);
+      assert.match((await owner.get(history)).body, /href="\/suiteowner\/history\/blob\/FEATURE.md\?branch=feature%2Freadme"/);
+      assert.equal(await gitHead(), remoteHead);
+      redirected(await owner.post(settingsPath, { default_branch: "main", visibility: "public" }));
+
       const branchPage = await owner.get("/suiteowner/history?branch=feature%2Freadme");
       assert.match(branchPage.body, /<option value="feature\/readme"\s+selected>/);
       assert.match(branchPage.body, /<button[^>]*type="submit">Browse branch<\/button>/);

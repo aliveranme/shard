@@ -165,9 +165,10 @@ escape the output, including interpolated values.
 - Account settings support password-confirmed email and password changes, email
   verification, password reset, and account deletion. Deletion requires transfer
   or removal of owned repositories and revokes sessions and access tokens.
-- Repository settings support visibility, description, default branch, rename,
-  transfer with recipient acceptance, and deletion. Previous paths retain the
-  repository's current permissions and keep serving existing Git remotes.
+- Repository settings support visibility, description, web default branch,
+  rename, transfer with recipient acceptance, and deletion. Changes to the web
+  default require an existing Git branch. Clones follow the Artifacts remote
+  `HEAD`. Previous paths retain current permissions and keep serving Git remotes.
 - Collaborators receive read or write access. Forks copy a visible repository.
   Forks from a private source remain private. Imports accept public HTTPS Git URLs.
   The copies page shows status until the repository is available.

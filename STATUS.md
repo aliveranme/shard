@@ -24,6 +24,7 @@ Update this file whenever a milestone lands or a limitation changes.
 | Access tokens | Read/write scopes, expiry and revocation, one-time secret display, last usage, and legacy credential compatibility. |
 | Repository access | Owners grant read or write access. Private visibility is enforced for Web, Git, search, downloads, and notification reads. Revocation removes access on subsequent requests. |
 | Repository lifecycle | Rename and accepted transfers preserve existing Web and Git routes. Forks preserve Git refs. The import form rejects sources outside its public HTTPS URL policy. |
+| Web default branch | Settings accept an existing Git branch and explain that clones follow the Artifacts remote `HEAD`. |
 | Git transport | Smart HTTP request and response bodies are streamed. Private clone requires a credential, and push also requires write scope and repository write access. |
 | Code browsing | Branch and tag inventory, branch-scoped trees and files, cursor-paginated first-parent history, parent links, and commit-pinned source TAR downloads. |
 | Pull requests | Fixed commit pair, bounded file and line diffs, explicit missing and limited states, review decisions and comments on changed lines. Writers can verify integration after pushing a merge. |
@@ -102,6 +103,7 @@ Architecture decisions and provider evidence are recorded in [PLAN.md](PLAN.md).
 | 2026-11-18 | Chromium at 320px, 390px, and 1365px | Sign-in, recovery request, and saved Simplified Chinese preference worked. Six views had one main landmark, one H1, and no page overflow. Long diff lines scrolled within the diff. |
 | 2026-11-18 | Local D1 and Git restore | Imported D1 users, routes, PRs, and notification counts matched the source. The restored Git mirror passed `git fsck --full` with identical refs and object IDs. |
 | 2026-11-18 | `mise exec -- node --test tests/http.test.mjs` | 22 isolated HTTP and Git scenarios passed, with 23 passing Node test results. The suite covered collaborator revocation, immutable PR comparisons, verified integration, CI result updates, email link replay, and signed webhook retries. |
+| 2026-11-18 | HTTP and Git regression, Chromium at 390px and 1365px | Rejected missing branches, tags and revision expressions. Saved a slash-named web default and confirmed the remote `HEAD` was unchanged. |
 
 ## How to update
 
