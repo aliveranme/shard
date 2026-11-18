@@ -1,4 +1,4 @@
-# Shard toolchain + tasks. Everything runs through mise so the repo is self-contained.
+# Shard toolchain and tasks. Git keeps this file LF for multiline shell commands.
 [tools]
 rust = "1.100.0"
 node = "26.13.1"
