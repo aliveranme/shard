@@ -22,14 +22,14 @@ Use the pinned Wrangler simulator and real Git over loopback for validation. App
 | Import | The binding imports [public HTTPS remotes](https://developers.cloudflare.com/artifacts/guides/import-repositories/). Import can complete asynchronously. | Private source credentials have no documented native binding flow. Require a separately authorized Git import path for private sources. |
 | Search and metadata | D1 supports transactional [batches](https://developers.cloudflare.com/d1/worker-api/d1-database/#batch) and [FTS5](https://developers.cloudflare.com/d1/sql-api/sql-statements/#supported-sqlite-extensions). | Repository and issue metadata can be indexed in D1. Code and commit search need a visibility-aware, bounded Git indexing pipeline. |
 | Limits | [Workers](https://developers.cloudflare.com/workers/platform/limits/#memory) have 128 MB per isolate. [Artifacts](https://developers.cloudflare.com/artifacts/platform/limits/) caps pushes at 64 MiB and new repositories at 1 GB. [Streams](https://developers.cloudflare.com/workers/runtime-apis/streams/) reduce buffering within both ceilings. | Show limits to users. Git protocol v2 receive-pack is unavailable upstream. Test the supported clone and push paths locally. |
-| Public operations | [Rate Limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/) is approximate per Cloudflare location. [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) indexes structured events. [D1 Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/) restores metadata in place. | A deployed site needs a Workers Paid account, an Artifacts namespace, real D1 IDs and ownership of the target domain. Keep an independent mirror of Git objects and refs. Production restores need operator authorization. |
+| Public operations | [Rate Limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/) is approximate per Cloudflare location. [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) indexes structured events. [D1 Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/) restores metadata in place. | A deployed site needs Workers Paid, an Artifacts namespace, a D1 database, and a `workers.dev` address or an owned custom domain. Keep an independent mirror of Git objects and refs. Production restores need operator authorization. |
 | Email | [Email Service](https://developers.cloudflare.com/email-service/get-started/send-emails/) requires Cloudflare DNS and an onboarded sending domain. | Real account verification, password reset and notification delivery require the configured sender and access to a test mailbox. |
 
 ## Deployment prerequisites
 
-- Staging requires Workers Paid with Artifacts access, an Artifacts namespace,
-  real D1 IDs and an owned HTTPS origin. Use staging to verify allowed public
-  import through completion, real scheduled delivery and Artifacts push events.
+- Staging requires Workers Paid with Artifacts access and its own D1 database
+  and Artifacts namespace. Use `workers.dev` or an owned HTTPS domain. Verify
+  public Git imports, scheduled delivery, and Artifacts push events there.
 - Email delivery requires the configured `EMAIL` binding, a verified sending
   domain and a mailbox available for end-to-end verification.
 - Web merges, protected refs and merge queues require an authorized execution

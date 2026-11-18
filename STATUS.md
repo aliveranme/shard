@@ -11,8 +11,8 @@ Update this file whenever a milestone lands or a limitation changes.
 | Tooling | Node 26.13.1, Wrangler 4.164.0, mise |
 | Storage | D1 (`shard`) + Artifacts namespace `shard` |
 | UI | `static/css/shard.css` implementing `DESIGN.md` |
-| Deployment | not deployed; `database_id` is still a placeholder |
-| Git remote | none configured (`origin` absent) |
+| Deployment | Deploy to Cloudflare and Wrangler scripts are configured. Production verification is pending. |
+| Source | [aliveranme/shard](https://github.com/aliveranme/shard) |
 
 ## Verified locally
 
@@ -38,7 +38,7 @@ Update this file whenever a milestone lands or a limitation changes.
 
 | Area | Requirement |
 |---|---|
-| Deployment | A Workers Paid account with Artifacts access, a real D1 database and an owned HTTPS origin. Staging exercises public HTTPS import, production delivery and restore, compatibility with existing D1 rows, and the GitHub Actions workflow once a remote is configured. |
+| Deployment | End-to-end deployment requires Workers Paid with Artifacts access. Verify the hosted build, live Git operations, public imports, scheduled delivery, and restore in staging. |
 | Email | An onboarded sending domain, an `EMAIL` binding, and an available mailbox to verify real delivery. |
 | Merge automation | Web merges, protected refs and merge queues need a component that can update a validated target ref atomically. Current merge verification relies on reachable commit IDs. |
 | Repository search | Code and commit search require a bounded permission-aware index. A push event subscription can drive ingestion, with staging needed to exercise push delivery. |
@@ -106,6 +106,8 @@ Architecture decisions and provider evidence are recorded in [PLAN.md](PLAN.md).
 | 2026-11-18 | HTTP and Git regression, Chromium at 390px and 1365px | Rejected missing branches, tags and revision expressions. Saved a slash-named web default and confirmed the remote `HEAD` was unchanged. |
 | 2026-11-18 | Wasm release build and focused HTTP/Git regression | Excluded target-only changes, rejected ambiguous ancestry and stale review forms, allowed one concurrent update, preserved historical line links, and verified an actual Git merge. |
 | 2026-11-18 | Migration 0013 and Ego Browser, desktop and 390px | Updated an existing PR from version 1 to 2 in Simplified Chinese, followed a historical comment to its original line, and verified that long lines scroll within the diff. |
+| 2026-11-18 | Clean Linux Workers Builds rehearsal and Wrangler dry run | Installed the pinned Rust/Wasm toolchain, built the bundle, resolved all four bindings, and applied all 13 migrations to an isolated D1 database with a different name. |
+| 2026-11-18 | Rendered README and Cloudflare deploy link | Browser opened the Cloudflare creation wizard. The repository-specific URL forwards the public Shard source. |
 
 ## How to update
 

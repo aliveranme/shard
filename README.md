@@ -1,18 +1,124 @@
-# shard
+# Shard
 
-A self-hosted, Cloudflare-native Git forge: repositories, issues and pull
-requests with a warm, conversation-first UI, running on Workers + D1 + Artifacts.
-See [STATUS.md](STATUS.md) for progress, verified behavior and missing pieces.
-The [delivery plan](PLAN.md) records Cloudflare dependencies and acceptance criteria.
-Contributor and coding-agent conventions live in [AGENT.md](AGENT.md).
+Shard is a self-hosted Git forge for personal projects and small teams on
+Cloudflare Workers. It hosts public and private repositories, issues, and pull
+requests in the same app. Standard Git clients clone, fetch, and push over
+HTTPS. The browser interface supports English and Simplified Chinese.
 
-- **Runtime**: Rust on Cloudflare Workers (`workers-rs`), built with `worker-build`.
-- **Git storage**: one [Cloudflare Artifacts](https://developers.cloudflare.com/artifacts/) repository per project.
-- **Metadata**: Cloudflare D1 (users, sessions, repos, issues, comments, tokens).
-- **Frontend**: a small CSS design system (amber/lavender accents, pill controls, 28px cards) applied to
-  Askama templates; the visual language follows `DESIGN.md`.
-- **Toolchain**: Rust 1.100, Node 26.13, Wrangler 4.164 and `worker-build` 0.9, pinned with
-  [mise](https://mise.jdx.dev/).
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)][cloudflare-deploy]
+
+[Deploy](#deploy-to-cloudflare) · [First repository](#first-repository) · [Local development](#local-development) · [简体中文](#简体中文)
+
+## Features
+
+- **Repositories** support read and write collaborators, forks, public HTTPS
+  imports, and transfers. Previous Web and Git URLs retain their access checks
+  after rename or transfer. Forks of private repositories remain private.
+  Browse branches, tags, files, and commit history or download a source archive
+  pinned to a commit. The web default branch must exist in Git. Clones follow
+  the Artifacts remote `HEAD`.
+- **Issues** support editing, labels, milestones, assignees, state history, and
+  search across titles, bodies, and comments. The inbox shows activity in
+  repositories you can still access.
+- **Pull requests** compare the source branch with its best common ancestor.
+  Authors and writers can update the saved comparison. Approvals, change
+  requests, and line comments link to the version reviewed. Comparisons saved
+  before merge-base support retain their original two-tip diff until updated.
+  Merge locally, push, then verify the integration in Shard.
+- **Accounts and integrations** include scoped Git tokens, commit checks, and
+  signed issue and review webhooks. Account settings support password-confirmed
+  credential changes. Account deletion requires transferring or removing owned
+  repositories and revokes sessions and access tokens.
+
+## Architecture
+
+| Layer | Responsibility |
+|---|---|
+| Cloudflare Workers | Rust compiled to WebAssembly with `workers-rs`. Handles Web and Git requests. |
+| D1 (`DB`) | Accounts, sessions, access tokens, repository metadata, issues, reviews and notifications. |
+| Cloudflare Artifacts (`ARTIFACTS`) | Git objects and refs. Each Shard repository has its own Artifacts repository. |
+| Askama and Workers Static Assets (`ASSETS`) | Server-rendered pages and responsive CSS. [Design guide](DESIGN.md) |
+
+Local verification and the delivery plan cover tested workflows and remaining
+platform requirements. [Project status](STATUS.md) · [Delivery plan](PLAN.md)
+
+## Deploy to Cloudflare
+
+Shard requires a Cloudflare account on **Workers Paid** with Artifacts access.
+The Worker can use its `workers.dev` address or a Cloudflare custom domain.
+[Artifacts pricing](https://developers.cloudflare.com/artifacts/platform/pricing/) · [Custom domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)
+
+### Deploy from GitHub or GitLab
+
+1. Click **Deploy to Cloudflare** at the top of this page and select your
+   Cloudflare account.
+2. Connect GitHub or GitLab and choose the destination repository, Worker name,
+   and D1 database name. Cloudflare copies Shard into your Git account and
+   provisions the `DB` binding.
+3. Keep the repository root as the build root, `npm run build` as the build
+   command, and `npm run deploy` as the deploy command. Click **Deploy** and
+   open the `workers.dev` URL when Workers Builds finishes.
+
+The badge uses the public Shard repository as its source. If you import an
+existing copy directly through Workers & Pages, [create and configure its D1 database](#deploy-from-a-local-checkout)
+before the first build. A custom build API token needs Workers Scripts Edit
+and D1 Edit in the target Cloudflare account.
+[Deploy to Cloudflare buttons](https://developers.cloudflare.com/workers/platform/deploy-buttons/) · [Workers Builds settings](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/)
+
+Workers Builds uses the Node version in `.node-version` and installs the pinned
+Rust toolchain and `worker-build`. The deploy command applies migrations to
+the `DB` binding before publishing the Worker. Artifacts creates the configured
+namespace when Shard creates its first Git repository.
+[Artifacts namespaces](https://developers.cloudflare.com/artifacts/concepts/namespaces/)
+
+### Deploy from a local checkout
+
+Set up the toolchain as shown in the local development section. Authenticate,
+then create a production D1 database in the same account as the Worker.
+
+```sh
+mise exec -- npx wrangler login
+mise exec -- npx wrangler d1 create shard
+```
+
+Copy the database ID into `d1_databases[0].database_id` in `wrangler.jsonc`.
+If you chose another database name, update `database_name` and keep the binding
+named `DB`. Run `mise run deploy` to apply remote migrations and deploy.
+
+### First repository
+
+1. Open your instance and create an account at `/user/sign_up`. Registration
+   is open on the instance.
+2. Choose **New repository** and set its visibility. Create a write token in
+   **Account settings → Access tokens** and save it when Shard displays it.
+3. Copy the HTTPS clone URL from the repository page. Use your Shard username
+   and the write token as the password when Git prompts for a push. New
+   repositories use `main` by default.
+
+```sh
+git clone "$SHARD_CLONE_URL" my-repository # Set this to the URL copied from Shard.
+cd my-repository
+printf '# My repository\n' > README.md
+git add README.md
+git commit -m "Initial commit"
+git push -u origin HEAD:main
+```
+
+### Optional email setup
+
+Set `PUBLIC_ORIGIN` to the HTTPS origin of your instance and `EMAIL_FROM` to an
+address on your onboarded sending domain. Add the `EMAIL` binding via Wrangler
+`send_email`. Verification links expire after 24 hours. Password-reset links
+expire after 30 minutes and a successful reset revokes all browser sessions for
+the account. [Cloudflare Email Service](https://developers.cloudflare.com/email-service/get-started/send-emails/)
+
+## 简体中文
+
+Shard 是部署在 Cloudflare 上的自托管 Git 平台，适用于个人项目和小团队。数据库保存账户、权限、议题和审查记录，Git 对象由 Artifacts 管理。界面语言可在页脚或账户设置中切换。
+
+点击顶部的 **Deploy to Cloudflare** 徽章，选择 Cloudflare 账户，连接 GitHub 或 GitLab，并确认 Worker 和 D1 数据库名称。Cloudflare 会复制源码、创建 D1 数据库、构建 Worker 并应用迁移。部署需要开通 **Workers Paid** 并可使用 Artifacts。 [官方部署按钮文档](https://developers.cloudflare.com/workers/platform/deploy-buttons/)
+
+在本地试用无需 Cloudflare 账号。安装 Git 2.32 或更高版本和 mise 后，运行 `mise install`、`mise run setup`、`mise run dev`，打开 `http://localhost:8787`。
 
 ## Layout
 
@@ -46,9 +152,10 @@ src/
   templates.rs      Askama page structs
 templates/          Askama page templates
 migrations/         D1 schema
+scripts/            Workers Builds toolchain bootstrap
 static/             design-system CSS, logo
 tests/              isolated local HTTP and real Git regression scenarios
-wrangler.jsonc      bindings: DB (D1), ARTIFACTS, ASSETS
+wrangler.jsonc      Worker bindings, scheduled maintenance and assets
 ```
 
 ## Local development
@@ -56,8 +163,7 @@ wrangler.jsonc      bindings: DB (D1), ARTIFACTS, ASSETS
 ```sh
 mise install          # Rust and Node versions pinned by the project
 mise run setup        # WebAssembly target, IDE tools, worker-build and dependencies
-mise run db:migrate   # apply migrations to the local D1
-mise run dev          # wrangler dev on http://localhost:8787
+mise run dev          # applies local D1 migrations and starts http://localhost:8787
 ```
 
 `rust-toolchain.toml` selects the same Rust version for shells and IDEs. Setup
@@ -78,29 +184,6 @@ The Artifacts binding uses Wrangler's local simulator (git 2.32+ must be on
 `PATH`). Local repositories and tokens are separate from deployed ones.
 `cargo check --target wasm32-unknown-unknown` type-checks; `mise run build`
 produces `build/index.js`.
-
-Register an account, create a repository, then push:
-
-```sh
-git clone http://localhost:8787/<user>/<repo>.git
-```
-
-## Deploy
-
-Artifacts requires the **Workers Paid** plan.
-
-```sh
-node node_modules/wrangler/bin/wrangler.js d1 create shard # copy database_id into wrangler.jsonc
-mise run deploy                                         # apply remote migrations, build and deploy
-```
-
-Optional custom domain via `routes` in `wrangler.jsonc`.
-
-Set `PUBLIC_ORIGIN` to the public HTTPS origin and `EMAIL_FROM` to an address on
-an onboarded sending domain. Bind `EMAIL` using Wrangler's `send_email` binding.
-This enables links to verify addresses and reset passwords. Verification links
-expire after 24 hours and reset links after 30 minutes. A reset invalidates all
-browser sessions for that account. [Cloudflare Email Service](https://developers.cloudflare.com/email-service/get-started/send-emails/)
 
 ## URL shape
 
@@ -139,6 +222,12 @@ revoked tokens are rejected. Legacy tokens without an expiry remain valid until
 revoked. The secret is shown only at creation. Use it as the password when Git
 prompts. Anonymous clone works for public repositories.
 
+Passwords use PBKDF2-SHA256. Browser sessions use HTTP-only cookies. Session and
+token secrets are stored as hashes. Browser forms require session-bound CSRF
+tokens and same-origin requests. Failed logins are limited to eight per
+source/account pair within 15 minutes. Recovery pages send only the site origin
+as referrer. Git smart HTTP returns an empty HTTP 404 for a missing `.git` repository.
+
 ## Interface language
 
 Open **Language** in the footer or **Account settings → Language**. Choose
@@ -150,51 +239,13 @@ The **Use browser language** setting explicitly selects the browser header.
 
 The Worker translates Web UI labels, validation messages, errors, accessibility
 labels, relative dates and counts. Repository contents, issues and commit
-messages appear in the language their authors used. Git smart HTTP returns an
-empty HTTP 404 when the `.git` repository does not exist.
+messages appear in the language their authors used.
 
 To add a locale, register its tag and display label in `src/i18n/mod.rs`, add
 its text to each catalog in `src/i18n/`, and add its formatting and negotiation
 rules. Extend the D1 locale constraint with a forward migration. Keep
 interpolated messages together so translators can change word order. Templates
 escape the output, including interpolated values.
-
-## Implemented
-
-- Registration/login with PBKDF2-SHA256 passwords and HTTP-only session cookies;
-  failed logins are limited to eight per source/account pair in a 15-minute window.
-- Account settings support password-confirmed email and password changes, email
-  verification, password reset, and account deletion. Deletion requires transfer
-  or removal of owned repositories and revokes sessions and access tokens.
-- Repository settings support visibility, description, web default branch,
-  rename, transfer with recipient acceptance, and deletion. Changes to the web
-  default require an existing Git branch. Clones follow the Artifacts remote
-  `HEAD`. Previous paths retain current permissions and keep serving Git remotes.
-- Collaborators receive read or write access. Forks copy a visible repository.
-  Forks from a private source remain private. Imports accept public HTTPS Git URLs.
-  The copies page shows status until the repository is available.
-- Code browsing includes trees, blobs, raw downloads, commit history with parent
-  links, branch and tag discovery, and commit-pinned source archives.
-- Issues support editing, labels, a milestone, an assignee, Markdown discussion,
-  state history, and search across titles, bodies and comments. The inbox surfaces
-  new issue, discussion and review activity based on current access.
-- Pull requests save both branch tips and their best common ancestor at creation.
-  File and line diffs compare the common ancestor to the source tip, excluding
-  target-only changes. Pushes leave the saved comparison in place. The author
-  or a repository writer can choose **Update comparison** on an open request.
-  Decisions and line comments link to the exact comparison they reviewed.
-  Pre-existing comparisons retain their two-tip diff until updated.
-  After a local merge and push, a writer can verify that both saved branch tips
-  are ancestors of the current target tip.
-- Personal access tokens have read/write scopes, expiry, last usage, and revocation.
-  Session and access-token secrets are stored as hashes.
-- Browser forms use session-bound CSRF tokens and same-origin checks. Recovery
-  pages send only the site origin as referrer so email link paths stay private.
-- The Worker echoes an `X-Request-ID` on responses for log correlation and applies
-  per-source limits separately to browser, Git, and check update traffic.
-  Daily maintenance at 03:00 UTC removes expired credential and throttle rows.
-- Responsive, light-only UI using the DESIGN.md tokens: pill inputs and buttons,
-  rounded cards, amber primary actions, lavender accents and warm neutral surfaces.
 
 ## Integrations
 
@@ -226,8 +277,8 @@ and `SHARD_REPO_BACKUP` to its own absolute backup directory. Create both backup
 directories before running these commands.
 
 ```sh
-mise exec -- node node_modules/wrangler/bin/wrangler.js d1 export shard --local --persist-to "$SHARD_SOURCE_D1" --output "$SHARD_BACKUP/shard.sql"
-mise exec -- node node_modules/wrangler/bin/wrangler.js d1 execute shard --local --persist-to "$SHARD_RESTORE_D1" --file "$SHARD_BACKUP/shard.sql"
+mise exec -- node node_modules/wrangler/bin/wrangler.js d1 export DB --local --persist-to "$SHARD_SOURCE_D1" --output "$SHARD_BACKUP/shard.sql"
+mise exec -- node node_modules/wrangler/bin/wrangler.js d1 execute DB --local --persist-to "$SHARD_RESTORE_D1" --file "$SHARD_BACKUP/shard.sql"
 git clone --mirror "$SHARD_REPO_URL" "$SHARD_REPO_BACKUP/source.git"
 git -C "$SHARD_REPO_BACKUP/source.git" bundle create "$SHARD_REPO_BACKUP/source.bundle" --all
 git clone --mirror "$SHARD_REPO_BACKUP/source.bundle" "$SHARD_REPO_BACKUP/restored.git"
@@ -239,6 +290,9 @@ object IDs in both mirrors. For an empty repository, retain the mirror and its
 D1 record. Production recovery includes restoring or provisioning the Artifacts
 repositories under their expected names before serving the restored database.
 [D1 export and import](https://developers.cloudflare.com/d1/best-practices/import-export-data/) · [D1 Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/)
+
+Worker responses include `X-Request-ID` for log correlation. Daily maintenance
+at 03:00 UTC removes expired sessions, tokens, login throttle windows, and email links.
 
 ## Limits
 
@@ -297,3 +351,5 @@ file-level change lists.
   tree entries are `{ name, mode, type, hash }`.
 - Git remotes accept a Bearer repo token; for Basic auth the password is the token
   secret before its `?expires=` suffix.
+
+[cloudflare-deploy]: https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Faliveranme%2Fshard

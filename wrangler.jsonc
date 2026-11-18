@@ -4,7 +4,7 @@
   "main": "build/index.js",
   "compatibility_date": "2026-11-17",
   "build": {
-    "command": "worker-build --release"
+    "command": "npm run build"
   },
   "assets": {
     "directory": "./static",
@@ -18,6 +18,7 @@
     {
       "binding": "DB",
       "database_name": "shard",
+      // Deploy to Cloudflare replaces this default with the provisioned database ID.
       "database_id": "00000000-0000-0000-0000-000000000000",
       "migrations_dir": "migrations"
     }

@@ -54,7 +54,8 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       WEBHOOK_ENDPOINT: `http://127.0.0.1:${receiver.address().port}/hooks/shard`,
     };
     config.d1_databases = config.d1_databases.map((binding) => ({
-      ...binding, remote: false, migrations_dir: resolve(root, binding.migrations_dir),
+      ...binding, database_name: `${binding.database_name}-http-tests`,
+      remote: false, migrations_dir: resolve(root, binding.migrations_dir),
     }));
     await writeFile(configPath, JSON.stringify(config));
     const cli = async (args) => {
@@ -67,7 +68,7 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       });
       return stdout;
     };
-    await cli(["d1", "migrations", "apply", "shard", "--local", "--persist-to", persistence]);
+    await cli(["d1", "migrations", "apply", "DB", "--local", "--persist-to", persistence]);
     const salt = "1f".repeat(16);
     const hash = `pbkdf2_sha256$100000$${salt}$${pbkdf2Sync(password, Buffer.from(salt, "hex"), 100_000, 32, "sha256").toString("hex")}`;
     const now = Math.floor(Date.now() / 1000);
@@ -88,7 +89,7 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
         SELECT id,'webhook-fixture','webhook-regression-repo','private',${now},${now}
         FROM users WHERE username='expiredfixture';
     `);
-    await cli(["d1", "execute", "shard", "--local", "--persist-to", persistence, "--file", fixture]);
+    await cli(["d1", "execute", "DB", "--local", "--persist-to", persistence, "--file", fixture]);
     worker = await unstable_dev(config.main, {
       config: configPath, local: true, ip: "127.0.0.1", port: 0,
       persist: true, persistTo: persistence, logLevel: "error",
@@ -575,7 +576,7 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       redirected(empty);
       assert.match(empty.location, /^\/suiteowner\/history\/pulls\/1/);
 
-      await cli(["d1", "execute", "shard", "--local", "--persist-to", persistence,
+      await cli(["d1", "execute", "DB", "--local", "--persist-to", persistence,
         "--command", `UPDATE pulls SET merge_base = '${"f".repeat(40)}'
           WHERE issue_id = (SELECT id FROM issues WHERE title = 'Deep comparison')`]);
       const unavailable = await owner.get(deepPull.location);
@@ -945,11 +946,11 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
         assert.equal(result.status, 200);
         await result.text();
       };
-      const stored = async () => JSON.parse(await cli(["d1", "execute", "shard", "--local", "--persist-to", persistence,
+      const stored = async () => JSON.parse(await cli(["d1", "execute", "DB", "--local", "--persist-to", persistence,
         "--json", "--command", "SELECT d.state, d.attempts, d.last_status FROM webhook_deliveries d JOIN repos r ON r.id=d.repo_id WHERE r.artifacts_repo='webhook-regression-repo'"]))[0].results;
       await tick();
       assert.deepEqual(await stored(), [{ state: "pending", attempts: 1, last_status: 503 }]);
-      await cli(["d1", "execute", "shard", "--local", "--persist-to", persistence, "--command",
+      await cli(["d1", "execute", "DB", "--local", "--persist-to", persistence, "--command",
         "UPDATE webhook_deliveries SET next_attempt_at=0 WHERE repo_id=(SELECT id FROM repos WHERE artifacts_repo='webhook-regression-repo')"]);
       await tick();
       assert.deepEqual(await stored(), [{ state: "sent", attempts: 2, last_status: 204 }]);
@@ -991,7 +992,7 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       const response = await fetch(`${base}/__scheduled?cron=0+3+*+*+*`);
       assert.equal(response.status, 200);
       await response.text();
-      const output = await cli(["d1", "execute", "shard", "--local", "--persist-to", persistence,
+      const output = await cli(["d1", "execute", "DB", "--local", "--persist-to", persistence,
         "--json", "--command", `SELECT
           (SELECT COUNT(*) FROM access_tokens WHERE token_hash='${sha(expiredSecret)}') AS tokens,
           (SELECT COUNT(*) FROM sessions WHERE token_hash='${sha(expiredSession)}') AS sessions`]);

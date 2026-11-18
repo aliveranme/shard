@@ -24,15 +24,11 @@ run = "node node_modules/wrangler/bin/wrangler.js dev --local"
 
 [tasks.build]
 description = "Build the Worker bundle"
-run = "worker-build --release"
+run = "npm run build"
 
 [tasks.deploy]
 description = "Apply D1 migrations and deploy to Cloudflare"
-run = """
-node node_modules/wrangler/bin/wrangler.js d1 migrations apply shard --remote
-worker-build --release
-node node_modules/wrangler/bin/wrangler.js deploy
-"""
+run = "npm run deploy"
 
 [tasks.check]
 description = "Type-check the Worker for wasm32"
@@ -53,8 +49,8 @@ run = "cargo fmt"
 
 [tasks."db:migrate"]
 description = "Apply migrations to the local D1 database"
-run = "node node_modules/wrangler/bin/wrangler.js d1 migrations apply shard --local"
+run = "npm run db:migrate"
 
 [tasks."db:console"]
 description = "Open a SQL console against the local D1 database"
-run = "node node_modules/wrangler/bin/wrangler.js d1 execute shard --local --command \"select name from sqlite_master where type='table'\""
+run = "node node_modules/wrangler/bin/wrangler.js d1 execute DB --local --command \"select name from sqlite_master where type='table'\""

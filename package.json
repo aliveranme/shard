@@ -5,10 +5,17 @@
   "description": "Shard - a self-hosted, Cloudflare-native Git forge",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "build": "worker-build --release",
+    "deploy": "wrangler d1 migrations apply DB --remote && wrangler deploy",
+    "build": "node scripts/build-worker.mjs",
     "test": "node --test tests/http.test.mjs",
-    "db:migrate": "wrangler d1 migrations apply shard --local"
+    "db:migrate": "wrangler d1 migrations apply DB --local"
+  },
+  "cloudflare": {
+    "bindings": {
+      "DB": {
+        "description": "Stores accounts, repository metadata, issues and pull requests. The deploy script applies the schema."
+      }
+    }
   },
   "devDependencies": {
     "wrangler": "4.164.0"
