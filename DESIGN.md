@@ -122,28 +122,53 @@ This guide covers the Copilot for Individuals product marketing page and related
 
 ## Shard interface
 
-The Shard web UI uses the palette above. The canvas and editable controls are
-white. Panels use near-white `#FDFDFB`, and toolbars and table headers use warm
-`#F5F5F0`. Rows move to `#F1F1EC` on hover and `#EDEDE7` on selection. Primary
-actions are amber, links and focus rings are blue, and lavender marks repository
-identity and open status. The Git diff uses muted green and red for added and
-removed lines, with a warm line-number gutter for the linked line.
+Shard follows the system color preference. The light theme keeps the original
+white canvas, warm neutral surfaces, amber actions, blue links and lavender
+accents. The dark theme uses warm graphite and adjusts link and status inks for
+contrast. The five surface roles use OKLab lightness steps of 1–3 percentage
+points. Warm and amber gradients use shades from their own color family.
+
+| Surface role | Light | Dark |
+| --- | --- | --- |
+| Canvas | `#FFFFFF` | `#191917` |
+| Panel | `#FAFAF8` | `#1E1E1B` |
+| Inset and table header | `#F5F5F0` | `#242420` |
+| Hover | `#EFEFE9` | `#2A2A26` |
+| Selected | `#E9E9E2` | `#30302B` |
 
 Define all interface colors in [`static/css/theme.css`](static/css/theme.css).
-Components use role variables for surfaces, text, borders, shadows, actions,
-feedback and the page logo. The standalone favicon uses the original brand
-colors. To add a palette, define an override such as `:root[data-theme="name"]`
-after the default `:root` block and set `data-theme` on `<html>`. Each palette
-can set `color-scheme` for native controls. Check text and focus contrast on the
-surfaces where they appear.
+Components consume semantic roles. An explicit `data-theme` on `<html>` takes
+precedence over the system preference and can select a palette defined by
+`:root[data-theme="name"]`. Page logo fills follow the theme. The standalone
+favicon carries the original brand colors.
 
-Shard uses a 4px spacing grid, 8px controls, 12px cards and 16px outer panels.
-The public homepage shows a Git diff and its line comment. Repository and
-discussion pages keep the application content in reading order at narrow widths.
+The interface uses self-hosted JetBrains Mono and Shard Han. The data UI uses
+12, 14, 16 and 28px type. Light weights are 500 for body text, 550 for controls,
+and 600 for headings. Dark weights are 460, 510, and 560. The Chinese font's
+Han glyphs use two Latin character cells. Characters outside the bundled fonts
+use the local fallback stack. The font assets are served by the Worker.
 
-Interaction feedback takes 150ms, menu and status reveals take 200ms, and the
-homepage entrance and diff-line cue take 360ms. Reduced-motion preferences turn
-off movement while retaining the focus, selection and line markers.
+JetBrains Mono comes from Fontsource 5.3.0. Shard Han is built from Google Fonts
+revision `2894aab31764f10f29c421bdfd2340d3b382d384` of Noto Sans SC. Its variable
+WOFF2 selects GB2312 level-one Han, Han from the UI catalogs and templates, and
+CJK punctuation and fullwidth forms. The build keeps the weight axis from 460
+to 600 and sets its default to 500. The assets include their SIL OFL notices.
+[JetBrains Mono OFL](static/fonts/jetbrains-mono-OFL.txt) · [Shard Han OFL](static/fonts/shard-han-OFL.txt)
+
+Use the 4px spacing grid and preserve the reading order as columns stack. On
+the branches and tags page, the title gap is 32px on desktop and 24px on mobile,
+the section heading gap is 12px, and the sections are 24px apart. The adaptive
+grid fits both sections when each has at least 22rem. Full hashes wrap in the
+available column and can be selected as text.
+
+Use 8px controls, 12px cards and 16px outer panels. Two zero-blur rings with
+0.5px and 1.5px spreads define panel edges. A darker ring indicates interaction,
+with a separate blue keyboard focus outline. Soft drop shadow belongs to the
+mobile menu. Internal dividers use the shared subtle border color.
+
+Interaction feedback takes 150ms, menu, status and reference list reveals take
+200ms, and the homepage entrance and diff-line cue take 360ms. Reduced motion
+retains focus outlines, full-strength state colors and line markers.
 
 The design review follows [Unslop by Damir Sokolovsky](https://x.com/heydamir), CC BY 4.0.
 [License](https://creativecommons.org/licenses/by/4.0/)

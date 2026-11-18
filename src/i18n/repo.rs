@@ -6,8 +6,8 @@ catalog! {
         BranchesAndTags => "Branches and tags", "分支和标签";
         Branches => "Branches", "分支";
         Tags => "Tags", "标签";
-        NoBranches => "No branches yet.", "暂无分支。";
-        NoTags => "No tags yet.", "暂无标签。";
+        NoBranches => "No branches have been pushed", "尚未推送分支";
+        NoTags => "No tags have been pushed", "尚未推送标签";
         TagObject => "Git object", "Git 对象";
         PeeledTarget => "Target object", "目标对象";
         RefsLimit => "The Git reference advertisement exceeds the size or record limit. Use Git to list the references.", "Git 引用公告超出大小或记录数量限制。请使用 Git 列出引用。";

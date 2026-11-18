@@ -158,9 +158,9 @@
         <div class="side-card">
           <h2 class="side-card__title">{{ chrome.locale.t(crate::i18n::DiscussionText::FilesChanged) }}</h2>
           {% if let Some(note) = diff_error %}
-            <p class="muted" style="font-size:.8125rem">{{ note }}</p>
+            <p>{{ note }}</p>
           {% else if changed.is_empty() %}
-            <p class="muted" style="font-size:.8125rem">{{ chrome.locale.t(crate::i18n::DiscussionText::NoFileChanges) }}</p>
+            <p>{{ chrome.locale.t(crate::i18n::DiscussionText::NoFileChanges) }}</p>
           {% else %}
             <div class="side-list">
               {% for file in changed %}
@@ -174,7 +174,7 @@
         </div>
         <div class="card card--warm">
           <h2 class="side-card__title">{{ chrome.locale.t(crate::i18n::DiscussionText::Merging) }}</h2>
-          <p class="muted" style="font-size:.8125rem">
+          <p class="meta">
             {{ chrome.locale.t(crate::i18n::DiscussionText::MergingHelp) }}
           </p>
           {% if can_verify_merge %}

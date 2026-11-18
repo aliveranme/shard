@@ -18,7 +18,7 @@ Shard is a Rust Git forge on Cloudflare Workers. D1 stores forge metadata. Git u
 
 ## UI contract
 
-Follow `DESIGN.md` for the white and warm off-white palette, amber primary actions, lavender accents, and blue links. Define interface colors in `static/css/theme.css` and reference semantic variables in component styles. Reuse the shared spacing, radii, and motion values. Use Segoe UI/system fonts and keep keyboard focus visible. Label every form control, verify narrow screens, and respect reduced-motion preferences. Show real empty, error and success states. Do not add decorative statistics or nonfunctional controls.
+Use the `b-end-design-system` skill for data and settings pages and follow the Shard section of `DESIGN.md`. Keep light and dark colors in `static/css/theme.css`. Use shared type, spacing, radius, ring and motion tokens. Use the local monospace fonts and adaptive grids. Verify keyboard focus, narrow screens and reduced motion. Label form controls and show real empty and error states.
 
 ## Data and security
 

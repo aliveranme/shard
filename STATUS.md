@@ -3,7 +3,7 @@
 Living record of what works, what is missing, and how it was verified.
 Update this file whenever a milestone lands or a limitation changes.
 
-**Snapshot:** 2026-11-18 · shared Shard theme and interface refinement · local development
+**Snapshot:** 2026-11-18 · adaptive reference lists and light/dark UI · local development
 
 | Item | Value |
 |---|---|
@@ -33,7 +33,7 @@ Update this file whenever a milestone lands or a limitation changes.
 | Notifications and integrations | Permission-aware inbox, one current CI result per commit and context, and signed webhook retries using stable event IDs. |
 | Maintenance | Per-source limits, `X-Request-ID` correlation, and daily removal of expired sessions, tokens, throttle windows, and email links. |
 | Backups | Rehearsed D1 export and restore into isolated persistence and Git bundle restore with matching refs and object IDs. |
-| UI and development | The shared palette keeps Shard's white, warm off-white, amber, lavender and blue roles. It controls page surfaces, feedback and logo colors. Chromium covered desktop and mobile layouts, keyboard navigation, line review and reduced motion. |
+| UI and development | The shared theme follows system appearance. Local variable fonts provide Latin monospace and two-cell Simplified Chinese glyphs. The refs grid displays default branches and wraps full annotated-tag object IDs on narrow screens. |
 
 ## Remaining work and prerequisites
 
@@ -46,7 +46,6 @@ Update this file whenever a milestone lands or a limitation changes.
 | Forge workflows | Organizations, teams, releases, issue templates, reactions, and watch/star controls. |
 | Git protocol | Verify shallow and partial clones on Artifacts. Shard's Git HTTPS remote does not expose an LFS Batch API. Verify production Artifacts separately. |
 | Operations | Public deployment metrics, webhook retention, token-list pagination, and further CSP tightening after moving inline styles. |
-| UI | Dark theme needs a corresponding design specification. |
 
 Architecture decisions and provider evidence are recorded in [PLAN.md](PLAN.md).
 
@@ -114,6 +113,7 @@ Architecture decisions and provider evidence are recorded in [PLAN.md](PLAN.md).
 | 2026-11-18 | Independent R2 Git engine rehearsal | `durable-git` stored an 18 MiB pack in local R2. A clone after restart matched the commit ID, annotated tag and file contents. |
 | 2026-11-18 | Isolated native Git and Chromium settings | The native suite passed all 3 reported tests. The origin required its own credential, rejected an unlisted import host and preserved repository permissions through rename and revocation. English and Simplified Chinese storage settings fit 1365px and 390px widths. |
 | 2026-11-18 | `mise run build` and Chromium at 1365px, 820px, 390px and 320px | Verified repository search, branch selection, file preview, a submitted line comment and its historical link, the keyboard-operated mobile menu, saved Chinese language preferences and reduced motion. Confirmed a palette override recolors the page logo. |
+| 2026-11-18 | `mise run build`, B-end template audit, and Chromium at 1365px, 1089px, 820px, 390px and 320px | Verified system appearance and reduced motion, the 40-unit dark weight offset, local font rendering, responsive refs and settings, empty states, an annotated tag, a long slash branch and keyboard navigation. Narrow home, code, file, review and login pages fit, with long diffs scrolling internally. |
 
 ## How to update
 

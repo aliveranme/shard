@@ -353,9 +353,10 @@ at 03:00 UTC removes expired sessions, tokens, login throttle windows, and email
 
 ## Design
 
-Shard uses a white canvas, warm off-white surface steps, amber actions, lavender
-accents, and blue links. Askama renders the HTML. The shared palette and CSS
-drive layout and interaction feedback, including the reduced-motion setting.
+Shard follows the system's light or dark appearance. The interface uses
+self-hosted variable monospace fonts, adaptive grids, and subtle surface
+steps. Askama renders the pages. A shared stylesheet provides interaction
+feedback and respects reduced-motion preferences.
 [Design guide](DESIGN.md) · [Palette](static/css/theme.css) · [Stylesheet](static/css/shard.css)
 
 ## Prior art

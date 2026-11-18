@@ -96,7 +96,7 @@ git push -u origin {{ repo.default_branch }}</code></pre>
         <article class="card readme">
           <div class="readme-card__head">
             <span class="badge">README</span>
-            <span class="muted" style="font-size:.8125rem">{{ chrome.locale.readme_from_branch(branch.as_str()) }}</span>
+            <span class="meta">{{ chrome.locale.readme_from_branch(branch.as_str()) }}</span>
           </div>
           <div class="markup">{{ readme_html|safe }}</div>
         </article>

@@ -15,6 +15,9 @@
     <circle cx="4" cy="3.5" r="1.75"/><circle cx="4" cy="12.5" r="1.75"/><circle cx="12" cy="3.5" r="1.75"/>
     <path d="M4 5.25v5.5M12 5.25v.5A2.25 2.25 0 0 1 9.75 8h-3.5A2.25 2.25 0 0 0 4 10.25"/>
   </symbol>
+  <symbol id="tag" viewBox="0 0 16 16">
+    <path d="M2 2h5.75l6.5 6.5-5.75 5.75L2 7.75Z"/><circle cx="5.25" cy="5.25" r="0.75"/>
+  </symbol>
   <symbol id="commit" viewBox="0 0 16 16">
     <circle cx="8" cy="8" r="2.75"/><path d="M1.5 8h3.75m5.5 0h3.75"/>
   </symbol>
