@@ -1,31 +1,38 @@
 {% extends "base.html" %}
 {% block content %}
+{% let repo_nav_branch = branch_url %}
 {% include "repo_header.html" %}
 <div class="page">
+  <div class="page-head">
+    <h1 class="page-title">{% if let Some(file) = crumbs.last() %}{{ file.name }}{% else %}{{ chrome.locale.t(crate::i18n::RepoText::File) }}{% endif %}</h1>
+  </div>
   <div class="breadcrumb" style="font-size:1.25rem;margin-top:26px">
     <a href="/{{ repo.owner_name }}/{{ repo.name }}/src?branch={{ branch_url }}">{{ repo.name }}</a>
     {% for crumb in crumbs %}
       <span class="sep" aria-hidden="true">/</span>
-      <a href="/{{ repo.owner_name }}/{{ repo.name }}/src/{{ crumb.url_path }}?branch={{ branch_url }}">{{ crumb.name }}</a>
+      {% if loop.last %}
+        <span aria-current="page">{{ crumb.name }}</span>
+      {% else %}
+        <a href="/{{ repo.owner_name }}/{{ repo.name }}/src/{{ crumb.url_path }}?branch={{ branch_url }}">{{ crumb.name }}</a>
+      {% endif %}
     {% endfor %}
   </div>
 
   <div class="code-panel">
     <div class="code-panel__bar">
-      <span class="mono">{{ path_url }}</span>
       <span style="display:inline-flex;gap:12px;align-items:center">
         <span>{{ size }}</span>
-        <a class="btn btn--ghost btn--sm" href="/{{ repo.owner_name }}/{{ repo.name }}/raw/{{ path_url }}?branch={{ branch_url }}">Raw file</a>
+        <a class="btn btn--ghost btn--sm" href="/{{ repo.owner_name }}/{{ repo.name }}/raw/{{ path_url }}?branch={{ branch_url }}">{{ chrome.locale.t(crate::i18n::RepoText::RawFile) }}</a>
       </span>
     </div>
     {% if is_binary %}
       <div class="empty">
-        <p class="empty__title">Binary file</p>
-        <p style="margin-bottom:16px">Preview is not available for this file.</p>
-        <a class="btn btn--primary" href="/{{ repo.owner_name }}/{{ repo.name }}/raw/{{ path_url }}?branch={{ branch_url }}">Download raw file</a>
+        <p class="empty__title">{{ chrome.locale.t(crate::i18n::RepoText::BinaryFile) }}</p>
+        <p style="margin-bottom:16px">{{ chrome.locale.t(crate::i18n::RepoText::NoPreview) }}</p>
+        <a class="btn btn--primary" href="/{{ repo.owner_name }}/{{ repo.name }}/raw/{{ path_url }}?branch={{ branch_url }}">{{ chrome.locale.t(crate::i18n::RepoText::DownloadRaw) }}</a>
       </div>
     {% else %}
-      {% if truncated %}<div class="alert alert--warn" style="margin:0;border-radius:0">Preview truncated to the first 256 KiB.</div>{% endif %}
+      {% if truncated %}<div class="alert alert--warn" style="margin:0;border-radius:0">{{ chrome.locale.t(crate::i18n::RepoText::TruncatedPreview) }}</div>{% endif %}
       <pre><code>{{ content }}</code></pre>
     {% endif %}
   </div>

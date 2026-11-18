@@ -11,6 +11,7 @@ mod crypto;
 mod ctx;
 mod db;
 mod handlers;
+mod i18n;
 mod markdown;
 mod models;
 mod templates;
@@ -19,6 +20,7 @@ mod security;
 mod util;
 
 use ctx::AppState;
+use i18n::{CommonText, LANGUAGE_COOKIE, LanguagePreference, Locale};
 
 fn routes(router: Router<AppState>) -> Router<AppState> {
     router
@@ -36,6 +38,8 @@ fn routes(router: Router<AppState>) -> Router<AppState> {
         .get_async("/user/settings", handlers::auth_handlers::account_page)
         .post_async("/user/settings/email", handlers::auth_handlers::update_email)
         .post_async("/user/settings/password", handlers::auth_handlers::update_password)
+        .get_async("/user/settings/language", handlers::auth_handlers::language_page)
+        .post_async("/user/settings/language", handlers::auth_handlers::update_language)
         .get_async(
             "/user/settings/tokens",
             handlers::auth_handlers::tokens_page,
@@ -105,23 +109,46 @@ async fn fetch(mut req: Request, env: Env, _worker_ctx: Context) -> Result<Respo
     let secure = util::is_secure(&req);
     let previous_csrf = util::cookie(&req, "shard_csrf");
     let is_git = security::is_git_request(&req);
+    let guest_preference = if is_git {
+        None
+    } else {
+        util::cookie(&req, LANGUAGE_COOKIE).as_deref().and_then(LanguagePreference::parse)
+    };
+    let browser_locale = || {
+        if is_git {
+            Locale::En
+        } else {
+            util::header(&req, "accept-language").as_deref().map_or(Locale::En, Locale::negotiate)
+        }
+    };
     let user = match auth::current_user(&env, &req).await {
         Ok(user) => user,
         Err(error) => {
             console_log!("session lookup failed: {error}");
             let token = security::csrf_token(&req, false).await?;
+            let locale = guest_preference.and_then(LanguagePreference::locale).unwrap_or_else(browser_locale);
             let response = templates::error_response(
-                templates::Chrome::default(),
+                templates::Chrome { locale, ..Default::default() },
                 503,
-                "Account storage is temporarily unavailable. Please try again.",
+                locale.t(CommonText::AccountUnavailable),
             )?;
-            return security::finish(response, &token, previous_csrf.as_deref(), secure);
+            return security::finish(response, &token, previous_csrf.as_deref(), secure, locale);
         }
     };
+    let language_preference = if is_git {
+        LanguagePreference::Browser
+    } else {
+        user.as_ref().and_then(|user| user.locale.as_deref()).and_then(LanguagePreference::parse)
+            .or(guest_preference)
+            .unwrap_or(LanguagePreference::Browser)
+    };
+    let locale = language_preference.locale().unwrap_or_else(browser_locale);
     let csrf_token = security::csrf_token(&req, user.is_some()).await?;
     let mut state = AppState {
         env: env.clone(),
         user,
+        locale,
+        language_preference,
         csrf_token,
         form: None,
     };
@@ -129,35 +156,41 @@ async fn fetch(mut req: Request, env: Env, _worker_ctx: Context) -> Result<Respo
 
     if req.method() == Method::Post && !is_git {
         let rejected = if !security::same_origin(&req) {
-            Some((403, "This form must be submitted from this shard."))
+            Some((403, CommonText::FormOrigin))
         } else {
             match req.form_data().await {
                 Ok(form) if security::valid_form(&form, &state.csrf_token) => {
                     state.form = Some(std::rc::Rc::new(form));
                     None
                 }
-                Ok(_) => Some((403, "This form has expired. Reload the page and try again.")),
-                Err(_) => Some((400, "The submitted form could not be read.")),
+                Ok(_) => Some((403, CommonText::FormExpired)),
+                Err(_) => Some((400, CommonText::UnreadableForm)),
             }
         };
         if let Some((status, message)) = rejected {
-            let response = templates::error_response(chrome.clone(), status, message)?;
-            return security::finish(response, &state.csrf_token, previous_csrf.as_deref(), secure);
+            let response = templates::error_response(chrome, status, locale.t(message))?;
+            return security::finish(response, &state.csrf_token, previous_csrf.as_deref(), secure, locale);
         }
     }
 
     let router = routes(Router::with_data(state));
     let response = match router.run(req, env).await {
+        Ok(response) if !is_git && matches!(response.status_code(), 404 | 405)
+            && !security::is_html(response.headers())? => {
+                let status = response.status_code();
+                let message = if status == 404 { CommonText::NotFound } else { CommonText::MethodNotAllowed };
+                templates::error_response(chrome.clone(), status, locale.t(message))?
+            }
         Ok(response) => response,
         Err(error) => {
             console_log!("unhandled worker error: {error}");
-            templates::error_response(chrome.clone(), 500, "Something went wrong. The request was logged.")?
+            templates::error_response(chrome.clone(), 500, locale.t(CommonText::WorkerError))?
         }
     };
     if is_git {
         Ok(response)
     } else {
-        security::finish(response, &chrome.csrf_token, previous_csrf.as_deref(), secure)
+        security::finish(response, &chrome.csrf_token, previous_csrf.as_deref(), secure, locale)
     }
 }
 

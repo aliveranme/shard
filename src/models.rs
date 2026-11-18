@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+use crate::i18n::{CommonText, Locale};
 use serde::Deserialize;
 use std::fmt;
 use wasm_bindgen::JsValue;
@@ -9,24 +10,21 @@ use wasm_bindgen::JsValue;
 pub struct Ts(pub i64);
 
 impl Ts {
-    pub fn relative(&self) -> String {
-        let now = (js_sys::Date::now() / 1000.0) as i64;
-        let diff = now - self.0;
-        match diff {
-            d if d < 0 => "just now".into(),
-            d if d < 60 => "just now".into(),
-            d if d < 3600 => format!("{} min ago", d / 60),
-            d if d < 86_400 => format!("{} h ago", d / 3600),
-            d if d < 2_592_000 => {
-                let days = d / 86_400;
-                if days == 1 {
-                    "1 day ago".into()
-                } else {
-                    format!("{days} days ago")
-                }
-            }
-            _ => self.to_string(),
-        }
+    pub fn relative(&self, locale: &Locale) -> impl fmt::Display {
+        let locale = *locale;
+        let date = *self;
+        let elapsed = crate::util::now() - date.0;
+        fmt::from_fn(move |f| match (locale, elapsed) {
+            (_, d) if d < 60 => f.write_str(locale.t(CommonText::JustNow)),
+            (Locale::En, d) if d < 3600 => write!(f, "{} min ago", d / 60),
+            (Locale::ZhHans, d) if d < 3600 => write!(f, "{} 分钟前", d / 60),
+            (Locale::En, d) if d < 86_400 => write!(f, "{} h ago", d / 3600),
+            (Locale::ZhHans, d) if d < 86_400 => write!(f, "{} 小时前", d / 3600),
+            (Locale::En, d) if d < 172_800 => f.write_str("1 day ago"),
+            (Locale::En, d) if d < 2_592_000 => write!(f, "{} days ago", d / 86_400),
+            (Locale::ZhHans, d) if d < 2_592_000 => write!(f, "{} 天前", d / 86_400),
+            _ => write!(f, "{date}"),
+        })
     }
 }
 
@@ -45,6 +43,7 @@ pub struct User {
     pub username: String,
     pub email: String,
     pub is_admin: i64,
+    pub locale: Option<String>,
     pub created_at: Ts,
 }
 
@@ -56,6 +55,7 @@ pub struct UserAuth {
     pub password_hash: String,
     pub is_admin: i64,
     pub created_at: Ts,
+    pub locale: Option<String>,
 }
 
 impl UserAuth {
@@ -66,6 +66,7 @@ impl UserAuth {
             email: self.email.clone(),
             is_admin: self.is_admin,
             created_at: self.created_at,
+            locale: self.locale.clone(),
         }
     }
 }
@@ -127,10 +128,6 @@ impl Issue {
 
     pub fn is_open(&self) -> bool {
         self.state == "open"
-    }
-
-    pub fn author(&self) -> &str {
-        self.author_name.as_deref().unwrap_or("ghost")
     }
 }
 

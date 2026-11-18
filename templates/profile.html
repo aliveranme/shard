@@ -5,35 +5,26 @@
     <div style="display:flex;align-items:center;gap:22px;flex-wrap:wrap">
       <span class="avatar avatar--lg" aria-hidden="true">{{ name.chars().next().unwrap_or_default().to_uppercase() }}</span>
       <div>
-        <h1 class="page-title">{{ name }}{% if is_self %} <span class="badge">You</span>{% endif %}</h1>
-        <p class="page-sub">Member since {{ joined }}</p>
+        <h1 class="page-title">{{ name }}{% if is_self %} <span class="badge">{{ chrome.locale.t(crate::i18n::WebText::You) }}</span>{% endif %}</h1>
+        <p class="page-sub">{{ chrome.locale.member_since(joined) }}</p>
       </div>
     </div>
-    {% if is_self %}<a class="btn btn--primary" href="/new">New repository</a>{% endif %}
+    {% if is_self %}<a class="btn btn--primary" href="/new">{{ chrome.locale.t(crate::i18n::CommonText::NewRepository) }}</a>{% endif %}
   </div>
 
   <section class="section" style="padding-top:8px">
     <div class="section__head">
-      <h2 class="section__title" style="font-size:2rem">Repositories</h2>
+      <h2 class="section__title" style="font-size:2rem">{{ chrome.locale.t(crate::i18n::WebText::Repositories) }}</h2>
     </div>
     {% if repos.is_empty() %}
       <div class="card empty">
-        <p class="empty__title">{% if pagination.page != 1 %}No repositories on this page{% else %}No repositories yet{% endif %}</p>
-        <p>{% if pagination.page != 1 %}Go to the previous page to keep browsing.{% else if is_self %}Push your first repository to make it appear here.{% else %}This person has not published anything yet.{% endif %}</p>
+        <p class="empty__title">{% if pagination.page != 1 %}{{ chrome.locale.t(crate::i18n::WebText::EmptyRepositoryPage) }}{% else %}{{ chrome.locale.t(crate::i18n::WebText::NoRepositories) }}{% endif %}</p>
+        <p>{% if pagination.page != 1 %}{{ chrome.locale.t(crate::i18n::WebText::PreviousRepositoryPage) }}{% else if is_self %}{{ chrome.locale.t(crate::i18n::WebText::PushFirstRepository) }}{% else %}{{ chrome.locale.t(crate::i18n::WebText::NothingPublished) }}{% endif %}</p>
       </div>
     {% else %}
-      <div class="grid grid--repos">
-        {% for repo in repos %}
-          <a class="repo-card" href="/{{ repo.owner }}/{{ repo.name }}">
-            <span class="repo-card__name">{{ repo.owner }}<span>/{{ repo.name }}</span></span>
-            <span class="repo-card__desc">{% if repo.description.is_empty() %}No description yet.{% else %}{{ repo.description }}{% endif %}</span>
-            <span class="repo-card__meta">
-              <span>Updated {{ repo.updated.relative() }}</span>
-              {% if repo.private %}<span class="badge badge--private">Private</span>{% endif %}
-            </span>
-          </a>
-        {% endfor %}
-      </div>
+      {% let show_counts = false %}
+      {% let show_updated = true %}
+      {% include "repo_cards.html" %}
     {% endif %}
     {% include "pagination.html" %}
   </section>

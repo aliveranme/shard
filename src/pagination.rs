@@ -33,7 +33,7 @@ impl PageRequest {
         let has_next = rows.len() > PAGE_SIZE;
         rows.truncate(PAGE_SIZE);
         Ok(Pagination {
-            status: format!("Page {}", self.number),
+            status: None,
             page: self.number,
             previous: if self.number > 1 {
                 Some(query_url(req, &[(self.parameter, Some(&(self.number - 1).to_string()))], fragment)?)
@@ -52,7 +52,7 @@ impl PageRequest {
 #[derive(Clone)]
 pub struct Pagination {
     pub page: u32,
-    pub status: String,
+    pub status: Option<&'static str>,
     pub previous: Option<String>,
     pub next: Option<String>,
 }

@@ -7,10 +7,10 @@
   </div>
   <div class="card">
     <h1 class="page-title" style="font-size:2rem">
-      {% if mode == "login" %}Sign in{% else %}Create your account{% endif %}
+      {% if mode == "login" %}{{ chrome.locale.t(crate::i18n::CommonText::SignIn) }}{% else %}{{ chrome.locale.t(crate::i18n::AccountText::CreateYourAccount) }}{% endif %}
     </h1>
     <p class="page-sub" style="margin-bottom:22px">
-      {% if mode == "login" %}Welcome back. Your repositories are waiting.{% else %}One account for every repository on this shard.{% endif %}
+      {% if mode == "login" %}{{ chrome.locale.t(crate::i18n::AccountText::SignInIntro) }}{% else %}{{ chrome.locale.t(crate::i18n::AccountText::SignupIntro) }}{% endif %}
     </p>
     {% if let Some(message) = error %}
       <div class="alert alert--error" role="alert">{{ message }}</div>
@@ -19,30 +19,30 @@
       {% include "csrf.html" %}
       <input type="hidden" name="next" value="{{ next }}">
       <div class="field">
-        <label for="login">Username{% if mode == "login" %} or email{% endif %}</label>
+        <label for="login">{% if mode == "login" %}{{ chrome.locale.t(crate::i18n::AccountText::UsernameOrEmail) }}{% else %}{{ chrome.locale.t(crate::i18n::AccountText::Username) }}{% endif %}</label>
         <input class="input" id="login" name="{% if mode == "login" %}login{% else %}username{% endif %}" value="{{ username_value }}" autocomplete="username" required>
       </div>
       {% if mode == "signup" %}
       <div class="field">
-        <label for="email">Email</label>
+        <label for="email">{{ chrome.locale.t(crate::i18n::AccountText::Email) }}</label>
         <input class="input" id="email" name="email" type="email" value="{{ email_value }}" autocomplete="email" required>
       </div>
       {% endif %}
       <div class="field">
-        <label for="password">Password</label>
+        <label for="password">{{ chrome.locale.t(crate::i18n::AccountText::Password) }}</label>
         <input class="input" id="password" name="password" type="password" autocomplete="{% if mode == "login" %}current-password{% else %}new-password{% endif %}" required>
-        {% if mode == "signup" %}<span class="help">At least 8 characters.</span>{% endif %}
+        {% if mode == "signup" %}<span class="help">{{ chrome.locale.t(crate::i18n::AccountText::PasswordMinimum) }}</span>{% endif %}
       </div>
       <button class="btn btn--primary btn--block" type="submit">
-        {% if mode == "login" %}Sign in{% else %}Create account{% endif %}
+        {% if mode == "login" %}{{ chrome.locale.t(crate::i18n::CommonText::SignIn) }}{% else %}{{ chrome.locale.t(crate::i18n::CommonText::CreateAccount) }}{% endif %}
       </button>
     </form>
   </div>
   <p class="auth-simple__switch">
     {% if mode == "login" %}
-      New to shard? <a href="/user/sign_up">Create an account</a>.
+      {{ chrome.locale.t(crate::i18n::AccountText::NewHere) }} <a href="/user/sign_up">{{ chrome.locale.t(crate::i18n::CommonText::CreateAccount) }}</a>
     {% else %}
-      Already have an account? <a href="/user/login">Sign in</a>.
+      {{ chrome.locale.t(crate::i18n::AccountText::AlreadyRegistered) }} <a href="/user/login">{{ chrome.locale.t(crate::i18n::CommonText::SignIn) }}</a>
     {% endif %}
   </p>
 </div>

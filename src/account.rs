@@ -1,3 +1,4 @@
+use crate::i18n::Locale;
 use crate::models::{AccessToken, Ts};
 use crate::templates::Chrome;
 use askama::Template;
@@ -33,7 +34,7 @@ pub struct TokensPage {
     pub title: String,
     pub tokens: Vec<TokenRow>,
     pub new_token: Option<String>,
-    pub error: Option<String>,
+    pub error: Option<&'static str>,
 }
 
 #[derive(Template)]
@@ -42,6 +43,16 @@ pub struct AccountPage {
     pub chrome: Chrome,
     pub title: String,
     pub email: String,
-    pub success: Option<String>,
-    pub error: Option<String>,
+    pub success: Option<&'static str>,
+    pub error: Option<&'static str>,
+}
+
+#[derive(Template)]
+#[template(path = "language.html")]
+pub struct LanguagePage {
+    pub chrome: Chrome,
+    pub title: String,
+    pub preference: &'static str,
+    pub languages: &'static [Locale],
+    pub saved: bool,
 }

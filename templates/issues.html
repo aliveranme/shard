@@ -4,42 +4,50 @@
 <div class="page">
   <div class="page-head" style="padding-top:34px">
     <div>
-      <h1 class="page-title">{% if is_pull %}Pull requests{% else %}Issues{% endif %}</h1>
+      <h1 class="page-title">{% if is_pull %}{{ chrome.locale.t(crate::i18n::CommonText::PullRequests) }}{% else %}{{ chrome.locale.t(crate::i18n::CommonText::Issues) }}{% endif %}</h1>
       <p class="page-sub">
-        {% if is_pull %}Review changes before they reach the base branch.{% else %}Track bugs, ideas and decisions next to the code.{% endif %}
+        {% if is_pull %}{{ chrome.locale.t(crate::i18n::DiscussionText::PullListIntro) }}{% else %}{{ chrome.locale.t(crate::i18n::DiscussionText::IssueListIntro) }}{% endif %}
       </p>
     </div>
   </div>
 
   <div class="list-toolbar">
-    <div class="tabs" role="tablist" aria-label="State">
-      <a class="tab" role="tab" {% if state == "open" %}aria-current="page"{% endif %} href="{{ open_url }}">
-        Open <span class="badge badge--count">{{ open_count }}</span>
+    <nav class="tabs" aria-label="{{ chrome.locale.t(crate::i18n::CommonText::State) }}">
+      <a class="tab" {% if state == "open" %}aria-current="page"{% endif %} href="{{ open_url }}">
+        {{ chrome.locale.t(crate::i18n::CommonText::Open) }} <span class="badge badge--count">{{ open_count }}</span>
       </a>
-      <a class="tab" role="tab" {% if state == "closed" %}aria-current="page"{% endif %} href="{{ closed_url }}">
-        Closed <span class="badge badge--count">{{ closed_count }}</span>
+      <a class="tab" {% if state == "closed" %}aria-current="page"{% endif %} href="{{ closed_url }}">
+        {{ chrome.locale.t(crate::i18n::CommonText::Closed) }} <span class="badge badge--count">{{ closed_count }}</span>
       </a>
-      <a class="tab" role="tab" {% if state == "all" %}aria-current="page"{% endif %} href="{{ all_url }}">All</a>
-    </div>
+      <a class="tab" {% if state == "all" %}aria-current="page"{% endif %} href="{{ all_url }}">{{ chrome.locale.t(crate::i18n::CommonText::All) }}</a>
+    </nav>
 
     <form class="hero__search" method="get" role="search">
       <input type="hidden" name="state" value="{{ state }}">
       <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M10.68 11.74a6 6 0 0 1-7.922-8.982 6 6 0 0 1 8.982 7.922l3.04 3.04a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215ZM11.5 7a4.499 4.499 0 1 0-8.997 0A4.499 4.499 0 0 0 11.5 7Z"></path></svg>
-      <input type="search" name="q" value="{{ query }}" placeholder="Search by title" aria-label="Search by title">
-      <button type="submit" aria-label="Search">→</button>
+      <input type="search" name="q" value="{{ query }}" placeholder="{{ chrome.locale.t(crate::i18n::CommonText::SearchByTitle) }}" aria-label="{{ chrome.locale.t(crate::i18n::CommonText::SearchByTitle) }}">
+      <button type="submit" aria-label="{{ chrome.locale.t(crate::i18n::CommonText::Search) }}">→</button>
     </form>
 
     {% if chrome.signed_in %}
       <a class="btn btn--primary" href="/{{ repo.owner_name }}/{{ repo.name }}/{% if is_pull %}pulls{% else %}issues{% endif %}/new">
-        {% if is_pull %}New pull request{% else %}New issue{% endif %}
+        {% if is_pull %}{{ chrome.locale.t(crate::i18n::DiscussionText::NewPullRequest) }}{% else %}{{ chrome.locale.t(crate::i18n::DiscussionText::NewIssue) }}{% endif %}
       </a>
     {% endif %}
   </div>
 
   {% if issues.is_empty() %}
     <div class="card empty">
-      <p class="empty__title">Nothing here</p>
-      <p>{% if pagination.page != 1 %}No matching entries on this page.{% else if state == "open" %}No open {% if is_pull %}pull requests{% else %}issues{% endif %}.{% else %}No matching entries.{% endif %}</p>
+      <p class="empty__title">{{ chrome.locale.t(crate::i18n::DiscussionText::NothingHere) }}</p>
+      <p>
+        {% if pagination.page != 1 %}
+          {{ chrome.locale.t(crate::i18n::DiscussionText::NoMatchesOnPage) }}
+        {% else if state == "open" %}
+          {% if is_pull %}{{ chrome.locale.t(crate::i18n::DiscussionText::NoOpenPullRequests) }}{% else %}{{ chrome.locale.t(crate::i18n::DiscussionText::NoOpenIssues) }}{% endif %}
+        {% else %}
+          {{ chrome.locale.t(crate::i18n::DiscussionText::NoMatches) }}
+        {% endif %}
+      </p>
     </div>
   {% else %}
     <div class="list">
@@ -55,13 +63,13 @@
           <div class="list__main">
             <div class="list__title">{{ issue.title }}</div>
             <div class="list__meta">
-              #{{ issue.number }} opened {{ issue.date.relative() }} by {{ issue.author }} · {{ issue.comments }} comment{% if issue.comments != 1 %}s{% endif %}
+              #{{ issue.number }} {{ chrome.locale.opened_by(issue.date, issue.author.as_deref().unwrap_or(chrome.locale.t(crate::i18n::CommonText::Ghost))) }} · {{ chrome.locale.comment_count(issue.comments) }}
             </div>
           </div>
           {% if issue.state == "closed" %}
-            <span class="badge badge--closed">Closed</span>
+            <span class="badge badge--closed">{{ chrome.locale.t(crate::i18n::CommonText::Closed) }}</span>
           {% else %}
-            <span class="badge badge--open">Open</span>
+            <span class="badge badge--open">{{ chrome.locale.t(crate::i18n::CommonText::Open) }}</span>
           {% endif %}
         </a>
       {% endfor %}

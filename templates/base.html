@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{ chrome.locale.code() }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -9,40 +9,40 @@
   <link rel="icon" href="/img/logo.svg" type="image/svg+xml">
 </head>
 <body>
-<a class="skip" href="#main">Skip to content</a>
+<a class="skip" href="#main">{{ chrome.locale.t(crate::i18n::CommonText::SkipToContent) }}</a>
 <header class="nav">
   <div class="page nav__inner">
-    <a class="brand" href="/" aria-label="Shard home">
+    <a class="brand" href="/" aria-label="{{ chrome.locale.t(crate::i18n::CommonText::ShardHome) }}">
       <img src="/img/logo.svg" width="32" height="32" alt="">
       <span>shard</span>
     </a>
-    <nav class="nav__links" aria-label="Primary">
-      <a href="/explore/repos">Explore</a>
+    <nav class="nav__links" aria-label="{{ chrome.locale.t(crate::i18n::CommonText::Primary) }}">
+      <a href="/explore/repos">{{ chrome.locale.t(crate::i18n::CommonText::Explore) }}</a>
       {% if chrome.signed_in %}
-        <a href="/issues">Issues</a>
-        <a href="/pulls">Pull requests</a>
+        <a href="/issues">{{ chrome.locale.t(crate::i18n::CommonText::Issues) }}</a>
+        <a href="/pulls">{{ chrome.locale.t(crate::i18n::CommonText::PullRequests) }}</a>
       {% endif %}
     </nav>
     <div class="nav__actions">
       {% if chrome.signed_in %}
-        <a class="btn btn--ghost btn--sm" href="/new">New repository</a>
-        <a class="nav__user" href="/user/settings" title="Account settings">
+        <a class="btn btn--ghost btn--sm nav__new-repo" href="/new">{{ chrome.locale.t(crate::i18n::CommonText::NewRepository) }}</a>
+        <a class="nav__user" href="/user/settings" title="{{ chrome.locale.t(crate::i18n::CommonText::AccountSettings) }}">
           <span class="avatar avatar--sm" aria-hidden="true">{{ chrome.user_initial }}</span>
           {{ chrome.user_name }}
         </a>
         <form method="post" action="/user/logout">
           {% include "csrf.html" %}
-          <button class="btn btn--quiet btn--sm" type="submit">Sign out</button>
+          <button class="btn btn--quiet btn--sm" type="submit">{{ chrome.locale.t(crate::i18n::CommonText::SignOut) }}</button>
         </form>
       {% else %}
-        <a class="btn btn--ghost btn--sm" href="/user/login">Sign in</a>
-        <a class="btn btn--primary btn--sm" href="/user/sign_up">Create account</a>
+        <a class="btn btn--ghost btn--sm" href="/user/login">{{ chrome.locale.t(crate::i18n::CommonText::SignIn) }}</a>
+        <a class="btn btn--primary btn--sm" href="/user/sign_up">{{ chrome.locale.t(crate::i18n::CommonText::CreateAccount) }}</a>
       {% endif %}
     </div>
   </div>
 </header>
 
-<main id="main">
+<main id="main" tabindex="-1">
   {% block content %}{% endblock %}
 </main>
 
@@ -52,7 +52,10 @@
       <img src="/img/logo.svg" width="22" height="22" alt="">
       <strong>shard</strong>
     </span>
-    <span>Self-hosted on Cloudflare Workers, D1 and Artifacts</span>
+    <span>{{ chrome.locale.t(crate::i18n::CommonText::HostedOn) }}</span>
+    <a class="footer__language" href="/user/settings/language">
+      {{ chrome.locale.t(crate::i18n::CommonText::Language) }} · <span lang="{{ chrome.locale.code() }}">{{ chrome.locale.label() }}</span>
+    </a>
   </div>
 </footer>
 </body>

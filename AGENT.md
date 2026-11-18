@@ -7,10 +7,11 @@ Shard is a Rust Git forge on Cloudflare Workers. D1 stores forge metadata; Cloud
 ## Architecture
 
 - `src/lib.rs`: Worker events and route registration.
-- `src/ctx.rs`: request-scoped authentication, CSRF token and parsed form data.
+- `src/ctx.rs` holds request-scoped authentication, locale, CSRF token and parsed form data.
 - `src/handlers/`: HTTP behavior and authorization; use the existing `common`, `db`, `auth` and `util` helpers.
 - `src/artifacts.rs`: the Artifacts binding boundary. The binding has no merge, branch enumeration or object-write API. Do not invent unsupported functionality.
 - `src/templates.rs` and `templates/`: typed page models and autoescaped HTML. Only render sanitized Markdown as safe HTML.
+- `src/i18n/` defines typed interface messages. Add user-facing UI text, accessibility labels, and browser errors to the matching catalog with both translations. Keep interpolated phrases whole.
 - `migrations/`: append forward-only D1 migrations; never rewrite an applied migration.
 
 ## UI contract

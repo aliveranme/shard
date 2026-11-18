@@ -2,6 +2,7 @@ use super::common::{can_admin, forbidden, not_found, page_title, visible_repo};
 use crate::artifacts::Artifacts;
 use crate::ctx::AppState;
 use crate::db;
+use crate::i18n::{CommonText, DiscussionText, Locale};
 use crate::markdown;
 use crate::models::{Issue, Pull, Repo, Ts};
 use crate::pagination::{query_url, PageRequest, PAGE_SIZE};
@@ -24,7 +25,7 @@ async fn list(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result<R
     let owner = ctx.param("owner").cloned().unwrap_or_default();
     let name = ctx.param("repo").cloned().unwrap_or_default();
     let Some(repo) = visible_repo(&state, &owner, &name).await? else {
-        return not_found(&state, "Repository not found.");
+        return not_found(&state, state.locale.t(CommonText::RepositoryNotFound));
     };
     let is_owner = can_admin(&state, &repo);
     let state_filter = match util::query_param(&req, "state").as_deref() {
@@ -76,20 +77,25 @@ async fn list(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result<R
     )
     .await?;
     let pagination = request_page.finish(&req, &mut issues, None)?;
+    let heading = state.locale.t(if kind == "pull" {
+        CommonText::PullRequests
+    } else {
+        CommonText::Issues
+    });
 
     let page = IssuesPage {
         chrome: Chrome::new(&state),
-        title: page_title(&[&repo.full_name(), if kind == "pull" { "Pull requests" } else { "Issues" }]),
+        title: page_title(&[&repo.full_name(), heading]),
         issues: issues
-            .iter()
+            .into_iter()
             .map(|issue| IssueRow {
+                is_pull: issue.is_pull(),
                 number: issue.number,
-                title: issue.title.clone(),
-                author: issue.author().to_string(),
+                title: issue.title,
+                author: issue.author_name,
                 date: issue.created_at,
                 comments: issue.comment_count,
-                is_pull: issue.is_pull(),
-                state: issue.state.clone(),
+                state: issue.state,
             })
             .collect(),
         repo,
@@ -121,7 +127,7 @@ async fn new_form(_req: Request, ctx: RouteContext<AppState>, kind: &str) -> Res
     let owner = ctx.param("owner").cloned().unwrap_or_default();
     let name = ctx.param("repo").cloned().unwrap_or_default();
     let Some(repo) = visible_repo(&state, &owner, &name).await? else {
-        return not_found(&state, "Repository not found.");
+        return not_found(&state, state.locale.t(CommonText::RepositoryNotFound));
     };
     if state.user.is_none() {
         return util::redirect(&format!(
@@ -134,7 +140,7 @@ async fn new_form(_req: Request, ctx: RouteContext<AppState>, kind: &str) -> Res
     let is_owner = can_admin(&state, &repo);
     let page = IssueNewPage {
         chrome: Chrome::new(&state),
-        title: page_title(&[&repo.full_name(), if kind == "pull" { "New pull request" } else { "New issue" }]),
+        title: new_title(state.locale, &repo, kind),
         tab: if kind == "pull" { "pulls" } else { "issues" }.into(),
         is_pull: kind == "pull",
         error: None,
@@ -162,26 +168,27 @@ async fn create(_req: Request, ctx: RouteContext<AppState>, kind: &str) -> Resul
     let owner = ctx.param("owner").cloned().unwrap_or_default();
     let name = ctx.param("repo").cloned().unwrap_or_default();
     let Some(repo) = visible_repo(&state, &owner, &name).await? else {
-        return not_found(&state, "Repository not found.");
+        return not_found(&state, state.locale.t(CommonText::RepositoryNotFound));
     };
     let Some(user) = state.user.as_ref() else {
         return util::redirect("/user/login");
     };
     let form = state.form()?;
-    let title = util::form_value(&form, "title").unwrap_or_default();
-    let body = util::form_value(&form, "body").unwrap_or_default();
-    let base_branch = util::form_value(&form, "base_branch")
+    let title = util::form_value(form, "title").unwrap_or_default();
+    let body = util::form_value(form, "body").unwrap_or_default();
+    let base_branch = util::form_value(form, "base_branch")
         .unwrap_or_else(|| repo.default_branch.clone());
-    let head_branch = util::form_value(&form, "head_branch").unwrap_or_default();
+    let head_branch = util::form_value(form, "head_branch").unwrap_or_default();
 
     let is_owner = can_admin(&state, &repo);
-    let invalid = |message: &str| -> Result<Response> {
+    let locale = state.locale;
+    let invalid = |message: String| -> Result<Response> {
         let page = IssueNewPage {
             chrome: Chrome::new(&state),
-            title: page_title(&[&repo.full_name()]),
+            title: new_title(locale, &repo, kind),
             tab: if kind == "pull" { "pulls" } else { "issues" }.into(),
             is_pull: kind == "pull",
-            error: Some(message.to_string()),
+            error: Some(message),
             title_value: title.clone(),
             body_value: body.clone(),
             base_value: base_branch.clone(),
@@ -194,14 +201,14 @@ async fn create(_req: Request, ctx: RouteContext<AppState>, kind: &str) -> Resul
     };
 
     if title.trim().is_empty() {
-        return invalid("A title is required.");
+        return invalid(locale.t(DiscussionText::TitleRequired).into());
     }
     if kind == "pull" {
         if head_branch.trim().is_empty() {
-            return invalid("Choose the branch that contains your changes.");
+            return invalid(locale.t(DiscussionText::ChooseHeadBranch).into());
         }
         if head_branch == base_branch {
-            return invalid("Head and base branches must differ.");
+            return invalid(locale.t(DiscussionText::BranchesMustDiffer).into());
         }
     }
 
@@ -210,25 +217,37 @@ async fn create(_req: Request, ctx: RouteContext<AppState>, kind: &str) -> Resul
     if kind == "pull" {
         let artifacts = match Artifacts::from_env(&state.env) {
             Ok(artifacts) => artifacts,
-            Err(e) => return invalid(&format!("Git storage is unavailable: {e}")),
+            Err(error) => {
+                console_log!("pull request setup: could not configure Git storage: {error}");
+                return invalid(locale.t(DiscussionText::GitUnavailable).into());
+            }
         };
         let handle = match artifacts.get(&repo.artifacts_repo).await {
             Ok(handle) => handle,
-            Err(e) => return invalid(&format!("Git storage is unavailable: {e}")),
+            Err(error) => {
+                console_log!("pull request setup: could not open Git repository: {error}");
+                return invalid(locale.t(DiscussionText::GitUnavailable).into());
+            }
         };
         head_commit = match handle.head_commit(&head_branch).await {
             Ok(commit) => commit.map(|c| c.hash),
-            Err(e) => return invalid(&format!("Could not read the head branch: {e}")),
+            Err(error) => {
+                console_log!("pull request setup: could not read the head branch: {error}");
+                return invalid(locale.t(DiscussionText::ReadHeadBranchFailed).into());
+            }
         };
         base_commit = match handle.head_commit(&base_branch).await {
             Ok(commit) => commit.map(|c| c.hash),
-            Err(e) => return invalid(&format!("Could not read the base branch: {e}")),
+            Err(error) => {
+                console_log!("pull request setup: could not read the base branch: {error}");
+                return invalid(locale.t(DiscussionText::ReadBaseBranchFailed).into());
+            }
         };
         if head_commit.is_none() {
-            return invalid(&format!("Branch `{head_branch}` has no commits in this repository."));
+            return invalid(locale.branch_has_no_commits(&head_branch).to_string());
         }
         if base_commit.is_none() {
-            return invalid(&format!("Branch `{base_branch}` has no commits in this repository."));
+            return invalid(locale.branch_has_no_commits(&base_branch).to_string());
         }
     }
 
@@ -244,7 +263,7 @@ async fn create(_req: Request, ctx: RouteContext<AppState>, kind: &str) -> Resul
     )
     .await?;
     let Some(Number { number }) = number else {
-        return invalid("Could not allocate an issue number.");
+        return invalid(locale.t(DiscussionText::AllocateNumberFailed).into());
     };
 
     db::run(
@@ -299,7 +318,7 @@ async fn detail(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result
     let name = ctx.param("repo").cloned().unwrap_or_default();
     let number: i64 = ctx.param("number").and_then(|v| v.parse().ok()).unwrap_or(0);
     let Some(repo) = visible_repo(&state, &owner, &name).await? else {
-        return not_found(&state, "Repository not found.");
+        return not_found(&state, state.locale.t(CommonText::RepositoryNotFound));
     };
     let database = state.db()?;
     let issue: Option<Issue> = db::first(
@@ -317,7 +336,7 @@ async fn detail(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result
     )
     .await?;
     let Some(issue) = issue else {
-        return not_found(&state, "Not found.");
+        return not_found(&state, state.locale.t(CommonText::NotFound));
     };
 
 
@@ -336,6 +355,7 @@ async fn detail(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result
         ],
     )
     .await?;
+    let locale = state.locale;
     let pagination = request_page.finish(&req, &mut entries, Some("discussion"))?;
     let pull: Option<Pull> = if kind == "pull" {
         db::first(
@@ -352,24 +372,23 @@ async fn detail(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result
     let mut changed = Vec::new();
     let mut diff_error = None;
     if let Some(pull) = &pull {
-        match Artifacts::from_env(&state.env) {
-            Ok(artifacts) => match artifacts.get(&repo.artifacts_repo).await {
-                Ok(handle) => match handle
-                    .changed_files(&pull.base_branch, &pull.head_branch)
-                    .await
-                {
-                    Ok(files) => changed = files
-                        .into_iter()
-                        .map(|f| ChangedRow {
-                            path: f.path,
-                            status: f.status.into(),
-                        })
-                        .collect(),
-                    Err(e) => diff_error = Some(format!("Could not compare branches: {e}")),
-                },
-                Err(e) => diff_error = Some(format!("Could not compare branches: {e}")),
-            },
-            Err(e) => diff_error = Some(format!("Could not compare branches: {e}")),
+        let files = async {
+            Artifacts::from_env(&state.env)?
+                .get(&repo.artifacts_repo)
+                .await?
+                .changed_files(&pull.base_branch, &pull.head_branch)
+                .await
+        }
+        .await;
+        match files {
+            Ok(files) => changed = files
+                .into_iter()
+                .map(|file| ChangedRow { path: file.path, status: file.status })
+                .collect(),
+            Err(error) => {
+                console_log!("pull request diff: could not compare branches: {error}");
+                diff_error = Some(locale.t(DiscussionText::CompareBranchesFailed));
+            }
         }
     }
 
@@ -384,9 +403,11 @@ async fn detail(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result
     let page = IssuePage {
         chrome: Chrome::new(&state),
         title: page_title(&[&repo.full_name(), &format!("#{number}")]),
-        author_initial: crate::templates::initial(issue.author()),
+        author_initial: crate::templates::initial(
+            issue.author_name.as_deref().unwrap_or(locale.t(CommonText::Ghost)),
+        ),
         body_html: markdown::render(&issue.body),
-        discussion: entries.into_iter().map(DiscussionEntry::into_row).collect(),
+        discussion: entries.into_iter().map(|entry| entry.into_row(locale)).collect(),
         pagination,
         pull: pull.as_ref().map(PullView::from_pull),
         changed,
@@ -407,7 +428,7 @@ pub async fn comment(req: Request, ctx: RouteContext<AppState>) -> Result<Respon
     let number: i64 = ctx.param("number").and_then(|v| v.parse().ok()).unwrap_or(0);
     let kind = route_kind(&req)?;
     let Some(repo) = visible_repo(&state, &owner, &name).await? else {
-        return not_found(&state, "Repository not found.");
+        return not_found(&state, state.locale.t(CommonText::RepositoryNotFound));
     };
     let Some(user) = state.user.as_ref() else {
         return util::redirect("/user/login");
@@ -422,7 +443,7 @@ pub async fn comment(req: Request, ctx: RouteContext<AppState>) -> Result<Respon
     )
     .await?;
     let Some(issue) = issue else {
-        return not_found(&state, "Not found.");
+        return not_found(&state, state.locale.t(CommonText::NotFound));
     };
     let form = state.form()?;
     let body = util::form_value(form, "body").unwrap_or_default();
@@ -453,7 +474,7 @@ pub async fn set_state(req: Request, ctx: RouteContext<AppState>) -> Result<Resp
     let number: i64 = ctx.param("number").and_then(|v| v.parse().ok()).unwrap_or(0);
     let kind = route_kind(&req)?;
     let Some(repo) = visible_repo(&state, &owner, &name).await? else {
-        return not_found(&state, "Repository not found.");
+        return not_found(&state, state.locale.t(CommonText::RepositoryNotFound));
     };
     let Some(user) = state.user.as_ref() else {
         return util::redirect("/user/login");
@@ -468,16 +489,18 @@ pub async fn set_state(req: Request, ctx: RouteContext<AppState>) -> Result<Resp
     )
     .await?;
     let Some(issue) = issue else {
-        return not_found(&state, "Not found.");
+        return not_found(&state, state.locale.t(CommonText::NotFound));
     };
     if Some(user.id) != issue.author_id && !can_admin(&state, &repo) {
-        return forbidden(&state, "Only the author or a repository owner can change this state.");
+        return forbidden(&state, state.locale.t(DiscussionText::StateChangeForbidden));
     }
     let form = state.form()?;
     let desired = match util::form_value(form, "state").as_deref() {
         Some("closed") => "closed",
         Some("open") => "open",
-        _ => return crate::templates::error_response(Chrome::new(&state), 400, "State must be open or closed."),
+        _ => return crate::templates::error_response(
+            Chrome::new(&state), 400, state.locale.t(DiscussionText::InvalidState),
+        ),
     };
     let now = util::now();
     // D1 executes the batch as one transaction. Test the live state inside it,
@@ -511,23 +534,31 @@ struct DiscussionEntry {
 }
 
 impl DiscussionEntry {
-    fn into_row(self) -> DiscussionRow {
+    fn into_row(self, locale: Locale) -> DiscussionRow {
         let is_comment = self.kind == "comment";
-        let author = if is_comment {
-            Some(self.author_name.unwrap_or_else(|| "ghost".into()))
-        } else {
-            self.author_name
-        };
         DiscussionRow {
             id: self.id,
-            initial: if is_comment { crate::templates::initial(author.as_deref().unwrap_or("ghost")) } else { String::new() },
-            author,
+            initial: if is_comment {
+                crate::templates::initial(self.author_name.as_deref().unwrap_or(locale.t(CommonText::Ghost)))
+            } else {
+                String::new()
+            },
+            author: self.author_name,
             date: self.created_at,
             html: if is_comment { markdown::render(&self.body) } else { String::new() },
             action: self.kind,
             is_comment,
         }
     }
+}
+
+fn new_title(locale: Locale, repo: &Repo, kind: &str) -> String {
+    let label = locale.t(if kind == "pull" {
+        DiscussionText::NewPullRequest
+    } else {
+        DiscussionText::NewIssue
+    });
+    page_title(&[&repo.full_name(), label])
 }
 
 fn section(kind: &str) -> &'static str {

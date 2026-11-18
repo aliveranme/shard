@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page">
+  <div class="page-head">
+    <div>
+      <h1 class="page-title">{{ chrome.locale.t(crate::i18n::AccountText::InterfaceLanguage) }}</h1>
+      <p class="page-sub">{{ chrome.locale.t(crate::i18n::AccountText::LanguageIntro) }}</p>
+    </div>
+  </div>
+  <div class="{% if chrome.signed_in %}settings-layout{% else %}settings-standalone{% endif %}">
+    {% if chrome.signed_in %}
+      {% let settings_section = "language" %}
+      {% include "account_nav.html" %}
+    {% endif %}
+    <div class="settings-main">
+      {% if saved %}
+        <p class="alert alert--success" role="status">{{ chrome.locale.t(crate::i18n::AccountText::LanguageSaved) }}</p>
+      {% endif %}
+      <form class="form card" method="post" action="/user/settings/language">
+        {% include "csrf.html" %}
+        <div class="field">
+          <label for="language">{{ chrome.locale.t(crate::i18n::CommonText::Language) }}</label>
+          <select class="select" id="language" name="language" aria-describedby="language-help">
+            <option value="auto"{% if preference == "auto" %} selected{% endif %}>{{ chrome.locale.t(crate::i18n::AccountText::FollowBrowser) }}</option>
+            {% for language in languages %}
+              <option value="{{ language.code() }}" lang="{{ language.code() }}"{% if language.code() == preference %} selected{% endif %}>{{ language.label() }}</option>
+            {% endfor %}
+          </select>
+          <p class="help" id="language-help">{% if chrome.signed_in %}{{ chrome.locale.t(crate::i18n::AccountText::LanguageAccountStorage) }}{% else %}{{ chrome.locale.t(crate::i18n::AccountText::LanguageBrowserStorage) }}{% endif %}</p>
+        </div>
+        <button class="btn btn--primary" type="submit">{{ chrome.locale.t(crate::i18n::AccountText::SaveLanguage) }}</button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

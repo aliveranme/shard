@@ -3,7 +3,7 @@
 Living record of what works, what is missing, and how it was verified.
 Update this file whenever a milestone lands or a limitation changes.
 
-**Snapshot: 2026-11-18** · account/security/pagination increment · local development only
+**Snapshot: 2026-11-18** · bilingual interface and Rust development setup · local development only
 
 | Item | Value |
 |---|---|
@@ -18,12 +18,14 @@ Update this file whenever a milestone lands or a limitation changes.
 
 - Registration and login: PBKDF2-SHA256 (100k), HttpOnly session cookie, logout, failed-login throttling.
 - Account settings: password-confirmed email/password updates; password rotation invalidates older sessions.
+- Interface language: English, Simplified Chinese, and browser preference. Account choices persist across sessions, and guest choices stay in the browser.
 - Browser protection: CSRF tokens, origin checks, CSP/security headers, safe post-login redirects.
 - Access tokens: strict scope/name/expiry validation, one-time secret display, expiration enforcement, legacy compatibility and revocation.
 - Repository lifecycle: create calls the real Artifacts binding (local simulator), visibility, description, default branch, delete.
 - Git smart HTTP proxy: anonymous clone of public repos, token clone, push with a write token; read tokens are rejected for push.
 - Private repositories: anonymous page 404, anonymous clone 401, owner clone 200.
 - Code browsing: tree, blob preview, raw download, cursor-paginated first-parent history, branches containing `/` via `?branch=feature%2Freadme`.
+- Branch navigation submits a GET form under the no-script CSP. Code, files, and commit history retain the selected branch in their links.
 - Issues: create, Markdown body, comments, close/reopen, open/closed/all filters, title search, paginated actor-attributed discussion history.
 - Pull requests: branch-validated creation, discussion, file-level changes, close/reopen and state history.
 - Markdown safety: raw HTML escaped, `javascript:`/`data:`/`vbscript:`/`file:` destinations replaced with `#`.
@@ -51,10 +53,11 @@ Update this file whenever a milestone lands or a limitation changes.
 | UI | DESIGN.md tokens, pill controls, responsive breakpoints (720/980px) |
 | Pagination | dashboard, explore, profiles, global/repository issue lists, combined discussion and commit history |
 | Cleanup | daily scheduled removal of expired sessions, tokens and throttle windows |
-| Regression tests | 14 isolated HTTP scenarios; real Git push and slash-branch PR creation included |
+| Internationalization | typed bilingual catalogs, per-request language selection, localized validation, counts and accessibility labels |
+| Regression tests | 16 isolated HTTP scenarios, including account and guest language preferences and real Git workflows |
 | CI | GitHub Actions workflow added; remote workflow run has not been observed |
-| Agent guidance | AGENT.md covers architecture, design, migrations, security and verification |
-| Local development | mise tasks, D1 migrations, Artifacts simulator (git ≥ 2.32) |
+| Agent guidance | AGENT.md covers design, security, localization, verification and one Git commit per verified feature |
+| Local development | pinned Rust/Wasm, rust-analyzer, rust-src, Clippy, rustfmt and lockfile-pinned Wrangler |
 | Docs | README, this status file, verified Cloudflare API notes |
 
 ### 🟡 Partial
@@ -140,6 +143,12 @@ Update this file whenever a milestone lands or a limitation changes.
 | 2026-11-18 | Chrome account/token forms and actual pagination click | email success, token reveal/reload, attributed history and navigation pass |
 | 2026-11-18 | repository deletion in isolated browser runtime | wrong confirmation retained repo; confirmed deletion returned 404 |
 | 2026-11-18 | `mise run db:migrate` on local development state | migrations 0002 and 0003 applied successfully |
+| 2026-11-18 | `mise run setup`, rust-analyzer references and `mise run lint` | pinned components installed, symbol queries work, Clippy reports no warnings |
+| 2026-11-18 | `mise run db:migrate` with Wrangler 4.164.0 | migration 0004 applied to local D1 |
+| 2026-11-18 | `mise run dev` | local Worker returns HTTP 200 with a Chinese language settings page |
+| 2026-11-18 | Wasm check and `mise run test` | 16 scenarios, 17 Node test results passed |
+| 2026-11-18 | Nested file preview and raw download regression | relative links resolve directory spaces and literal percent sequences on a slash-named branch |
+| 2026-11-18 | Ego Browser at 1365px, 390px and 320px | verified language switches, settings navigation, branch form, file links and issue/PR layouts without horizontal overflow |
 
 ## How to update
 

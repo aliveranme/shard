@@ -15,7 +15,7 @@ pub async fn current_user(env: &Env, req: &Request) -> Result<Option<User>> {
     let database = env.d1("DB")?;
     db::first(
         &database,
-        "SELECT u.id, u.username, u.email, u.is_admin, u.created_at
+        "SELECT u.id, u.username, u.email, u.is_admin, u.created_at, u.locale
            FROM sessions s JOIN users u ON u.id = s.user_id
           WHERE s.token_hash = ? AND s.expires_at > ?",
         &[util::js_text(&hash), util::js_int(util::now())],
@@ -56,7 +56,7 @@ pub async fn authenticate(env: &Env, login: &str, password: &str) -> Result<Opti
     let database = env.d1("DB")?;
     let found: Option<UserAuth> = db::first(
         &database,
-        "SELECT id, username, email, password_hash, is_admin, created_at
+        "SELECT id, username, email, password_hash, is_admin, created_at, locale
            FROM users WHERE username = ? COLLATE NOCASE OR email = ? COLLATE NOCASE LIMIT 1",
         &[util::js_text(login), util::js_text(login)],
     )
@@ -93,7 +93,7 @@ pub async fn register(
     .await?;
     let account: UserAuth = db::first(
         &database,
-        "SELECT id, username, email, password_hash, is_admin, created_at FROM users WHERE username = ?",
+        "SELECT id, username, email, password_hash, is_admin, created_at, locale FROM users WHERE username = ?",
         &[util::js_text(username)],
     )
     .await?

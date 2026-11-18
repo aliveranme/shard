@@ -1,20 +1,21 @@
 {% extends "base.html" %}
 {% block content %}
+{% let repo_nav_branch = crate::util::url_path(branch.as_str()) %}
 {% include "repo_header.html" %}
 <div class="page">
   <div class="page-head" style="padding-top:32px">
     <div>
-      <h1 class="page-title">Commits</h1>
-      <p class="page-sub">First-parent history on <span class="badge">{{ branch }}</span></p>
+      <h1 class="page-title">{{ chrome.locale.t(crate::i18n::CommonText::Commits) }}</h1>
+      <p class="page-sub">{{ chrome.locale.first_parent_history(branch.as_str()) }}</p>
     </div>
-    {% if let Some(latest) = latest_url %}<a class="btn btn--ghost" href="{{ latest }}">Latest commits</a>{% endif %}
-    <a class="btn btn--ghost" href="/{{ repo.owner_name }}/{{ repo.name }}">Back to code</a>
+    {% if let Some(latest) = latest_url %}<a class="btn btn--ghost" href="{{ latest }}">{{ chrome.locale.t(crate::i18n::CommonText::LatestCommits) }}</a>{% endif %}
+    <a class="btn btn--ghost" href="/{{ repo.owner_name }}/{{ repo.name }}?branch={{ repo_nav_branch }}">{{ chrome.locale.t(crate::i18n::RepoText::BackToCode) }}</a>
   </div>
 
   {% if commits.is_empty() %}
     <div class="card empty">
-      <p class="empty__title">{% if latest_url.is_some() %}Commit not found{% else %}No commits yet{% endif %}</p>
-      <p>{% if latest_url.is_some() %}Return to the latest commits to browse this branch.{% else %}Push a branch to create the first commit.{% endif %}</p>
+      <p class="empty__title">{% if latest_url.is_some() %}{{ chrome.locale.t(crate::i18n::RepoText::CommitNotFound) }}{% else %}{{ chrome.locale.t(crate::i18n::RepoText::NoCommits) }}{% endif %}</p>
+      <p>{% if latest_url.is_some() %}{{ chrome.locale.t(crate::i18n::RepoText::ReturnLatest) }}{% else %}{{ chrome.locale.t(crate::i18n::RepoText::PushFirstCommit) }}{% endif %}</p>
     </div>
   {% else %}
     <div class="list">
@@ -23,7 +24,7 @@
           <span class="avatar avatar--sm" aria-hidden="true">{{ commit.author_initial }}</span>
           <div class="list__main">
             <div class="list__title">{{ commit.message }}</div>
-            <div class="list__meta">{{ commit.author }}{% if let Some(date) = commit.date %} · {{ date.relative() }}{% endif %}</div>
+            <div class="list__meta">{{ commit.author }}{% if let Some(date) = commit.date %} · {{ date.relative(chrome.locale) }}{% endif %}</div>
           </div>
           <code class="badge" title="{{ commit.hash }}">{{ commit.short }}</code>
         </div>

@@ -1,10 +1,9 @@
-use super::common::{
-    can_admin, load_repo, not_found, page_title, visible_repo,
-};
+use super::common::{can_admin, load_repo, not_found, page_title, visible_repo};
 use crate::artifacts::{Artifacts, Commit, RepoHandle, TreeEntry};
 use crate::ctx::AppState;
 use crate::crypto;
 use crate::db;
+use crate::i18n::{CommonText, RepoText};
 use crate::models::Ts;
 use crate::pagination::{query_url, Pagination, PAGE_SIZE};
 use crate::templates::{
@@ -12,6 +11,7 @@ use crate::templates::{
     SettingsPage,
 };
 use crate::util;
+use std::borrow::Cow;
 use worker::*;
 
 pub async fn new_form(_req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
@@ -21,7 +21,7 @@ pub async fn new_form(_req: Request, ctx: RouteContext<AppState>) -> Result<Resp
     }
     let page = NewRepoPage {
         chrome: Chrome::new(&state),
-        title: page_title(&["New repository"]),
+        title: page_title(&[state.locale.t(CommonText::NewRepository)]),
         error: None,
         name_value: String::new(),
         description_value: String::new(),
@@ -36,18 +36,18 @@ pub async fn create(_req: Request, ctx: RouteContext<AppState>) -> Result<Respon
         return util::redirect("/user/login?next=/new");
     };
     let form = state.form()?;
-    let name = util::form_value(&form, "name")
+    let name = util::form_value(form, "name")
         .unwrap_or_default()
         .trim()
         .to_string();
-    let description = util::form_value(&form, "description").unwrap_or_default();
-    let private = util::form_bool(&form, "private");
+    let description = util::form_value(form, "description").unwrap_or_default();
+    let private = util::form_bool(form, "private");
 
-    let invalid = |message: &str| -> Result<Response> {
+    let invalid = |message: RepoText| -> Result<Response> {
         let page = NewRepoPage {
             chrome: Chrome::new(&state),
-            title: page_title(&["New repository"]),
-            error: Some(message.to_string()),
+            title: page_title(&[state.locale.t(CommonText::NewRepository)]),
+            error: Some(state.locale.t(message).into()),
             name_value: name.clone(),
             description_value: description.clone(),
             private_checked: private,
@@ -56,17 +56,17 @@ pub async fn create(_req: Request, ctx: RouteContext<AppState>) -> Result<Respon
     };
 
     if !util::valid_slug(&name) {
-        return invalid("Repository names use letters, digits, dot, dash or underscore and start with a letter or digit.");
+        return invalid(RepoText::InvalidName);
     }
 
     let database = state.db()?;
     if load_repo(&state, &user.username, &name).await?.is_some() {
-        return invalid("You already have a repository with that name.");
+        return invalid(RepoText::DuplicateName);
     }
 
     let artifacts = match Artifacts::from_env(&state.env) {
         Ok(a) => a,
-        Err(e) => return invalid(&failure_message(&e)),
+        Err(error) => return invalid(log_failure("initialize repository storage", error, RepoText::CreateFailed)),
     };
     // Internal Artifacts name is opaque and immutable; the forge-facing name can change later.
     let internal = format!(
@@ -76,7 +76,7 @@ pub async fn create(_req: Request, ctx: RouteContext<AppState>) -> Result<Respon
     );
     let created = match artifacts.create(&internal, &description).await {
         Ok(created) => created,
-        Err(e) => return invalid(&failure_message(&e)),
+        Err(error) => return invalid(log_failure("create repository storage", error, RepoText::CreateFailed)),
     };
 
     let inserted = db::run(
@@ -97,127 +97,118 @@ pub async fn create(_req: Request, ctx: RouteContext<AppState>) -> Result<Respon
     )
     .await;
 
-    if let Err(e) = inserted {
-        let _ = artifacts.delete(&created.name).await;
-        return invalid(&failure_message(&e));
+    if let Err(error) = inserted {
+        if let Err(cleanup_error) = artifacts.delete(&created.name).await {
+            console_log!("repository rollback failed: {cleanup_error}");
+        }
+        return invalid(log_failure("insert repository", error, RepoText::CreateFailed));
     }
 
     util::redirect(&format!("/{}/{}", user.username, name))
 }
 
-fn failure_message(error: &Error) -> String {
-    format!("Could not create the repository: {error}")
+fn log_failure(operation: &str, error: Error, message: RepoText) -> RepoText {
+    console_log!("repository: {operation}: {error}");
+    message
+}
+
+fn repository_not_found(state: &AppState) -> Result<Response> {
+    not_found(state, state.locale.t(CommonText::RepositoryNotFound))
+}
+
+fn storage_error(state: &AppState, operation: &str, error: Error) -> Result<Response> {
+    let message = log_failure(operation, error, RepoText::StorageUnavailable);
+    crate::templates::error_response(Chrome::new(state), 500, state.locale.t(message))
+}
+
+fn branch_choices(default: &str, current: &str) -> Vec<String> {
+    if default == current {
+        vec![default.into()]
+    } else {
+        vec![default.into(), current.into()]
+    }
+}
+
+async fn storage_handle(state: &AppState, repository: &str) -> Result<RepoHandle> {
+    Artifacts::from_env(&state.env)?.get(repository).await
+}
+
+async fn read_blob(state: &AppState, repository: &str, branch: &str, path: &str) -> Result<Option<Vec<u8>>> {
+    storage_handle(state, repository).await?.read_file(branch, path).await
+}
+
+fn requested_path(ctx: &RouteContext<AppState>) -> Option<Cow<'_, str>> {
+    // Worker routing leaves wildcard path parameters percent-encoded.
+    urlencoding::decode(ctx.param("path").map_or("", String::as_str)).ok()
 }
 
 pub async fn view(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
-    let state = ctx.data.clone();
-    let owner = ctx.param("owner").cloned().unwrap_or_default();
-    let name = ctx.param("repo").cloned().unwrap_or_default();
-    let Some(repo) = visible_repo(&state, &owner, &name).await? else {
-        return not_found(&state, "Repository not found.");
-    };
-    let is_owner = can_admin(&state, &repo);
-    let branch = util::query_param(&req, "branch").unwrap_or_else(|| repo.default_branch.clone());
-    let mut branches = vec![repo.default_branch.clone()];
-    if branch != repo.default_branch {
-        branches.push(branch.clone());
-    }
-
-    let mut files = Vec::new();
-    let mut readme = None;
-    let mut last_commit = None;
-    let mut artifacts_error = None;
-
-    match Artifacts::from_env(&state.env) {
-        Ok(artifacts) => match artifacts.get(&repo.artifacts_repo).await {
-            Ok(handle) => {
-                match load_dir(&handle, &branch, "").await {
-                    Ok((entries, commit)) => {
-                        files = entries.iter().map(file_row).collect();
-                        last_commit = commit.map(commit_row);
-                        readme = load_readme(&handle, &branch).await;
-                    }
-                    Err(e) => artifacts_error = Some(format!("{e}")),
-                }
-            }
-            Err(e) => artifacts_error = Some(format!("{e}")),
-        },
-        Err(e) => artifacts_error = Some(failure_message(&e)),
-    }
-
-    let page = RepoCodePage {
-        chrome: Chrome::new(&state),
-        title: page_title(&[&repo.full_name()]),
-        repo: repo.clone(),
-        tab: "code".into(),
-        branch_url: util::url_path(&branch),
-        branch,
-        branches,
-        crumbs: Vec::new(),
-        files,
-        readme,
-        last_commit,
-        artifacts_error,
-        clone_url: format!(
-            "{}/{}/{}.git",
-            util::base_url(&req),
-            repo.owner_name,
-            repo.name
-        ),
-        is_owner,
-    };
-    render(&page)
+    tree(req, ctx).await
 }
 
 pub async fn tree(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = ctx.data.clone();
     let owner = ctx.param("owner").cloned().unwrap_or_default();
     let name = ctx.param("repo").cloned().unwrap_or_default();
-    let path = ctx.param("path").cloned().unwrap_or_default();
     let Some(repo) = visible_repo(&state, &owner, &name).await? else {
-        return not_found(&state, "Repository not found.");
+        return repository_not_found(&state);
+    };
+    let Some(path) = requested_path(&ctx) else {
+        return not_found(&state, state.locale.t(RepoText::DirectoryNotFound));
     };
     let branch = util::query_param(&req, "branch")
         .unwrap_or_else(|| repo.default_branch.clone());
     let branch_url = util::url_path(&branch);
     let is_owner = can_admin(&state, &repo);
+    let branches = branch_choices(&repo.default_branch, &branch);
 
-    let mut files = Vec::new();
-    let mut last_commit = None;
-    let mut artifacts_error = None;
-    match Artifacts::from_env(&state.env) {
-        Ok(artifacts) => match artifacts.get(&repo.artifacts_repo).await {
-            Ok(handle) => match load_dir(&handle, &branch, &path).await {
-                Ok((entries, commit)) => {
-                    files = entries.iter().map(|e| file_row_at(e, &path)).collect();
-                    last_commit = commit.map(commit_row);
-                }
-                Err(e) => artifacts_error = Some(format!("{e}")),
-            },
-            Err(e) => artifacts_error = Some(format!("{e}")),
-        },
-        Err(e) => artifacts_error = Some(failure_message(&e)),
+    let loaded = async {
+        let handle = storage_handle(&state, &repo.artifacts_repo).await?;
+        let Some((entries, commit)) = load_dir(&handle, &branch, &path).await? else {
+            return Ok(None);
+        };
+        let readme = if path.is_empty() && commit.is_some() {
+            load_readme(&handle, &branch).await
+        } else {
+            None
+        };
+        Ok(Some((entries, commit, readme)))
     }
+    .await;
+    let (files, last_commit, readme, artifacts_error) = match loaded {
+        Ok(Some((entries, commit, readme))) => (
+            entries.into_iter().map(|entry| file_row_at(entry, &path)).collect(),
+            commit.map(commit_row),
+            readme,
+            None,
+        ),
+        Ok(None) => return not_found(&state, state.locale.t(RepoText::DirectoryNotFound)),
+        Err(error) => {
+            let message = log_failure("load repository directory", error, RepoText::StorageUnavailable);
+            (Vec::new(), None, None, Some(state.locale.t(message).into()))
+        }
+    };
+    let title = if path.is_empty() {
+        page_title(&[&repo.full_name()])
+    } else {
+        page_title(&[&repo.full_name(), &path])
+    };
+    let clone_url = format!("{}/{}/{}.git", util::base_url(&req), repo.owner_name, repo.name);
 
     let page = RepoCodePage {
         chrome: Chrome::new(&state),
-        title: page_title(&[&repo.full_name(), &path]),
-        repo: repo.clone(),
+        title,
+        repo,
         tab: "code".into(),
-        branch: branch.clone(),
-        branch_url: branch_url.clone(),
-        branches: vec![repo.default_branch.clone()],
+        branch,
+        branch_url,
+        branches,
         crumbs: crumbs(&path),
         files,
-        readme: None,
+        readme,
         last_commit,
         artifacts_error,
-        clone_url: format!(
-            "{}/{}/{}.git",
-            util::base_url(&req),
-            repo.owner_name,
-            repo.name
-        ),
+        clone_url,
         is_owner,
     };
     render(&page)
@@ -227,20 +218,21 @@ pub async fn file(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
     let state = ctx.data.clone();
     let owner = ctx.param("owner").cloned().unwrap_or_default();
     let name = ctx.param("repo").cloned().unwrap_or_default();
-    let path = ctx.param("path").cloned().unwrap_or_default();
     let Some(repo) = visible_repo(&state, &owner, &name).await? else {
-        return not_found(&state, "Repository not found.");
+        return repository_not_found(&state);
+    };
+    let Some(path) = requested_path(&ctx) else {
+        return not_found(&state, state.locale.t(RepoText::FileNotFound));
     };
     let branch = util::query_param(&req, "branch")
         .unwrap_or_else(|| repo.default_branch.clone());
     let branch_url = util::url_path(&branch);
     let is_owner = can_admin(&state, &repo);
-    let artifacts = Artifacts::from_env(&state.env)?;
-    let handle = artifacts.get(&repo.artifacts_repo).await?;
-    let bytes = handle
-        .read_file(&branch, &path)
-        .await?
-        .ok_or_else(|| Error::RustError("file not found".into()))?;
+    let bytes = match read_blob(&state, &repo.artifacts_repo, &branch, &path).await {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return not_found(&state, state.locale.t(RepoText::FileNotFound)),
+        Err(error) => return storage_error(&state, "read file preview", error),
+    };
     let size = bytes.len();
     let (content, is_binary, truncated) = render_blob(&bytes);
     let page = FilePage {
@@ -264,24 +256,29 @@ pub async fn raw(req: Request, ctx: RouteContext<AppState>) -> Result<Response> 
     let state = ctx.data.clone();
     let owner = ctx.param("owner").cloned().unwrap_or_default();
     let name = ctx.param("repo").cloned().unwrap_or_default();
-    let path = ctx.param("path").cloned().unwrap_or_default();
     let Some(repo) = visible_repo(&state, &owner, &name).await? else {
-        return not_found(&state, "Repository not found.");
+        return repository_not_found(&state);
+    };
+    let Some(path) = requested_path(&ctx) else {
+        return not_found(&state, state.locale.t(RepoText::FileNotFound));
     };
     let branch = util::query_param(&req, "branch")
         .unwrap_or_else(|| repo.default_branch.clone());
-    let artifacts = Artifacts::from_env(&state.env)?;
-    let handle = artifacts.get(&repo.artifacts_repo).await?;
-    let Some(bytes) = handle.read_file(&branch, &path).await? else {
-        return not_found(&state, "File not found.");
+    let bytes = match read_blob(&state, &repo.artifacts_repo, &branch, &path).await {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return not_found(&state, state.locale.t(RepoText::FileNotFound)),
+        Err(error) => return storage_error(&state, "read raw file", error),
     };
     let headers = Headers::new();
     headers.set("Content-Type", "application/octet-stream")?;
     headers.set("X-Content-Type-Options", "nosniff")?;
-    headers.set(
-        "Content-Disposition",
-        &format!("inline; filename=\"{}\"", path.rsplit('/').next().unwrap_or("file")),
-    )?;
+    let filename = path.rsplit('/').next().unwrap_or("file");
+    let disposition = if filename.bytes().all(|b| (b' '..=b'~').contains(&b) && !matches!(b, b'"' | b'\\' | b'%')) {
+        format!("inline; filename=\"{filename}\"")
+    } else {
+        format!("inline; filename*=UTF-8''{}", urlencoding::encode(filename))
+    };
+    headers.set("Content-Disposition", &disposition)?;
     Ok(Response::from_bytes(bytes)?.with_headers(headers))
 }
 
@@ -290,24 +287,30 @@ pub async fn commits(req: Request, ctx: RouteContext<AppState>) -> Result<Respon
     let owner = ctx.param("owner").cloned().unwrap_or_default();
     let name = ctx.param("repo").cloned().unwrap_or_default();
     let Some(repo) = visible_repo(&state, &owner, &name).await? else {
-        return not_found(&state, "Repository not found.");
+        return repository_not_found(&state);
     };
     let branch = util::query_param(&req, "branch").unwrap_or_else(|| repo.default_branch.clone());
     let start = util::query_param(&req, "start").map(|hash| hash.to_ascii_lowercase());
     if start.as_ref().is_some_and(|hash| hash.len() != 40 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit())) {
-        return crate::templates::error_response(Chrome::new(&state), 400, "The commit cursor must be a full Git commit hash.");
+        return crate::templates::error_response(Chrome::new(&state), 400, state.locale.t(RepoText::InvalidCursor));
     }
     let is_owner = can_admin(&state, &repo);
-    let artifacts = Artifacts::from_env(&state.env)?;
-    let handle = artifacts.get(&repo.artifacts_repo).await?;
+    let handle = match storage_handle(&state, &repo.artifacts_repo).await {
+        Ok(handle) => handle,
+        Err(error) => return storage_error(&state, "open commit history", error),
+    };
     // Artifacts log accepts a commit hash as its ref and walks first parents.
     // The extra commit is the inclusive start of the next page, so every call
     // reads at most 21 commits regardless of how far back the history goes.
-    let mut history = handle.log(start.as_deref().unwrap_or(&branch), (PAGE_SIZE + 1) as u32).await?;
+    let mut history = match handle.log(start.as_deref().unwrap_or(&branch), (PAGE_SIZE + 1) as u32).await {
+        Ok(history) => history,
+        Err(error) => return storage_error(&state, "load commit history", error),
+    };
+    let status = if start.is_some() && history.is_empty() { 404 } else { 200 };
     let next = if history.len() > PAGE_SIZE { history.pop().map(|commit| commit.hash) } else { None };
     let pagination = Pagination {
         page: 1,
-        status: if start.is_some() { "Older commits".into() } else { "Latest commits".into() },
+        status: Some(state.locale.t(if start.is_some() { CommonText::OlderCommits } else { CommonText::LatestCommits })),
         previous: None,
         next: match next {
             Some(hash) => Some(query_url(&req, &[("start", Some(&hash)), ("branch", Some(&branch)), ("page", None)], None)?),
@@ -321,7 +324,7 @@ pub async fn commits(req: Request, ctx: RouteContext<AppState>) -> Result<Respon
     };
     let page = CommitsPage {
         chrome: Chrome::new(&state),
-        title: page_title(&[&repo.full_name(), "Commits"]),
+        title: page_title(&[&repo.full_name(), state.locale.t(CommonText::Commits)]),
         repo,
         tab: "commits".into(),
         branch,
@@ -330,7 +333,7 @@ pub async fn commits(req: Request, ctx: RouteContext<AppState>) -> Result<Respon
         pagination,
         latest_url,
     };
-    render(&page)
+    Ok(render(&page)?.with_status(status))
 }
 
 pub async fn settings(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
@@ -338,20 +341,26 @@ pub async fn settings(req: Request, ctx: RouteContext<AppState>) -> Result<Respo
     let owner = ctx.param("owner").cloned().unwrap_or_default();
     let name = ctx.param("repo").cloned().unwrap_or_default();
     let Some(repo) = visible_repo(&state, &owner, &name).await? else {
-        return not_found(&state, "Repository not found.");
+        return repository_not_found(&state);
     };
     if !can_admin(&state, &repo) {
-        return super::common::forbidden(&state, "Only the repository owner can change settings.");
+        return super::common::forbidden(&state, state.locale.t(RepoText::SettingsForbidden));
     }
     let page = SettingsPage {
         chrome: Chrome::new(&state),
-        title: page_title(&[&repo.full_name(), "Settings"]),
+        title: page_title(&[&repo.full_name(), state.locale.t(CommonText::Settings)]),
         description_value: repo.description.clone(),
         visibility_value: repo.visibility.clone(),
         repo,
         tab: "settings".into(),
-        error: util::query_param(&req, "error"),
-        message: util::query_param(&req, "saved"),
+        error: match util::query_param(&req, "error").as_deref() {
+            Some("confirm-deletion") => Some(RepoText::ConfirmDeletion),
+            Some("delete-storage-failed") => Some(RepoText::DeleteStorageFailed),
+            Some("delete-failed") => Some(RepoText::DeleteFailed),
+            Some("save-failed") => Some(RepoText::SaveFailed),
+            _ => None,
+        }.map(|key| state.locale.t(key).into()),
+        message: util::query_param(&req, "saved").filter(|value| value == "1"),
         is_owner: true,
     };
     render(&page)
@@ -362,34 +371,41 @@ pub async fn update_settings(_req: Request, ctx: RouteContext<AppState>) -> Resu
     let owner = ctx.param("owner").cloned().unwrap_or_default();
     let name = ctx.param("repo").cloned().unwrap_or_default();
     let Some(repo) = visible_repo(&state, &owner, &name).await? else {
-        return not_found(&state, "Repository not found.");
+        return repository_not_found(&state);
     };
     if !can_admin(&state, &repo) {
-        return super::common::forbidden(&state, "Only the repository owner can change settings.");
+        return super::common::forbidden(&state, state.locale.t(RepoText::SettingsForbidden));
     }
     let form = state.form()?;
-    let description = util::form_value(&form, "description").unwrap_or_default();
-    let visibility = match util::form_value(&form, "visibility").as_deref() {
+    let description = util::form_value(form, "description").unwrap_or_default();
+    let visibility = match util::form_value(form, "visibility").as_deref() {
         Some("private") => "private",
         _ => "public",
     };
-    let default_branch = util::form_value(&form, "default_branch")
+    let default_branch = util::form_value(form, "default_branch")
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| repo.default_branch.clone());
 
-    let database = state.db()?;
-    db::run(
-        &database,
-        "UPDATE repos SET description = ?, visibility = ?, default_branch = ?, updated_at = ? WHERE id = ?",
-        &[
-            util::js_text(&description),
-            util::js_text(visibility),
-            util::js_text(&default_branch),
-            util::js_int(util::now()),
-            util::js_int(repo.id),
-        ],
-    )
-    .await?;
+    let updated = async {
+        let database = state.db()?;
+        db::run(
+            &database,
+            "UPDATE repos SET description = ?, visibility = ?, default_branch = ?, updated_at = ? WHERE id = ?",
+            &[
+                util::js_text(&description),
+                util::js_text(visibility),
+                util::js_text(&default_branch),
+                util::js_int(util::now()),
+                util::js_int(repo.id),
+            ],
+        )
+        .await
+    }
+    .await;
+    if let Err(error) = updated {
+        console_log!("repository: save settings: {error}");
+        return util::redirect(&format!("/{}/{}/settings?error=save-failed", repo.owner_name, repo.name));
+    }
     util::redirect(&format!("/{}/{}/settings?saved=1", repo.owner_name, repo.name))
 }
 
@@ -398,37 +414,34 @@ pub async fn delete(_req: Request, ctx: RouteContext<AppState>) -> Result<Respon
     let owner = ctx.param("owner").cloned().unwrap_or_default();
     let name = ctx.param("repo").cloned().unwrap_or_default();
     let Some(repo) = load_repo(&state, &owner, &name).await? else {
-        return not_found(&state, "Repository not found.");
+        return repository_not_found(&state);
     };
     if !can_admin(&state, &repo) {
-        return super::common::forbidden(&state, "Only the repository owner can delete it.");
+        return super::common::forbidden(&state, state.locale.t(RepoText::DeleteForbidden));
     }
     let form = state.form()?;
-    let confirmation = util::form_value(&form, "confirm").unwrap_or_default();
-    if confirmation != repo.name {
-        return util::redirect_with_flash(
-            &format!("/{}/{}/settings", repo.owner_name, repo.name),
-            "error",
-            "Type the repository name to confirm deletion.",
-        );
-    }
+    let confirmation = util::form_value(form, "confirm").unwrap_or_default();
     let settings_url = format!("/{}/{}/settings", repo.owner_name, repo.name);
-    let artifacts = match Artifacts::from_env(&state.env) {
-        Ok(artifacts) => artifacts,
-        Err(error) => return util::redirect_with_flash(&settings_url, "error", &format!("Could not delete Git storage: {error}")),
-    };
-    if let Err(error) = artifacts.delete(&repo.artifacts_repo).await {
-        return util::redirect_with_flash(&settings_url, "error", &format!("Could not delete Git storage: {error}"));
+    if confirmation != repo.name {
+        return util::redirect(&format!("{settings_url}?error=confirm-deletion"));
+    }
+    let deleted = async {
+        Artifacts::from_env(&state.env)?.delete(&repo.artifacts_repo).await
+    }.await;
+    if let Err(error) = deleted {
+        console_log!("repository: delete Git storage: {error}");
+        return util::redirect(&format!("{settings_url}?error=delete-storage-failed"));
     }
     // A false result means Git storage is already absent, allowing a retry
     // after storage deletion succeeded but a previous D1 deletion failed.
-    let database = state.db()?;
-    db::run(
-        &database,
-        "DELETE FROM repos WHERE id = ?",
-        &[util::js_int(repo.id)],
-    )
-    .await?;
+    let deleted = async {
+        let database = state.db()?;
+        db::run(&database, "DELETE FROM repos WHERE id = ?", &[util::js_int(repo.id)]).await
+    }.await;
+    if let Err(error) = deleted {
+        console_log!("repository: delete metadata: {error}");
+        return util::redirect(&format!("{settings_url}?error=delete-failed"));
+    }
     util::redirect("/")
 }
 
@@ -436,10 +449,10 @@ async fn load_dir(
     handle: &RepoHandle,
     branch: &str,
     path: &str,
-) -> Result<(Vec<TreeEntry>, Option<Commit>)> {
+) -> Result<Option<(Vec<TreeEntry>, Option<Commit>)>> {
     let commit = handle.head_commit(branch).await?;
     let Some(mut commit) = commit else {
-        return Ok((Vec::new(), None));
+        return Ok(path.is_empty().then(|| (Vec::new(), None)));
     };
     if commit.tree.is_none() {
         // `log` metadata is intentionally light: the tree id comes from readCommit.
@@ -448,26 +461,30 @@ async fn load_dir(
         }
     }
     let Some(tree) = commit.tree.clone() else {
-        return Ok((Vec::new(), Some(commit)));
+        return Ok(path.is_empty().then(|| (Vec::new(), Some(commit))));
     };
     let mut tree = tree;
     for segment in path.split('/').filter(|s| !s.is_empty()) {
         let entries = handle.read_tree(&tree).await?;
         match entries.into_iter().find(|e| e.name == segment) {
             Some(entry) if entry.is_dir => tree = entry.hash,
-            _ => return Ok((Vec::new(), Some(commit))),
+            _ => return Ok(None),
         }
     }
     let entries = handle.read_tree(&tree).await?;
-    Ok((entries, Some(commit)))
+    Ok(Some((entries, Some(commit))))
 }
 
 async fn load_readme(handle: &RepoHandle, branch: &str) -> Option<String> {
     for candidate in ["README.md", "readme.md", "Readme.md", "README"] {
-        if let Ok(Some(bytes)) = handle.read_file(branch, candidate).await {
-            if let Ok(text) = String::from_utf8(bytes) {
-                return Some(crate::markdown::render(&text));
+        match handle.read_file(branch, candidate).await {
+            Ok(Some(bytes)) => {
+                if let Ok(text) = String::from_utf8(bytes) {
+                    return Some(crate::markdown::render(&text));
+                }
             }
+            Ok(None) => {}
+            Err(error) => console_log!("repository: read {candidate}: {error}"),
         }
     }
     None
@@ -484,24 +501,15 @@ fn commit_row(commit: Commit) -> CommitRow {
     }
 }
 
-fn file_row(entry: &TreeEntry) -> FileRow {
-    FileRow {
-        name: entry.name.clone(),
-        url_path: util::url_path(&entry.name),
-        is_dir: entry.is_dir,
-        size: entry.size.map(util::human_size).unwrap_or_default(),
-    }
-}
-
-fn file_row_at(entry: &TreeEntry, parent: &str) -> FileRow {
-    let path = if parent.is_empty() {
-        entry.name.clone()
+fn file_row_at(entry: TreeEntry, parent: &str) -> FileRow {
+    let url_path = if parent.is_empty() {
+        util::url_path(&entry.name)
     } else {
-        format!("{parent}/{}", entry.name)
+        util::url_path(&format!("{parent}/{}", entry.name))
     };
     FileRow {
-        name: entry.name.clone(),
-        url_path: util::url_path(&path),
+        name: entry.name,
+        url_path,
         is_dir: entry.is_dir,
         size: entry.size.map(util::human_size).unwrap_or_default(),
     }

@@ -4,25 +4,25 @@
   <div class="page-head">
     <div>
       <h1 class="page-title">{{ heading }}</h1>
-      <p class="page-sub">Work across the repositories you can read.</p>
+      <p class="page-sub">{{ chrome.locale.t(crate::i18n::WebText::GlobalDiscussionsIntro) }}</p>
     </div>
   </div>
   <div class="list-toolbar">
-    <nav class="tabs" aria-label="Issue state">
-      <a class="tab" {% if state == "open" %}aria-current="page"{% endif %} href="{{ open_url }}">Open</a>
-      <a class="tab" {% if state == "closed" %}aria-current="page"{% endif %} href="{{ closed_url }}">Closed</a>
-      <a class="tab" {% if state == "all" %}aria-current="page"{% endif %} href="{{ all_url }}">All</a>
+    <nav class="tabs" aria-label="{{ chrome.locale.t(crate::i18n::CommonText::State) }}">
+      <a class="tab" {% if state == "open" %}aria-current="page"{% endif %} href="{{ open_url }}">{{ chrome.locale.t(crate::i18n::CommonText::Open) }}</a>
+      <a class="tab" {% if state == "closed" %}aria-current="page"{% endif %} href="{{ closed_url }}">{{ chrome.locale.t(crate::i18n::CommonText::Closed) }}</a>
+      <a class="tab" {% if state == "all" %}aria-current="page"{% endif %} href="{{ all_url }}">{{ chrome.locale.t(crate::i18n::CommonText::All) }}</a>
     </nav>
     <form class="hero__search" method="get" role="search">
       <input type="hidden" name="state" value="{{ state }}">
-      <input type="search" name="q" value="{{ query }}" placeholder="Search by title" aria-label="Search by title">
-      <button type="submit" aria-label="Search">→</button>
+      <input type="search" name="q" value="{{ query }}" placeholder="{{ chrome.locale.t(crate::i18n::CommonText::SearchByTitle) }}" aria-label="{{ chrome.locale.t(crate::i18n::CommonText::SearchByTitle) }}">
+      <button type="submit" aria-label="{{ chrome.locale.t(crate::i18n::CommonText::Search) }}">→</button>
     </form>
   </div>
   {% if issues.is_empty() %}
     <div class="card empty">
-      <p class="empty__title">No matching entries</p>
-      <p>Try another state, search or page.</p>
+      <p class="empty__title">{{ chrome.locale.t(crate::i18n::WebText::NoMatchingDiscussions) }}</p>
+      <p>{{ chrome.locale.t(crate::i18n::WebText::TryAnotherFilter) }}</p>
     </div>
   {% else %}
     <div class="list">
@@ -31,9 +31,9 @@
           <span class="list__icon" aria-hidden="true">{% if issue.is_pull %}⧉{% else %}◎{% endif %}</span>
           <div class="list__main">
             <div class="list__title">{{ issue.title }}</div>
-            <div class="list__meta">{{ issue.repo_full }} #{{ issue.number }} · opened {{ issue.date.relative() }} by {{ issue.author }}</div>
+            <div class="list__meta">{{ issue.repo_full }} #{{ issue.number }} · {{ chrome.locale.opened_by(issue.date, issue.author.as_deref().unwrap_or(chrome.locale.t(crate::i18n::CommonText::Ghost))) }}</div>
           </div>
-          {% if issue.state == "closed" %}<span class="badge badge--closed">Closed</span>{% else %}<span class="badge badge--open">Open</span>{% endif %}
+          {% if issue.state == "closed" %}<span class="badge badge--closed">{{ chrome.locale.t(crate::i18n::CommonText::Closed) }}</span>{% else %}<span class="badge badge--open">{{ chrome.locale.t(crate::i18n::CommonText::Open) }}</span>{% endif %}
         </a>
       {% endfor %}
     </div>

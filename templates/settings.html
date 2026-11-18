@@ -4,23 +4,23 @@
 <div class="page">
   <div class="page-head" style="padding-top:34px">
     <div>
-      <h1 class="page-title">Settings</h1>
-      <p class="page-sub">Name, visibility and storage for {{ repo.full_name() }}.</p>
+      <h1 class="page-title">{{ chrome.locale.t(crate::i18n::CommonText::Settings) }}</h1>
+      <p class="page-sub">{{ chrome.locale.repository_settings_intro(repo.full_name().as_str()) }}</p>
     </div>
   </div>
 
   {% if let Some(message) = message %}
-    <div class="alert alert--success" role="status">Settings saved.</div>
+    <div class="alert alert--success" role="status">{{ chrome.locale.t(crate::i18n::RepoText::SettingsSaved) }}</div>
   {% endif %}
   {% if let Some(message) = error %}
     <div class="alert alert--error" role="alert">{{ message }}</div>
   {% endif %}
 
   <div class="settings-layout">
-    <nav class="settings-nav" aria-label="Repository settings">
-      <a href="#general" aria-current="page">General</a>
-      <a href="#storage">Git storage</a>
-      <a href="#danger">Danger zone</a>
+    <nav class="settings-nav" aria-label="{{ chrome.locale.t(crate::i18n::RepoText::RepositorySettings) }}">
+      <a href="#general">{{ chrome.locale.t(crate::i18n::RepoText::General) }}</a>
+      <a href="#storage">{{ chrome.locale.t(crate::i18n::RepoText::GitStorage) }}</a>
+      <a href="#danger">{{ chrome.locale.t(crate::i18n::RepoText::DangerZone) }}</a>
     </nav>
 
     <div class="settings-main">
@@ -28,51 +28,51 @@
         <form class="form card" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/settings">
           {% include "csrf.html" %}
           <div>
-            <h2 class="card__title">General</h2>
-            <p class="card__sub">Name, description and default branch.</p>
+            <h2 class="card__title">{{ chrome.locale.t(crate::i18n::RepoText::General) }}</h2>
+            <p class="card__sub">{{ chrome.locale.t(crate::i18n::RepoText::GeneralHelp) }}</p>
           </div>
           <div class="field">
-            <label for="description">Description</label>
-            <input class="input" id="description" name="description" value="{{ description_value }}" placeholder="What is this repository for?">
+            <label for="description">{{ chrome.locale.t(crate::i18n::RepoText::Description) }}</label>
+            <input class="input" id="description" name="description" value="{{ description_value }}" placeholder="{{ chrome.locale.t(crate::i18n::RepoText::DescriptionPlaceholder) }}">
           </div>
           <div class="two-col">
             <div class="field">
-              <label for="default_branch">Default branch</label>
+              <label for="default_branch">{{ chrome.locale.t(crate::i18n::RepoText::DefaultBranch) }}</label>
               <input class="input" id="default_branch" name="default_branch" value="{{ repo.default_branch }}">
             </div>
             <div class="field">
-              <label for="visibility">Visibility</label>
+              <label for="visibility">{{ chrome.locale.t(crate::i18n::RepoText::Visibility) }}</label>
               <select class="select" id="visibility" name="visibility">
-                <option value="public" {% if visibility_value == "public" %}selected{% endif %}>Public</option>
-                <option value="private" {% if visibility_value == "private" %}selected{% endif %}>Private</option>
+                <option value="public" {% if visibility_value == "public" %}selected{% endif %}>{{ chrome.locale.t(crate::i18n::CommonText::Public) }}</option>
+                <option value="private" {% if visibility_value == "private" %}selected{% endif %}>{{ chrome.locale.t(crate::i18n::CommonText::Private) }}</option>
               </select>
             </div>
           </div>
           <div class="form__actions">
-            <button class="btn btn--primary" type="submit">Save settings</button>
+            <button class="btn btn--primary" type="submit">{{ chrome.locale.t(crate::i18n::RepoText::SaveSettings) }}</button>
           </div>
         </form>
       </section>
 
       <section id="storage">
         <div class="card card--warm">
-          <h2 class="card__title">Git storage</h2>
-          <p class="card__sub">Backed by Cloudflare Artifacts. Git clients reach it through this shard's proxy, never directly.</p>
+          <h2 class="card__title">{{ chrome.locale.t(crate::i18n::RepoText::GitStorage) }}</h2>
+          <p class="card__sub">{{ chrome.locale.t(crate::i18n::RepoText::StorageHelp) }}</p>
           <div class="token-value"><code>{{ repo.artifacts_repo }}</code></div>
         </div>
       </section>
 
       <section id="danger">
         <div class="card card--danger">
-          <h2 class="card__title" style="color:var(--maroon)">Delete this repository</h2>
-          <p class="card__sub" style="margin-bottom:18px">This removes the metadata, issues, pull requests and the Artifacts repository. It cannot be undone.</p>
+          <h2 class="card__title" style="color:var(--maroon)">{{ chrome.locale.t(crate::i18n::RepoText::DeleteThisRepository) }}</h2>
+          <p class="card__sub" style="margin-bottom:18px">{{ chrome.locale.t(crate::i18n::RepoText::DeleteHelp) }}</p>
           <form class="form" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/settings/delete">
             {% include "csrf.html" %}
             <div class="field">
-              <label for="confirm">Type <code>{{ repo.name }}</code> to confirm</label>
+              <label for="confirm">{{ chrome.locale.confirm_repository_name(repo.name.as_str()) }}</label>
               <input class="input" id="confirm" name="confirm" required>
             </div>
-            <button class="btn btn--danger" type="submit">Delete repository</button>
+            <button class="btn btn--danger" type="submit">{{ chrome.locale.t(crate::i18n::RepoText::DeleteRepository) }}</button>
           </form>
         </div>
       </section>

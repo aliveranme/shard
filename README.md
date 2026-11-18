@@ -22,11 +22,12 @@ src/
   crypto.rs         PBKDF2 / SHA-256 / random tokens via WebCrypto
   security.rs       same-origin/CSRF checks and browser security headers
   pagination.rs     bounded list pagination and query-preserving links
+  i18n/             typed UI message catalogs and language negotiation
   account.rs        account and access-token page models
   artifacts.rs      Rust wrapper over the Artifacts Workers binding
   handlers/
     web.rs          dashboard, explore, global issue lists
-    auth_handlers.rs registration, login, access tokens
+    auth_handlers.rs registration, login, account language, access tokens
     repos.rs        create/browse/settings, trees, blobs, commits
     issues.rs       issues, comments, pull requests + file-level diff
     git.rs          Git smart-HTTP proxy to Artifacts
@@ -115,6 +116,25 @@ repositories; read tokens can clone public repositories (private ones require
 ownership). Expired or revoked tokens are rejected. Legacy tokens without an
 expiry remain valid until revoked. The secret is shown only at creation; use it
 as the password when Git prompts. Anonymous clone works for public repositories.
+
+## Interface language
+
+Open **Language** in the footer or **Account settings → Language**. Choose
+English, 简体中文 (Simplified Chinese), or **Use browser language**.
+Signed-in choices are stored in D1 and apply across sessions. If an account has
+no saved preference, Shard uses the browser's language cookie, then its
+`Accept-Language` priorities. Unsupported languages fall back to English.
+The **Use browser language** setting explicitly selects the browser header.
+
+The Worker translates UI labels, validation and error messages, accessibility
+labels, relative dates and counts. Repository contents, issues and commit
+messages appear in the language their authors used.
+
+To add a locale, register its tag and display label in `src/i18n/mod.rs`, add
+its text to each catalog in `src/i18n/`, and add its formatting and negotiation
+rules. Extend the D1 locale constraint with a forward migration. Keep
+interpolated messages together so translators can change word order. Templates
+escape the output, including interpolated values.
 
 ## Implemented
 

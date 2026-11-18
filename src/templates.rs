@@ -1,4 +1,5 @@
 use crate::ctx::AppState;
+use crate::i18n::Locale;
 use crate::models::{Issue, Pull, Repo, Ts};
 use crate::pagination::Pagination;
 use askama::Template;
@@ -10,6 +11,7 @@ pub struct Chrome {
     pub user_name: String,
     pub user_initial: String,
     pub csrf_token: String,
+    pub locale: Locale,
 }
 
 impl Chrome {
@@ -25,9 +27,11 @@ impl Chrome {
                     .map(|c| c.to_uppercase().to_string())
                     .unwrap_or_default(),
                 csrf_token: state.csrf_token.clone(),
+                locale: state.locale,
             },
             None => Self {
                 csrf_token: state.csrf_token.clone(),
+                locale: state.locale,
                 ..Self::default()
             },
         }
@@ -94,7 +98,7 @@ pub struct CommitRow {
 pub struct IssueRow {
     pub number: i64,
     pub title: String,
-    pub author: String,
+    pub author: Option<String>,
     pub date: Ts,
     pub comments: i64,
     pub is_pull: bool,
@@ -108,7 +112,7 @@ pub struct GlobalIssueRow {
     pub repo: String,
     pub number: i64,
     pub title: String,
-    pub author: String,
+    pub author: Option<String>,
     pub date: Ts,
     pub is_pull: bool,
     pub state: String,
@@ -128,7 +132,7 @@ pub struct DiscussionRow {
 #[derive(Clone)]
 pub struct ChangedRow {
     pub path: String,
-    pub status: String,
+    pub status: &'static str,
 }
 
 #[derive(Clone)]
@@ -183,7 +187,7 @@ pub struct ProfilePage {
 pub struct GlobalIssuesPage {
     pub chrome: Chrome,
     pub title: String,
-    pub heading: String,
+    pub heading: &'static str,
     pub issues: Vec<GlobalIssueRow>,
     pub state: String,
     pub query: String,
@@ -199,7 +203,7 @@ pub struct AuthPage {
     pub chrome: Chrome,
     pub title: String,
     pub mode: String,
-    pub error: Option<String>,
+    pub error: Option<&'static str>,
     pub username_value: String,
     pub email_value: String,
     pub next: String,
@@ -300,7 +304,7 @@ pub struct IssuePage {
     pub pagination: Pagination,
     pub pull: Option<PullView>,
     pub changed: Vec<ChangedRow>,
-    pub diff_error: Option<String>,
+    pub diff_error: Option<&'static str>,
     pub can_edit: bool,
     pub is_owner: bool,
 }
@@ -352,15 +356,15 @@ pub struct ErrorPage {
     pub chrome: Chrome,
     pub title: String,
     pub status: u16,
-    pub message: String,
+    pub message: &'static str,
 }
 
-pub fn error_response(chrome: Chrome, status: u16, message: &str) -> Result<Response> {
+pub fn error_response(chrome: Chrome, status: u16, message: &'static str) -> Result<Response> {
     let page = ErrorPage {
         title: format!("{status}"),
         chrome,
         status,
-        message: message.to_string(),
+        message,
     };
     Ok(render(&page)?.with_status(status))
 }

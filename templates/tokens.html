@@ -3,20 +3,18 @@
 <div class="page">
   <div class="page-head">
     <div>
-      <h1 class="page-title">Access tokens</h1>
-      <p class="page-sub">Use a token as the password when Git asks for credentials.</p>
+      <h1 class="page-title">{{ chrome.locale.t(crate::i18n::CommonText::AccessTokens) }}</h1>
+      <p class="page-sub">{{ chrome.locale.t(crate::i18n::AccountText::TokensIntro) }}</p>
     </div>
   </div>
   <div class="settings-layout">
-    <nav class="settings-nav" aria-label="Account settings">
-      <a href="/user/settings">Account</a>
-      <a href="/user/settings/tokens" aria-current="page">Access tokens</a>
-    </nav>
+    {% let settings_section = "tokens" %}
+    {% include "account_nav.html" %}
     <div class="settings-main">
 
   {% if let Some(token) = new_token %}
     <div class="alert alert--success" role="status">
-      <strong>New token created.</strong> Copy it now — it will not be shown again.
+      <strong>{{ chrome.locale.t(crate::i18n::AccountText::TokenCreated) }}</strong> {{ chrome.locale.t(crate::i18n::AccountText::TokenCopyNow) }}
       <div class="token-value"><code>{{ token }}</code></div>
     </div>
   {% endif %}
@@ -28,47 +26,47 @@
     <form class="form card" method="post" action="/user/settings/tokens">
       {% include "csrf.html" %}
       <div>
-        <h2 class="card__title">Generate a token</h2>
-        <p class="card__sub">Write tokens can push to your repositories; read tokens can only fetch.</p>
+        <h2 class="card__title">{{ chrome.locale.t(crate::i18n::AccountText::GenerateAToken) }}</h2>
+        <p class="card__sub">{{ chrome.locale.t(crate::i18n::AccountText::TokenScopeHelp) }}</p>
       </div>
       <div class="field">
-        <label for="name">Token name</label>
-        <input class="input" id="name" name="name" placeholder="laptop" maxlength="100" required>
+        <label for="name">{{ chrome.locale.t(crate::i18n::AccountText::TokenName) }}</label>
+        <input class="input" id="name" name="name" placeholder="{{ chrome.locale.t(crate::i18n::AccountText::TokenNameExample) }}" maxlength="100" required>
       </div>
       <div class="field">
-        <label for="scope">Scope</label>
+        <label for="scope">{{ chrome.locale.t(crate::i18n::AccountText::TokenScope) }}</label>
         <select class="select" id="scope" name="scope">
-          <option value="write" selected>Write — clone, fetch, push</option>
-          <option value="read">Read — clone, fetch</option>
+          <option value="write" selected>{{ chrome.locale.t(crate::i18n::AccountText::TokenWriteOption) }}</option>
+          <option value="read">{{ chrome.locale.t(crate::i18n::AccountText::TokenReadOption) }}</option>
         </select>
       </div>
       <div class="field">
-        <label for="expires-in">Expires after</label>
+        <label for="expires-in">{{ chrome.locale.t(crate::i18n::AccountText::ExpiresAfter) }}</label>
         <select class="select" id="expires-in" name="expires_in">
-          <option value="7">7 days</option>
-          <option value="30" selected>30 days</option>
-          <option value="90">90 days</option>
-          <option value="365">365 days</option>
+          <option value="7">{{ chrome.locale.token_days(7) }}</option>
+          <option value="30" selected>{{ chrome.locale.token_days(30) }}</option>
+          <option value="90">{{ chrome.locale.token_days(90) }}</option>
+          <option value="365">{{ chrome.locale.token_days(365) }}</option>
         </select>
       </div>
-      <button class="btn btn--primary" type="submit">Generate token</button>
+      <button class="btn btn--primary" type="submit">{{ chrome.locale.t(crate::i18n::AccountText::GenerateToken) }}</button>
     </form>
 
     <div class="card">
-      <h2 class="card__title">Git quickstart</h2>
-      <p class="card__sub">When Git asks for credentials, enter your username and use the token as the password.</p>
+      <h2 class="card__title">{{ chrome.locale.t(crate::i18n::AccountText::GitQuickstart) }}</h2>
+      <p class="card__sub">{{ chrome.locale.t(crate::i18n::AccountText::GitCredentials) }}</p>
       <div class="token-value"><code>git clone https://&lt;host&gt;/&lt;owner&gt;/&lt;repo&gt;.git</code></div>
     </div>
   </div>
 
   <section class="section">
     <div class="section__head">
-      <h2 class="section__title" style="font-size:2rem">Your tokens</h2>
+      <h2 class="section__title" style="font-size:2rem">{{ chrome.locale.t(crate::i18n::AccountText::YourTokens) }}</h2>
     </div>
     {% if tokens.is_empty() %}
       <div class="card empty">
-        <p class="empty__title">No tokens yet</p>
-        <p>Generate one above to push from your machine.</p>
+        <p class="empty__title">{{ chrome.locale.t(crate::i18n::AccountText::NoTokens) }}</p>
+        <p>{{ chrome.locale.t(crate::i18n::AccountText::GenerateFirstToken) }}</p>
       </div>
     {% else %}
       <div class="list">
@@ -78,14 +76,15 @@
             <div class="list__main">
               <div class="list__title">{{ token.name }}</div>
               <div class="list__meta">
-                {{ token.scope }} scope · created {{ token.created }}
-                · {% if let Some(last) = token.last_used %}last used {{ last.relative() }}{% else %}never used{% endif %}
-                · {% if let Some(expiry) = token.expires %}{% if token.expired %}expired{% else %}expires{% endif %} {{ expiry }}{% else %}no expiry{% endif %}
+                {% if token.scope == "write" %}{{ chrome.locale.t(crate::i18n::AccountText::WriteScope) }}{% else %}{{ chrome.locale.t(crate::i18n::AccountText::ReadScope) }}{% endif %}
+                · {{ chrome.locale.token_created(token.created) }}
+                · {% if let Some(last) = token.last_used %}{{ chrome.locale.token_last_used(last) }}{% else %}{{ chrome.locale.t(crate::i18n::AccountText::NeverUsed) }}{% endif %}
+                · {% if let Some(expiry) = token.expires %}{{ chrome.locale.token_expiry(expiry, token.expired) }}{% else %}{{ chrome.locale.t(crate::i18n::AccountText::NoExpiry) }}{% endif %}
               </div>
             </div>
             <form method="post" action="/user/settings/tokens/{{ token.id }}/delete">
               {% include "csrf.html" %}
-              <button class="btn btn--danger btn--sm" type="submit">Revoke</button>
+              <button class="btn btn--danger btn--sm" type="submit">{{ chrome.locale.t(crate::i18n::AccountText::Revoke) }}</button>
             </form>
           </div>
         {% endfor %}

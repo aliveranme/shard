@@ -35,11 +35,11 @@ pub fn can_view(state: &AppState, repo: &Repo) -> bool {
     !repo.is_private() || can_admin(state, repo)
 }
 
-pub fn not_found(state: &AppState, message: &str) -> Result<Response> {
+pub fn not_found(state: &AppState, message: &'static str) -> Result<Response> {
     error_response(Chrome::new(state), 404, message)
 }
 
-pub fn forbidden(state: &AppState, message: &str) -> Result<Response> {
+pub fn forbidden(state: &AppState, message: &'static str) -> Result<Response> {
     error_response(Chrome::new(state), 403, message)
 }
 

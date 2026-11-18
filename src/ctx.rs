@@ -1,4 +1,5 @@
 use std::rc::Rc;
+use crate::i18n::{LanguagePreference, Locale};
 use crate::models::User;
 use worker::*;
 
@@ -6,6 +7,8 @@ use worker::*;
 pub struct AppState {
     pub env: Env,
     pub user: Option<User>,
+    pub locale: Locale,
+    pub language_preference: LanguagePreference,
     pub csrf_token: String,
     pub form: Option<Rc<FormData>>,
 }

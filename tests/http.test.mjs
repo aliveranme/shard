@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, pbkdf2Sync } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -167,6 +167,74 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       assert.equal(result.location, "/");
     });
 
+    await t.test("guest language follows browser priorities and persists an explicit choice", async () => {
+      const guest = new Client();
+      const path = "/user/settings/language";
+      const preferred = "fr-CA, zh-CN;q=0.9, en-GB;q=0.5";
+      const settings = await guest.request(path, { headers: { "Accept-Language": preferred } });
+      assert.equal(settings.headers.get("content-language"), "zh-Hans");
+      assert.equal(settings.headers.get("cache-control"), "no-store");
+      assert.match(settings.body, /<html lang="zh-Hans">[\s\S]*界面语言/);
+      const unsupported = await guest.request(path, { headers: { "Accept-Language": "zh-Hant, en;q=0.5" } });
+      assert.equal(unsupported.headers.get("content-language"), "en");
+      const wildcard = await guest.request(path, { headers: { "Accept-Language": "en;q=0, *;q=0.5" } });
+      assert.equal(wildcard.headers.get("content-language"), "zh-Hans");
+
+      const missingToken = await guest.post(path, { language: "zh-Hans" }, {
+        csrf: false, headers: { "Accept-Language": preferred },
+      });
+      assert.equal(missingToken.status, 403);
+      assert.match(missingToken.body, /此表单已过期/);
+      const invalid = await guest.post(path, { language: "unsupported" });
+      assert.equal(invalid.status, 400);
+      assert.doesNotMatch(invalid.headers.getSetCookie().join("\n"), /shard_lang=/);
+
+      const saved = await guest.post(path, { language: "zh-Hans" });
+      redirected(saved);
+      assert.match(saved.headers.get("set-cookie"), /shard_lang=zh-Hans; Path=\/; HttpOnly; SameSite=Lax/);
+      assert.match((await guest.get(saved.location)).body, /语言偏好已保存/);
+      const explore = await guest.request("/explore/repos?q=project&page=2", {
+        headers: { "Accept-Language": "en" },
+      });
+      assert.match(explore.body, /探索仓库[\s\S]*上一页[\s\S]*第 2 页/);
+      const missing = await guest.get("/this/is/a/missing/page");
+      assert.equal(missing.status, 404);
+      assert.match(missing.body, /找不到此页面/);
+
+      redirected(await guest.post(path, { language: "auto" }));
+      assert.equal((await guest.request("/", { headers: { "Accept-Language": "en" } }))
+        .headers.get("content-language"), "en");
+    });
+
+    await t.test("an account language overrides a conflicting browser across sessions", async () => {
+      const path = "/user/settings/language";
+      const account = await signup("localeaccount");
+      redirected(await account.post(path, { language: "zh-Hans" }));
+      const otherBrowser = new Client();
+      await otherBrowser.get(path);
+      redirected(await otherBrowser.post(path, { language: "en" }));
+      await otherBrowser.get("/user/login");
+      redirected(await otherBrowser.post("/user/login", { login: "localeaccount", password }));
+
+      const accessTokens = await otherBrowser.get("/user/settings/tokens");
+      assert.equal(accessTokens.headers.get("content-language"), "zh-Hans");
+      assert.match(accessTokens.body, /<h1 class="page-title">访问令牌<\/h1>/);
+      const repository = await otherBrowser.get(publicRepo);
+      assert.match(repository.body, /此仓库为空/);
+      assert.match(repository.body, /HTTP regression repository/);
+
+      redirected(await account.post(path, { language: "auto" }));
+      const browserChoice = await otherBrowser.request("/user/settings", {
+        headers: { "Accept-Language": "zh-Hans" },
+      });
+      assert.equal(browserChoice.headers.get("content-language"), "zh-Hans");
+      redirected(await otherBrowser.post("/user/logout", {}));
+      const anonymousChoice = await otherBrowser.request("/", {
+        headers: { "Accept-Language": "zh-Hans" },
+      });
+      assert.equal(anonymousChoice.headers.get("content-language"), "en");
+    });
+
     await t.test("private repositories and Git credentials keep their access boundary", async () => {
       const anonymous = new Client();
       assert.equal((await anonymous.get(privateRepo)).status, 404);
@@ -242,10 +310,33 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       }
       await git("-C", worktree, "checkout", "-b", "feature/readme");
       await writeFile(join(worktree, "FEATURE.md"), "# A branch with a slash\n");
-      await git("-C", worktree, "add", "FEATURE.md");
+      const folder = join(worktree, "docs and examples");
+      await mkdir(folder);
+      await writeFile(join(folder, "release%20notes.txt"), "A nested file from the slash branch.\n");
+      await git("-C", worktree, "add", "FEATURE.md", "docs and examples");
       await git("-C", worktree, "-c", "core.hooksPath=", "commit", "--no-verify", "-m", "feature note");
       await git("-C", worktree, "remote", "add", "origin", `${base}/suiteowner/history.git`);
       await git("-C", worktree, "push", "origin", "main", "feature/readme");
+      const branchPage = await owner.get("/suiteowner/history?branch=feature%2Freadme");
+      assert.match(branchPage.body, /<option value="feature\/readme"\s+selected>/);
+      assert.match(branchPage.body, /<button[^>]*type="submit">Browse branch<\/button>/);
+      assert.match(branchPage.body, /href="\/suiteowner\/history\/blob\/FEATURE.md\?branch=feature%2Freadme"/);
+      const treeLink = branchPage.body.match(/href="([^"\n]*\/src\/docs%20and%20examples\?branch=[^"\n]+)"/)?.[1];
+      assert.ok(treeLink, "branch page links to the encoded directory");
+      const tree = await owner.get(treeLink);
+      assert.equal(tree.status, 200);
+      const blobLink = tree.body.match(/href="([^"\n]*\/blob\/[^"\n]+)"/)?.[1];
+      assert.ok(blobLink, "directory links to the nested file");
+      const blob = await owner.get(blobLink);
+      assert.equal(blob.status, 200);
+      assert.match(blob.body, /A nested file from the slash branch\./);
+      const rawLink = blob.body.match(/href="([^"\n]*\/raw\/[^"\n]+)"/)?.[1];
+      assert.ok(rawLink, "file preview links to the raw download");
+      const raw = await owner.get(rawLink);
+      assert.equal(raw.status, 200);
+      assert.equal(raw.headers.get("content-type"), "application/octet-stream");
+      assert.equal(raw.headers.get("content-disposition"), "inline; filename*=UTF-8''release%2520notes.txt");
+      assert.equal(raw.body, "A nested file from the slash branch.\n");
       const first = await owner.get("/suiteowner/history/commits?branch=feature%2Freadme");
       assert.equal(first.status, 200);
       const next = [...first.body.matchAll(/<a\b[^>]*href="([^"]+)"/g)]

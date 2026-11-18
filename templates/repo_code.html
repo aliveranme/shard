@@ -1,26 +1,31 @@
 {% extends "base.html" %}
 {% block content %}
+{% let repo_nav_branch = branch_url %}
 {% include "repo_header.html" %}
 <div class="page">
+  <div class="page-head">
+    <h1 class="page-title">{% if let Some(directory) = crumbs.last() %}{{ directory.name }}{% else %}{{ repo.full_name() }}{% endif %}</h1>
+  </div>
   <div class="repo-body">
     <div class="repo-main">
       <div class="repo-toolbar">
-        <form method="get" action="/{{ repo.owner_name }}/{{ repo.name }}">
-          <label class="sr-only" for="branch">Branch</label>
-          <select class="select" id="branch" name="branch" onchange="this.form.submit()">
+        <form method="get" action="/{{ repo.owner_name }}/{{ repo.name }}{% if let Some(directory) = crumbs.last() %}/src/{{ directory.url_path }}{% endif %}">
+          <label class="sr-only" for="branch">{{ chrome.locale.t(crate::i18n::RepoText::Branch) }}</label>
+          <select class="select" id="branch" name="branch">
             {% for name in branches %}
               <option value="{{ name }}" {% if name.as_str() == branch.as_str() %}selected{% endif %}>{{ name }}</option>
             {% endfor %}
           </select>
+          <button class="btn btn--ghost btn--sm" type="submit">{{ chrome.locale.t(crate::i18n::RepoText::BrowseBranch) }}</button>
         </form>
         <div class="repo-toolbar__right">
-          <a class="btn btn--ghost btn--sm" href="/{{ repo.owner_name }}/{{ repo.name }}/commits?branch={{ branch_url }}">Commits</a>
+          <a class="btn btn--ghost btn--sm" href="/{{ repo.owner_name }}/{{ repo.name }}/commits?branch={{ branch_url }}">{{ chrome.locale.t(crate::i18n::CommonText::Commits) }}</a>
         </div>
       </div>
 
       {% if let Some(note) = artifacts_error %}
         <div class="alert alert--warn" role="alert">
-          <strong>Artifacts is not reachable.</strong> {{ note }}
+          {{ note }}
         </div>
       {% endif %}
 
@@ -34,10 +39,18 @@
         </div>
       {% endif %}
 
-      {% if files.is_empty() && artifacts_error.is_none() %}
+      {% if files.is_empty() && artifacts_error.is_none() && !crumbs.is_empty() %}
+        <div class="card empty">
+          <h2 class="empty__title">{{ chrome.locale.t(crate::i18n::RepoText::EmptyDirectory) }}</h2>
+        </div>
+      {% else if files.is_empty() && artifacts_error.is_none() && branch.as_str() != repo.default_branch.as_str() %}
+        <div class="card empty">
+          <h2 class="empty__title">{{ chrome.locale.t(crate::i18n::RepoText::EmptyBranch) }}</h2>
+        </div>
+      {% else if files.is_empty() && artifacts_error.is_none() %}
         <div class="card card--warm empty" style="margin-top:22px;text-align:left">
-          <h2 class="empty__title">This repository is empty</h2>
-          <p class="muted" style="margin-bottom:16px">Push a branch to get started:</p>
+          <h2 class="empty__title">{{ chrome.locale.t(crate::i18n::RepoText::EmptyRepository) }}</h2>
+          <p class="muted" style="margin-bottom:16px">{{ chrome.locale.t(crate::i18n::RepoText::PushBranch) }}</p>
           <pre style="background:var(--canvas);border:1px solid var(--border);border-radius:16px;padding:18px;overflow:auto;font-size:.8125rem"><code>git clone {{ clone_url }}
 cd {{ repo.name }}
 echo "# {{ repo.name }}" &gt; README.md
@@ -49,8 +62,8 @@ git push -u origin {{ repo.default_branch }}</code></pre>
         <div class="file-list">
           <div class="file-row file-row--head" aria-hidden="true">
             <span></span>
-            <span>Name</span>
-            <span>Size</span>
+            <span>{{ chrome.locale.t(crate::i18n::RepoText::Name) }}</span>
+            <span>{{ chrome.locale.t(crate::i18n::RepoText::Size) }}</span>
           </div>
           {% for file in files %}
             <a class="file-row" href="/{{ repo.owner_name }}/{{ repo.name }}/{% if file.is_dir %}src{% else %}blob{% endif %}/{{ file.url_path }}?branch={{ branch_url }}">
@@ -72,7 +85,7 @@ git push -u origin {{ repo.default_branch }}</code></pre>
         <div class="commit-strip">
           <span class="avatar avatar--sm" aria-hidden="true">{{ commit.author_initial }}</span>
           <span><strong>{{ commit.message }}</strong></span>
-          <span class="muted">{{ commit.author }}{% if let Some(date) = commit.date %} · {{ date.relative() }}{% endif %}</span>
+          <span class="muted">{{ commit.author }}{% if let Some(date) = commit.date %} · {{ date.relative(chrome.locale) }}{% endif %}</span>
           <code title="{{ commit.hash }}">{{ commit.short }}</code>
         </div>
       {% endif %}
@@ -81,7 +94,7 @@ git push -u origin {{ repo.default_branch }}</code></pre>
         <article class="card readme">
           <div class="readme-card__head">
             <span class="badge">README</span>
-            <span class="muted" style="font-size:.8125rem">Rendered from the default branch</span>
+            <span class="muted" style="font-size:.8125rem">{{ chrome.locale.readme_from_branch(branch.as_str()) }}</span>
           </div>
           <div class="markup">{{ readme_html|safe }}</div>
         </article>
@@ -90,21 +103,21 @@ git push -u origin {{ repo.default_branch }}</code></pre>
 
     <aside class="repo-side">
       <div class="side-card">
-        <h2 class="side-card__title">About</h2>
-        <p>{% if repo.description.is_empty() %}No description yet.{% else %}{{ repo.description }}{% endif %}</p>
+        <h2 class="side-card__title">{{ chrome.locale.t(crate::i18n::RepoText::About) }}</h2>
+        <p>{% if repo.description.is_empty() %}{{ chrome.locale.t(crate::i18n::CommonText::NoDescription) }}{% else %}{{ repo.description }}{% endif %}</p>
         <div class="side-list" style="margin-top:14px">
-          <div class="side-row"><span class="muted">Default branch</span><code>{{ repo.default_branch }}</code></div>
-          <div class="side-row"><span class="muted">Visibility</span><span>{% if repo.is_private() %}Private{% else %}Public{% endif %}</span></div>
-          <div class="side-row"><span class="muted">Issues</span><span>{{ repo.open_issues }} open</span></div>
-          <div class="side-row"><span class="muted">Pull requests</span><span>{{ repo.open_pulls }} open</span></div>
-          <div class="side-row"><span class="muted">Updated</span><span>{{ repo.updated_at.relative() }}</span></div>
+          <div class="side-row"><span class="muted">{{ chrome.locale.t(crate::i18n::RepoText::DefaultBranch) }}</span><code>{{ repo.default_branch }}</code></div>
+          <div class="side-row"><span class="muted">{{ chrome.locale.t(crate::i18n::RepoText::Visibility) }}</span><span>{% if repo.is_private() %}{{ chrome.locale.t(crate::i18n::CommonText::Private) }}{% else %}{{ chrome.locale.t(crate::i18n::CommonText::Public) }}{% endif %}</span></div>
+          <div class="side-row"><span class="muted">{{ chrome.locale.t(crate::i18n::CommonText::Issues) }}</span><span>{{ chrome.locale.open_count(repo.open_issues) }}</span></div>
+          <div class="side-row"><span class="muted">{{ chrome.locale.t(crate::i18n::CommonText::PullRequests) }}</span><span>{{ chrome.locale.open_count(repo.open_pulls) }}</span></div>
+          <div class="side-row"><span class="muted">{{ chrome.locale.t(crate::i18n::RepoText::Updated) }}</span><span>{{ repo.updated_at.relative(chrome.locale) }}</span></div>
         </div>
       </div>
       <div class="side-card">
-        <h2 class="side-card__title">Clone</h2>
+        <h2 class="side-card__title">{{ chrome.locale.t(crate::i18n::RepoText::Clone) }}</h2>
         <code class="clone-url">{{ clone_url }}</code>
-        <p style="margin-top:12px">Authenticate with your username and an access token. Write tokens can push.</p>
-        <p><a href="/user/settings/tokens">Manage access tokens</a></p>
+        <p style="margin-top:12px">{{ chrome.locale.t(crate::i18n::RepoText::CloneHelp) }}</p>
+        <p><a href="/user/settings/tokens">{{ chrome.locale.t(crate::i18n::RepoText::ManageTokens) }}</a></p>
       </div>
     </aside>
   </div>

@@ -1,6 +1,7 @@
 use super::common::{REPO_COLUMNS, page_title};
 use crate::ctx::AppState;
 use crate::db;
+use crate::i18n::{CommonText, WebText};
 use crate::models::{Repo, Ts};
 use crate::pagination::{query_url, PageRequest, PAGE_SIZE};
 use crate::templates::{
@@ -27,7 +28,7 @@ pub async fn home(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
     let pagination = request_page.finish(&req, &mut repos, None)?;
     let page = HomePage {
         chrome: Chrome::new(&state),
-        title: page_title(&["Dashboard"]),
+        title: page_title(&[state.locale.t(WebText::Dashboard)]),
         repos: repos.iter().map(RepoRow::from_repo).collect(),
         is_explore: false,
         query: String::new(),
@@ -60,7 +61,7 @@ pub async fn explore(req: Request, ctx: RouteContext<AppState>) -> Result<Respon
     let pagination = request_page.finish(&req, &mut repos, None)?;
     let page = HomePage {
         chrome: Chrome::new(&state),
-        title: page_title(&["Explore"]),
+        title: page_title(&[state.locale.t(CommonText::Explore)]),
         repos: repos.iter().map(RepoRow::from_repo).collect(),
         is_explore: true,
         query,
@@ -86,7 +87,7 @@ pub async fn profile(req: Request, ctx: RouteContext<AppState>) -> Result<Respon
     )
     .await?;
     let Some(user) = user else {
-        return super::common::not_found(&state, "User not found.");
+        return super::common::not_found(&state, state.locale.t(WebText::UserNotFound));
     };
     let viewer = state.user_id().unwrap_or(-1);
     let request_page = PageRequest::new(&req, "page");
@@ -179,7 +180,7 @@ async fn global_list(
             repo: row.repo_name,
             number: row.number,
             title: row.title,
-            author: row.author_name.unwrap_or_else(|| "ghost".into()),
+            author: row.author_name,
             date: row.created_at,
             is_pull: row.kind == "pull",
             state: row.state,
@@ -188,12 +189,8 @@ async fn global_list(
     let is_pull = kind == "pull";
     let page = GlobalIssuesPage {
         chrome: Chrome::new(&state),
-        title: page_title(&[if is_pull { "Pull requests" } else { "Issues" }]),
-        heading: if is_pull {
-            "Pull requests across your projects".into()
-        } else {
-            "Issues across your projects".into()
-        },
+        title: page_title(&[state.locale.t(if is_pull { CommonText::PullRequests } else { CommonText::Issues })]),
+        heading: state.locale.t(if is_pull { WebText::GlobalPulls } else { WebText::GlobalIssues }),
         issues,
         state: state_filter.into(),
         query,

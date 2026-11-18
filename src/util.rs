@@ -50,17 +50,6 @@ pub fn redirect(path: &str) -> Result<Response> {
     Ok(resp)
 }
 
-pub fn redirect_with_flash(path: &str, key: &str, message: &str) -> Result<Response> {
-    let sep = if path.contains('?') { '&' } else { '?' };
-    redirect(&format!(
-        "{}{}{}={}",
-        path,
-        sep,
-        key,
-        urlencoding::encode(message)
-    ))
-}
-
 pub fn set_cookie(token: &str, max_age: i64, secure: bool) -> Result<String> {
     Ok(format!(
         "shard_session={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}{}",

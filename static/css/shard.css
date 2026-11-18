@@ -31,6 +31,11 @@
   --gap: 24px;
 }
 
+:root:lang(zh-Hans) {
+  --font-display: "Segoe UI Variable Display", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC", system-ui, sans-serif;
+  --font-body: "Segoe UI", "Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC", system-ui, sans-serif;
+}
+
 *,
 *::before,
 *::after { box-sizing: border-box; }
@@ -432,8 +437,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
   display: grid;
   gap: 20px;
 }
-.grid--repos { grid-template-columns: repeat(auto-fill, minmax(310px, 1fr)); }
-.grid--two { grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+.grid--repos { grid-template-columns: repeat(auto-fill, minmax(min(100%, 310px), 1fr)); }
+.grid--two { grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); }
 
 .card {
   background: var(--canvas);
@@ -661,6 +666,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   flex-wrap: wrap;
   margin-top: 26px;
 }
+.repo-toolbar form { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
 .clone {
   display: inline-flex;
   align-items: center;
@@ -698,7 +704,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .repo-side { display: grid; gap: 18px; position: sticky; top: 100px; }
 
 .repo-toolbar__right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.repo-toolbar .select { width: auto; min-width: 140px; padding-top: 10px; padding-bottom: 10px; }
+.repo-toolbar .select { width: auto; min-width: 140px; max-width: 100%; padding-top: 10px; padding-bottom: 10px; }
 
 .commit-strip {
   display: flex;
@@ -927,7 +933,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   font-size: 0.875rem;
   margin-bottom: 8px;
 }
-.pull-banner code { font-size: 0.75rem; background: var(--canvas); border-radius: var(--radius-pill); padding: 4px 10px; }
+.pull-banner code { font-size: 0.75rem; background: var(--canvas); border-radius: var(--radius-pill); padding: 4px 10px; overflow-wrap: anywhere; }
 
 /* ── Alerts, auth, tokens ─────────────────────────────────── */
 
@@ -988,6 +994,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .settings-nav a:hover { background: rgba(255, 255, 255, 0.7); text-decoration: none; }
 .settings-nav a[aria-current] { background: var(--canvas); box-shadow: 0 2px 10px rgba(0,0,0,.05); }
 .settings-main { display: grid; gap: 18px; min-width: 0; }
+.settings-standalone { max-width: 640px; }
 .settings-main section { scroll-margin-top: 100px; }
 
 .token-value {
@@ -1012,7 +1019,6 @@ button, input, select, textarea { font: inherit; color: inherit; }
   padding: 24px 0 8px;
 }
 .pagination__status { color: var(--muted); font-size: 0.875rem; }
-.pagination [aria-disabled="true"] { opacity: 0.5; cursor: default; pointer-events: none; }
 
 .settings-main .card__sub { max-width: 58ch; }
 .settings-main .alert { margin: 0; }
@@ -1039,6 +1045,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .footer__brand { display: inline-flex; align-items: center; gap: 10px; color: var(--muted-ink); }
 .footer__brand img { width: 22px; height: 22px; border-radius: 7px; }
+.footer__language { color: var(--action); }
 
 /* ── Responsive ────────────────────────────────────────────── */
 
@@ -1056,13 +1063,13 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 @media (max-width: 720px) {
   :root { --gap: 18px; }
-  .nav__links { display: none; }
-  .nav__inner { min-height: 68px; gap: 14px; }
-  .nav__actions { margin-left: auto; }
-  .nav__actions { gap: 4px; min-width: 0; }
+  .nav__inner { min-height: 68px; gap: 4px 14px; flex-wrap: wrap; padding-block: 8px; }
+  .nav__links { flex: 1 1 130px; flex-wrap: wrap; }
+  .nav__links a { padding-inline: 10px; }
+  .nav__actions { margin-inline-start: auto; gap: 4px; min-width: 0; }
   .nav__user { max-width: 140px; }
-  .nav__actions .btn--quiet { padding-left: 10px; padding-right: 10px; }
-  .nav__actions .btn--ghost { display: none; }
+  .nav__actions .btn { padding-inline: 10px; }
+  .nav__actions .nav__new-repo { display: none; }
   .hero { padding: 56px 0 48px; }
   .hero__title { font-size: clamp(2.6rem, 12vw, 3.6rem); }
   .hero__art { display: none; }

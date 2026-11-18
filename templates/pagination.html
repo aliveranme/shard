@@ -1,9 +1,11 @@
-<nav class="pagination" aria-label="Pagination">
+{% if pagination.previous.is_some() || pagination.next.is_some() %}
+<nav class="pagination" aria-label="{{ chrome.locale.t(crate::i18n::CommonText::Pagination) }}">
   {% if let Some(previous) = pagination.previous %}
-    <a class="btn btn--ghost btn--sm" href="{{ previous }}" rel="prev">Previous</a>
+    <a class="btn btn--ghost btn--sm" href="{{ previous }}" rel="prev">{{ chrome.locale.t(crate::i18n::CommonText::Previous) }}</a>
   {% endif %}
-  <span class="pagination__status" aria-current="page">{{ pagination.status }}</span>
+  <span class="pagination__status">{% if let Some(status) = pagination.status %}{{ status }}{% else %}{{ chrome.locale.page_number(pagination.page) }}{% endif %}</span>
   {% if let Some(next) = pagination.next %}
-    <a class="btn btn--ghost btn--sm" href="{{ next }}" rel="next">Next</a>
+    <a class="btn btn--ghost btn--sm" href="{{ next }}" rel="next">{{ chrome.locale.t(crate::i18n::CommonText::Next) }}</a>
   {% endif %}
 </nav>
+{% endif %}

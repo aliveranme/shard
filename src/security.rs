@@ -1,3 +1,4 @@
+use crate::i18n::Locale;
 use crate::{crypto, util};
 use worker::*;
 
@@ -63,11 +64,16 @@ pub fn valid_form(form: &FormData, expected: &str) -> bool {
         == 0
 }
 
+pub fn is_html(headers: &Headers) -> Result<bool> {
+    Ok(headers.get("Content-Type")?.is_some_and(|value| value.starts_with("text/html")))
+}
+
 pub fn finish(
     mut response: Response,
     token: &str,
     previous_token: Option<&str>,
     secure: bool,
+    locale: Locale,
 ) -> Result<Response> {
     let headers = response.headers_mut();
     headers.set("X-Content-Type-Options", "nosniff")?;
@@ -82,16 +88,17 @@ pub fn finish(
     if secure {
         headers.set("Strict-Transport-Security", "max-age=31536000")?;
     }
-    if previous_token != Some(token)
-        && headers.get("Content-Type")?.is_some_and(|value| value.starts_with("text/html"))
-    {
-        headers.append(
-            "Set-Cookie",
-            &format!(
-                "shard_csrf={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000{}",
-                if secure { "; Secure" } else { "" },
-            ),
-        )?;
+    if is_html(headers)? {
+        headers.set("Content-Language", locale.code())?;
+        if previous_token != Some(token) {
+            headers.append(
+                "Set-Cookie",
+                &format!(
+                    "shard_csrf={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000{}",
+                    if secure { "; Secure" } else { "" },
+                ),
+            )?;
+        }
     }
     Ok(response)
 }

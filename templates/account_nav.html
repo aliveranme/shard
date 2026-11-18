@@ -1,0 +1,5 @@
+<nav class="settings-nav" aria-label="{{ chrome.locale.t(crate::i18n::CommonText::AccountSettings) }}">
+  <a href="/user/settings"{% if settings_section == "account" %} aria-current="page"{% endif %}>{{ chrome.locale.t(crate::i18n::AccountText::Account) }}</a>
+  <a href="/user/settings/language"{% if settings_section == "language" %} aria-current="page"{% endif %}>{{ chrome.locale.t(crate::i18n::CommonText::Language) }}</a>
+  <a href="/user/settings/tokens"{% if settings_section == "tokens" %} aria-current="page"{% endif %}>{{ chrome.locale.t(crate::i18n::CommonText::AccessTokens) }}</a>
+</nav>
