@@ -1,0 +1,9 @@
+<nav class="pagination" aria-label="Pagination">
+  {% if let Some(previous) = pagination.previous %}
+    <a class="btn btn--ghost btn--sm" href="{{ previous }}" rel="prev">Previous</a>
+  {% endif %}
+  <span class="pagination__status" aria-current="page">{{ pagination.status }}</span>
+  {% if let Some(next) = pagination.next %}
+    <a class="btn btn--ghost btn--sm" href="{{ next }}" rel="next">Next</a>
+  {% endif %}
+</nav>

@@ -26,6 +26,7 @@
     <div class="settings-main">
       <section id="general">
         <form class="form card" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/settings">
+          {% include "csrf.html" %}
           <div>
             <h2 class="card__title">General</h2>
             <p class="card__sub">Name, description and default branch.</p>
@@ -66,6 +67,7 @@
           <h2 class="card__title" style="color:var(--maroon)">Delete this repository</h2>
           <p class="card__sub" style="margin-bottom:18px">This removes the metadata, issues, pull requests and the Artifacts repository. It cannot be undone.</p>
           <form class="form" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/settings/delete">
+            {% include "csrf.html" %}
             <div class="field">
               <label for="confirm">Type <code>{{ repo.name }}</code> to confirm</label>
               <input class="input" id="confirm" name="confirm" required>

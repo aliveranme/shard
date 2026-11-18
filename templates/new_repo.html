@@ -11,6 +11,7 @@
     <div class="alert alert--error" role="alert">{{ message }}</div>
   {% endif %}
   <form class="form card card--narrow" method="post" action="/repo/create">
+    {% include "csrf.html" %}
     <div class="field">
       <label for="name">Repository name</label>
       <input class="input" id="name" name="name" value="{{ name_value }}" placeholder="hello-world" required>

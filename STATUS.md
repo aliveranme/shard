@@ -3,7 +3,7 @@
 Living record of what works, what is missing, and how it was verified.
 Update this file whenever a milestone lands or a limitation changes.
 
-**Snapshot: 2026-11-17** · `main` at the UI alignment commit · local dev only (never deployed)
+**Snapshot: 2026-11-18** · account/security/pagination increment · local development only
 
 | Item | Value |
 |---|---|
@@ -16,16 +16,22 @@ Update this file whenever a milestone lands or a limitation changes.
 
 ## Working end to end (verified locally)
 
-- Registration and login: PBKDF2-SHA256 (100k), HttpOnly session cookie, logout.
+- Registration and login: PBKDF2-SHA256 (100k), HttpOnly session cookie, logout, failed-login throttling.
+- Account settings: password-confirmed email/password updates; password rotation invalidates older sessions.
+- Browser protection: CSRF tokens, origin checks, CSP/security headers, safe post-login redirects.
+- Access tokens: strict scope/name/expiry validation, one-time secret display, expiration enforcement, legacy compatibility and revocation.
 - Repository lifecycle: create calls the real Artifacts binding (local simulator), visibility, description, default branch, delete.
 - Git smart HTTP proxy: anonymous clone of public repos, token clone, push with a write token; read tokens are rejected for push.
 - Private repositories: anonymous page 404, anonymous clone 401, owner clone 200.
-- Code browsing: tree, blob preview, raw download, commit log, branches containing `/` via `?branch=feature%2Freadme`.
-- Issues: create, Markdown body, comment, close/reopen, open/closed/all filters, title search.
-- Pull requests: create with branch validation, discussion, file-level change list from tree comparison, close/reopen.
+- Code browsing: tree, blob preview, raw download, cursor-paginated first-parent history, branches containing `/` via `?branch=feature%2Freadme`.
+- Issues: create, Markdown body, comments, close/reopen, open/closed/all filters, title search, paginated actor-attributed discussion history.
+- Pull requests: branch-validated creation, discussion, file-level changes, close/reopen and state history.
 - Markdown safety: raw HTML escaped, `javascript:`/`data:`/`vbscript:`/`file:` destinations replaced with `#`.
 - Design system: measured 1200px measure, 96px hero, 999px pills, 28px cards, amber primary actions; no console errors.
 - Forgejo-shaped layouts: repo two-column with About/Clone, single issue filter toolbar, header Close/Reopen, settings side nav, centered auth card.
+- Pagination: 20-item repository/issue/discussion pages, stable ordering and preserved query filters.
+- Scheduled cleanup: expired session/token rows are removed by the configured daily event.
+- Repository deletion: incorrect confirmation preserves the repo; confirmed deletion removes storage and metadata.
 
 ## Progress
 
@@ -33,14 +39,21 @@ Update this file whenever a milestone lands or a limitation changes.
 
 | Area | Notes |
 |---|---|
-| Auth | register, login, logout, session lookup; no email verification by design |
-| Personal access tokens | create, list, revoke; `read`/`write` scopes; SHA-256 at rest |
+| Auth | register, login, logout, session lookup, eight-failure/15-minute source/account throttle |
+| Account | email/password settings, current-password checks, password-change session rotation |
+| Personal access tokens | one-time `shard_` secrets, read/write scopes, expiry picker, list/revoke, SHA-256 at rest |
+| Browser security | centralized CSRF/origin checks, CSP/security headers, safe local redirects |
 | Repositories | create, visibility, description, default branch, delete, owner profile |
 | Git transport | smart HTTP proxy with per-request 1h Artifacts tokens; push scope enforcement |
-| Code browser | directory tree, blob preview, raw bytes, commit history |
-| Issues | create, list/filter/search, comments, close/reopen |
+| Code browser | directory tree, blob preview, raw bytes, bounded cursor history |
+| Issues | create, list/filter/search, comments, atomic close/reopen events with actor attribution |
 | Pull requests | create, validate branches, file-level diff, comments, close/reopen |
 | UI | DESIGN.md tokens, pill controls, responsive breakpoints (720/980px) |
+| Pagination | dashboard, explore, profiles, global/repository issue lists, combined discussion and commit history |
+| Cleanup | daily scheduled removal of expired sessions, tokens and throttle windows |
+| Regression tests | 14 isolated HTTP scenarios; real Git push and slash-branch PR creation included |
+| CI | GitHub Actions workflow added; remote workflow run has not been observed |
+| Agent guidance | AGENT.md covers architecture, design, migrations, security and verification |
 | Local development | mise tasks, D1 migrations, Artifacts simulator (git ≥ 2.32) |
 | Docs | README, this status file, verified Cloudflare API notes |
 
@@ -52,7 +65,7 @@ Update this file whenever a milestone lands or a limitation changes.
 | Pull requests | file-level add/modify/delete list | line hunks, reviews, approvals, merge action |
 | Repo home | README, latest commit, About | language stats, topics, releases, archive |
 | Settings | general, storage, danger zone | rename, transfer, collaborators, webhooks |
-| Tokens | scope, created, last used | expiry picker, token prefixes, audit trail |
+| Tokens | scope, prefix, expiry, created/last used, revocation | audit trail, token-list pagination |
 | Search | repo search + issue title search | code search, commit search, full text |
 | Errors | friendly 404/403/500 pages | structured error IDs, request correlation |
 
@@ -60,12 +73,9 @@ Update this file whenever a milestone lands or a limitation changes.
 
 **P0 — before calling it production-ready**
 
-- Automated tests (unit + integration) and CI; verification so far is manual.
-- Account settings: password change, email change, password reset, account deletion.
-- Security hardening: CSRF tokens, CSP/security headers, rate limiting, login throttling.
-- Pagination for repositories, issues, comments and commits (limits: 30/50/100 hard-coded).
-- Expired session/token cleanup job; token expiry UI.
-- `closed_by` / issue event timeline (closer is currently not stored; the UI stays neutral).
+- Account recovery: email delivery/verification, password reset and account deletion.
+- Global/edge rate limiting beyond the implemented source/account failed-login throttle.
+- Remove remaining template inline styles before tightening CSP `style-src` further.
 - Real deployment checklist: D1 `database_id`, remote migrations, custom domain, backups.
 - Repository rename (Artifacts internal name is stable; UI surface needs mapping rules).
 
@@ -98,10 +108,10 @@ Update this file whenever a milestone lands or a limitation changes.
 
 - `Router` is rebuilt per request; routes allocate strings. Move to a cached router with request-scoped state.
 - Repository create is not transactional across Artifacts + D1: Artifacts repo is deleted best-effort if the D1 insert fails.
-- Repository delete removes metadata first, then Artifacts; an Artifacts failure leaves an orphan repo.
+- Repository deletion spans Artifacts and D1; if D1 fails after storage deletion succeeds, metadata can remain for a deleted repository.
 - PR diff walks both full trees over RPC (bounded to 2000 entries / depth 12); large repos will be slow.
 - Push bodies are buffered; multi-hundred-MB pushes risk Worker memory limits.
-- Sessions and tokens have no cleanup job; expired rows accumulate.
+- Token lists remain unpaginated; accounts with many tokens can produce large settings pages.
 - Error responses hide internals (good) but emit no correlation ID, making support harder.
 - Claims of "public read" rely on the proxy; the Artifacts remote URL/token never reaches clients.
 
@@ -120,6 +130,16 @@ Update this file whenever a milestone lands or a limitation changes.
 | 2026-11-17 | PR create + file-level diff | pass |
 | 2026-11-17 | Markdown XSS probe | HTML escaped, script URLs neutralized |
 | 2026-11-17 | browser console on redesigned pages | no errors |
+| 2026-11-18 | `mise run check` | pass, zero warnings |
+| 2026-11-18 | `mise run test` (includes release build) | pass: 14 scenarios / 15 Node test results; zero build warnings |
+| 2026-11-18 | credential changes, stale sessions, CSRF/origin probes, expiry/revocation/legacy tokens | pass in isolated HTTP suite |
+| 2026-11-18 | real Git push, slash branches, bounded commit cursor and PR file changes | pass in isolated HTTP suite |
+| 2026-11-18 | repository/issue/discussion pagination, wrong-kind mutations, repeated close/reopen | pass in isolated HTTP suite |
+| 2026-11-18 | daily cleanup event | expired session and token rows removed |
+| 2026-11-18 | Chrome screenshots at 1365px and 390px | account, tokens and discussion pages fit without horizontal overflow |
+| 2026-11-18 | Chrome account/token forms and actual pagination click | email success, token reveal/reload, attributed history and navigation pass |
+| 2026-11-18 | repository deletion in isolated browser runtime | wrong confirmation retained repo; confirmed deletion returned 404 |
+| 2026-11-18 | `mise run db:migrate` on local development state | migrations 0002 and 0003 applied successfully |
 
 ## How to update
 

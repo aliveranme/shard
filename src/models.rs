@@ -134,20 +134,6 @@ impl Issue {
     }
 }
 
-#[derive(Clone, Deserialize)]
-pub struct Comment {
-    pub id: i64,
-    pub issue_id: i64,
-    pub body: String,
-    pub author_name: Option<String>,
-    pub created_at: Ts,
-}
-
-impl Comment {
-    pub fn author(&self) -> &str {
-        self.author_name.as_deref().unwrap_or("ghost")
-    }
-}
 
 #[derive(Clone, Deserialize)]
 pub struct Pull {
@@ -168,6 +154,7 @@ pub struct AccessToken {
     pub scope: String,
     pub created_at: Ts,
     pub last_used_at: Option<Ts>,
+    pub expires_at: Option<Ts>,
 }
 
 /// Authenticated git caller resolved from an HTTP basic/bearer credential.

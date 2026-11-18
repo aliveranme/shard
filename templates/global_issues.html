@@ -4,13 +4,25 @@
   <div class="page-head">
     <div>
       <h1 class="page-title">{{ heading }}</h1>
-      <p class="page-sub">Open work across the repositories you can read.</p>
+      <p class="page-sub">Work across the repositories you can read.</p>
     </div>
+  </div>
+  <div class="list-toolbar">
+    <nav class="tabs" aria-label="Issue state">
+      <a class="tab" {% if state == "open" %}aria-current="page"{% endif %} href="{{ open_url }}">Open</a>
+      <a class="tab" {% if state == "closed" %}aria-current="page"{% endif %} href="{{ closed_url }}">Closed</a>
+      <a class="tab" {% if state == "all" %}aria-current="page"{% endif %} href="{{ all_url }}">All</a>
+    </nav>
+    <form class="hero__search" method="get" role="search">
+      <input type="hidden" name="state" value="{{ state }}">
+      <input type="search" name="q" value="{{ query }}" placeholder="Search by title" aria-label="Search by title">
+      <button type="submit" aria-label="Search">→</button>
+    </form>
   </div>
   {% if issues.is_empty() %}
     <div class="card empty">
-      <p class="empty__title">Nothing open</p>
-      <p>Everything is reviewed and closed for now.</p>
+      <p class="empty__title">No matching entries</p>
+      <p>Try another state, search or page.</p>
     </div>
   {% else %}
     <div class="list">
@@ -21,10 +33,11 @@
             <div class="list__title">{{ issue.title }}</div>
             <div class="list__meta">{{ issue.repo_full }} #{{ issue.number }} · opened {{ issue.date.relative() }} by {{ issue.author }}</div>
           </div>
-          <span class="badge badge--open">Open</span>
+          {% if issue.state == "closed" %}<span class="badge badge--closed">Closed</span>{% else %}<span class="badge badge--open">Open</span>{% endif %}
         </a>
       {% endfor %}
     </div>
   {% endif %}
+  {% include "pagination.html" %}
 </div>
 {% endblock %}

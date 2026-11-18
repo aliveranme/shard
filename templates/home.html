@@ -38,6 +38,7 @@
         {% endfor %}
       </div>
     {% endif %}
+    {% include "pagination.html" %}
   </section>
 </div>
 {% else %}
@@ -90,14 +91,14 @@
   <div class="section__head">
     <div>
       <h2 class="section__title">{% if chrome.signed_in %}Your repositories{% else %}Fresh from this shard{% endif %}</h2>
-      <p class="section__intro">Repositories you own appear first{% if chrome.signed_in %}, along with public projects you can read{% endif %}.</p>
+      <p class="section__intro">Browse {% if chrome.signed_in %}your repositories and public projects{% else %}public projects{% endif %}, most recently updated first.</p>
     </div>
     {% if chrome.signed_in %}<a class="btn btn--primary" href="/new">New repository</a>{% endif %}
   </div>
   {% if repos.is_empty() %}
     <div class="card empty">
-      <p class="empty__title">Nothing here yet</p>
-      <p>{% if chrome.signed_in %}Create your first repository and push a branch.{% else %}Sign in to create the first repository.{% endif %}</p>
+      <p class="empty__title">{% if pagination.page != 1 %}No repositories on this page{% else %}Nothing here yet{% endif %}</p>
+      <p>{% if pagination.page != 1 %}Go to the previous page to keep browsing.{% else if chrome.signed_in %}Create your first repository and push a branch.{% else %}Sign in to create the first repository.{% endif %}</p>
       {% if chrome.signed_in %}<p style="margin-top:18px"><a class="btn btn--primary" href="/new">Create a repository</a></p>{% endif %}
     </div>
   {% else %}
@@ -116,6 +117,7 @@
       {% endfor %}
     </div>
   {% endif %}
+  {% include "pagination.html" %}
 </section>
 {% endif %}
 {% endblock %}

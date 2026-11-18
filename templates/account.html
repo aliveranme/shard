@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page">
+  <div class="page-head"><div><h1 class="page-title">Account settings</h1><p class="page-sub">Manage your email and password.</p></div></div>
+  <div class="settings-layout">
+    <nav class="settings-nav" aria-label="Account settings">
+      <a href="/user/settings" aria-current="page">Account</a>
+      <a href="/user/settings/tokens">Access tokens</a>
+    </nav>
+    <div class="settings-main">
+      {% if let Some(message) = success %}<div class="alert alert--success" role="status">{{ message }}</div>{% endif %}
+      {% if let Some(message) = error %}<div class="alert alert--error" role="alert">{{ message }}</div>{% endif %}
+      <form class="form card" method="post" action="/user/settings/email">
+        {% include "csrf.html" %}
+        <h2 class="card__title">Email address</h2>
+        <div class="field"><label for="email">Email</label><input class="input" id="email" type="email" name="email" value="{{ email }}" maxlength="254" autocomplete="email" required></div>
+        <div class="field"><label for="email-password">Current password</label><input class="input" id="email-password" type="password" name="current_password" maxlength="1024" autocomplete="current-password" required></div>
+        <button class="btn btn--primary" type="submit">Update email</button>
+      </form>
+      <form class="form card" method="post" action="/user/settings/password">
+        {% include "csrf.html" %}
+        <h2 class="card__title">Change password</h2>
+        <p class="card__sub">Use at least 8 characters. Changing your password signs out all other browser sessions.</p>
+        <div class="field"><label for="current-password">Current password</label><input class="input" id="current-password" type="password" name="current_password" maxlength="1024" autocomplete="current-password" required></div>
+        <div class="field"><label for="password">New password</label><input class="input" id="password" type="password" name="password" minlength="8" maxlength="1024" autocomplete="new-password" required></div>
+        <div class="field"><label for="password-confirm">Confirm new password</label><input class="input" id="password-confirm" type="password" name="password_confirm" minlength="8" maxlength="1024" autocomplete="new-password" required></div>
+        <button class="btn btn--primary" type="submit">Update password</button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

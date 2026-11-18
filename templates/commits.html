@@ -5,15 +5,16 @@
   <div class="page-head" style="padding-top:32px">
     <div>
       <h1 class="page-title">Commits</h1>
-      <p class="page-sub">History on <span class="badge">{{ branch }}</span></p>
+      <p class="page-sub">First-parent history on <span class="badge">{{ branch }}</span></p>
     </div>
+    {% if let Some(latest) = latest_url %}<a class="btn btn--ghost" href="{{ latest }}">Latest commits</a>{% endif %}
     <a class="btn btn--ghost" href="/{{ repo.owner_name }}/{{ repo.name }}">Back to code</a>
   </div>
 
   {% if commits.is_empty() %}
     <div class="card empty">
-      <p class="empty__title">No commits yet</p>
-      <p>Push a branch to create the first commit.</p>
+      <p class="empty__title">{% if latest_url.is_some() %}Commit not found{% else %}No commits yet{% endif %}</p>
+      <p>{% if latest_url.is_some() %}Return to the latest commits to browse this branch.{% else %}Push a branch to create the first commit.{% endif %}</p>
     </div>
   {% else %}
     <div class="list">
@@ -29,5 +30,6 @@
       {% endfor %}
     </div>
   {% endif %}
+  {% include "pagination.html" %}
 </div>
 {% endblock %}

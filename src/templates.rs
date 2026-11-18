@@ -1,4 +1,6 @@
-use crate::models::{Comment, Issue, Pull, Repo, Ts, User};
+use crate::ctx::AppState;
+use crate::models::{Issue, Pull, Repo, Ts};
+use crate::pagination::Pagination;
 use askama::Template;
 use worker::*;
 
@@ -7,11 +9,12 @@ pub struct Chrome {
     pub signed_in: bool,
     pub user_name: String,
     pub user_initial: String,
+    pub csrf_token: String,
 }
 
 impl Chrome {
-    pub fn new(user: &Option<User>) -> Self {
-        match user {
+    pub fn new(state: &AppState) -> Self {
+        match &state.user {
             Some(u) => Self {
                 signed_in: true,
                 user_name: u.username.clone(),
@@ -21,8 +24,12 @@ impl Chrome {
                     .next()
                     .map(|c| c.to_uppercase().to_string())
                     .unwrap_or_default(),
+                csrf_token: state.csrf_token.clone(),
             },
-            None => Self::default(),
+            None => Self {
+                csrf_token: state.csrf_token.clone(),
+                ..Self::default()
+            },
         }
     }
 }
@@ -104,15 +111,18 @@ pub struct GlobalIssueRow {
     pub author: String,
     pub date: Ts,
     pub is_pull: bool,
+    pub state: String,
 }
 
 #[derive(Clone)]
-pub struct CommentRow {
+pub struct DiscussionRow {
     pub id: i64,
-    pub author: String,
+    pub author: Option<String>,
     pub initial: String,
     pub date: Ts,
     pub html: String,
+    pub action: String,
+    pub is_comment: bool,
 }
 
 #[derive(Clone)]
@@ -144,14 +154,6 @@ impl PullView {
     }
 }
 
-#[derive(Clone)]
-pub struct TokenRow {
-    pub id: i64,
-    pub name: String,
-    pub scope: String,
-    pub created: Ts,
-    pub last_used: Option<Ts>,
-}
 
 #[derive(Template)]
 #[template(path = "home.html")]
@@ -161,6 +163,7 @@ pub struct HomePage {
     pub repos: Vec<RepoRow>,
     pub is_explore: bool,
     pub query: String,
+    pub pagination: Pagination,
 }
 
 #[derive(Template)]
@@ -172,6 +175,7 @@ pub struct ProfilePage {
     pub joined: crate::models::Ts,
     pub repos: Vec<RepoRow>,
     pub is_self: bool,
+    pub pagination: Pagination,
 }
 
 #[derive(Template)]
@@ -181,6 +185,12 @@ pub struct GlobalIssuesPage {
     pub title: String,
     pub heading: String,
     pub issues: Vec<GlobalIssueRow>,
+    pub state: String,
+    pub query: String,
+    pub open_url: String,
+    pub closed_url: String,
+    pub all_url: String,
+    pub pagination: Pagination,
 }
 
 #[derive(Template)]
@@ -252,6 +262,8 @@ pub struct CommitsPage {
     pub branch: String,
     pub commits: Vec<CommitRow>,
     pub is_owner: bool,
+    pub pagination: Pagination,
+    pub latest_url: Option<String>,
 }
 
 #[derive(Template)]
@@ -268,6 +280,10 @@ pub struct IssuesPage {
     pub closed_count: i64,
     pub is_pull: bool,
     pub is_owner: bool,
+    pub open_url: String,
+    pub closed_url: String,
+    pub all_url: String,
+    pub pagination: Pagination,
 }
 
 #[derive(Template)]
@@ -280,7 +296,8 @@ pub struct IssuePage {
     pub issue: Issue,
     pub author_initial: String,
     pub body_html: String,
-    pub comments: Vec<CommentRow>,
+    pub discussion: Vec<DiscussionRow>,
+    pub pagination: Pagination,
     pub pull: Option<PullView>,
     pub changed: Vec<ChangedRow>,
     pub diff_error: Option<String>,
@@ -319,39 +336,7 @@ pub struct SettingsPage {
     pub is_owner: bool,
 }
 
-#[derive(Template)]
-#[template(path = "tokens.html")]
-pub struct TokensPage {
-    pub chrome: Chrome,
-    pub title: String,
-    pub tokens: Vec<TokenRow>,
-    pub new_token: Option<String>,
-    pub error: Option<String>,
-}
 
-impl TokenRow {
-    pub fn from_token(token: &crate::models::AccessToken) -> Self {
-        Self {
-            id: token.id,
-            name: token.name.clone(),
-            scope: token.scope.clone(),
-            created: token.created_at,
-            last_used: token.last_used_at,
-        }
-    }
-}
-
-impl CommentRow {
-    pub fn from_comment(comment: &Comment) -> Self {
-        Self {
-            id: comment.id,
-            author: comment.author().to_string(),
-            initial: initial(comment.author()),
-            date: comment.created_at,
-            html: crate::markdown::render(&comment.body),
-        }
-    }
-}
 
 /// Single uppercase character for an avatar bubble.
 pub fn initial(name: &str) -> String {

@@ -95,7 +95,11 @@ pub fn form_bool(data: &FormData, name: &str) -> bool {
 /// Only allow local, absolute paths as post-login redirect targets.
 pub fn safe_next(next: Option<String>) -> String {
     match next {
-        Some(n) if n.starts_with('/') && !n.starts_with("//") => n,
+        Some(n)
+            if n.starts_with('/')
+                && !n.starts_with("//")
+                && !n.contains('\\')
+                && !n.chars().any(char::is_control) => n,
         _ => "/".into(),
     }
 }
@@ -116,12 +120,24 @@ pub fn valid_slug(name: &str) -> bool {
 }
 
 pub fn valid_email(email: &str) -> bool {
+    if email.len() > 254 || email.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return false;
+    }
     let mut parts = email.split('@');
     let (local, domain) = match (parts.next(), parts.next(), parts.next()) {
         (Some(l), Some(d), None) => (l, d),
         _ => return false,
     };
-    !local.is_empty() && domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.')
+    !local.is_empty()
+        && local.len() <= 64
+        && domain.contains('.')
+        && domain.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
+                && label.as_bytes().last().is_some_and(u8::is_ascii_alphanumeric)
+                && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
 }
 
 /// Percent-encode a branch or file path for use in a URL.

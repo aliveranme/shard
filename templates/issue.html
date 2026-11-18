@@ -21,6 +21,7 @@
       {% endif %}
       {% if can_edit %}
         <form method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/{% if issue.is_pull() %}pulls{% else %}issues{% endif %}/{{ issue.number }}/state">
+          {% include "csrf.html" %}
           <input type="hidden" name="state" value="{% if issue.state == "open" %}closed{% else %}open{% endif %}">
           <button class="btn btn--ghost btn--sm" type="submit">
             {% if issue.state == "open" %}Close {% if issue.is_pull() %}pull request{% else %}issue{% endif %}{% else %}Reopen{% endif %}
@@ -55,29 +56,32 @@
         <div class="markup">{{ body_html|safe }}</div>
       </article>
 
-      {% for comment in comments %}
-        <article class="comment" id="comment-{{ comment.id }}">
-          <div class="comment__head">
-            <span class="avatar" aria-hidden="true">{{ comment.initial }}</span>
-            <div class="comment__who">
-              <strong>{{ comment.author }}</strong>
-              <div class="comment__time">{{ comment.date.relative() }}</div>
+      <h2 class="side-card__title" id="discussion">Discussion</h2>
+      {% for entry in discussion %}
+        {% if entry.is_comment %}
+          <article class="comment" id="comment-{{ entry.id }}">
+            <div class="comment__head">
+              <span class="avatar" aria-hidden="true">{{ entry.initial }}</span>
+              <div class="comment__who">
+                <strong>{{ entry.author.as_deref().unwrap_or("ghost") }}</strong>
+                <div class="comment__time" title="{{ entry.date }}">{{ entry.date.relative() }}</div>
+              </div>
             </div>
+            <div class="markup">{{ entry.html|safe }}</div>
+          </article>
+        {% else %}
+          <div class="timeline-event" id="event-{{ entry.id }}">
+            {% if let Some(actor) = entry.author %}<strong>{{ actor }}</strong> {{ entry.action }} this {% if issue.is_pull() %}pull request{% else %}issue{% endif %}{% else %}This {% if issue.is_pull() %}pull request{% else %}issue{% endif %} was {{ entry.action }}{% endif %}
+            <span title="{{ entry.date }}">{{ entry.date.relative() }}</span>
           </div>
-          <div class="markup">{{ comment.html|safe }}</div>
-        </article>
+        {% endif %}
       {% endfor %}
-
-      {% if let Some(closed) = issue.closed_at %}
-        {# The closer is not stored yet, so do not attribute this event to the author. #}
-        <div class="timeline-event">
-          This {% if issue.is_pull() %}pull request{% else %}issue{% endif %} was closed {{ closed.relative() }}
-        </div>
-      {% endif %}
+      {% include "pagination.html" %}
 
       {% if chrome.signed_in %}
         <form class="form card" method="post"
-              action="/{{ repo.owner_name }}/{{ repo.name }}/{% if issue.is_pull() %}pulls{% else %}issues{% endif %}/{{ issue.number }}/comments">
+              action="/{{ repo.owner_name }}/{{ repo.name }}/{% if issue.is_pull() %}pulls{% else %}issues{% endif %}/{{ issue.number }}/comments?comments_page={{ pagination.page }}">
+          {% include "csrf.html" %}
           <div class="field">
             <label for="body">Leave a comment</label>
             <textarea class="textarea" id="body" name="body" placeholder="Markdown is supported" required></textarea>

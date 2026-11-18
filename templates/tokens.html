@@ -7,6 +7,12 @@
       <p class="page-sub">Use a token as the password when Git asks for credentials.</p>
     </div>
   </div>
+  <div class="settings-layout">
+    <nav class="settings-nav" aria-label="Account settings">
+      <a href="/user/settings">Account</a>
+      <a href="/user/settings/tokens" aria-current="page">Access tokens</a>
+    </nav>
+    <div class="settings-main">
 
   {% if let Some(token) = new_token %}
     <div class="alert alert--success" role="status">
@@ -20,13 +26,14 @@
 
   <div class="grid grid--two">
     <form class="form card" method="post" action="/user/settings/tokens">
+      {% include "csrf.html" %}
       <div>
         <h2 class="card__title">Generate a token</h2>
         <p class="card__sub">Write tokens can push to your repositories; read tokens can only fetch.</p>
       </div>
       <div class="field">
         <label for="name">Token name</label>
-        <input class="input" id="name" name="name" placeholder="laptop" required>
+        <input class="input" id="name" name="name" placeholder="laptop" maxlength="100" required>
       </div>
       <div class="field">
         <label for="scope">Scope</label>
@@ -35,13 +42,22 @@
           <option value="read">Read — clone, fetch</option>
         </select>
       </div>
+      <div class="field">
+        <label for="expires-in">Expires after</label>
+        <select class="select" id="expires-in" name="expires_in">
+          <option value="7">7 days</option>
+          <option value="30" selected>30 days</option>
+          <option value="90">90 days</option>
+          <option value="365">365 days</option>
+        </select>
+      </div>
       <button class="btn btn--primary" type="submit">Generate token</button>
     </form>
 
     <div class="card">
       <h2 class="card__title">Git quickstart</h2>
-      <p class="card__sub">Clone with your username and a token once the repository exists.</p>
-      <div class="token-value"><code>git clone https://&lt;user&gt;:&lt;token&gt;@&lt;host&gt;/&lt;owner&gt;/&lt;repo&gt;.git</code></div>
+      <p class="card__sub">When Git asks for credentials, enter your username and use the token as the password.</p>
+      <div class="token-value"><code>git clone https://&lt;host&gt;/&lt;owner&gt;/&lt;repo&gt;.git</code></div>
     </div>
   </div>
 
@@ -64,9 +80,11 @@
               <div class="list__meta">
                 {{ token.scope }} scope · created {{ token.created }}
                 · {% if let Some(last) = token.last_used %}last used {{ last.relative() }}{% else %}never used{% endif %}
+                · {% if let Some(expiry) = token.expires %}{% if token.expired %}expired{% else %}expires{% endif %} {{ expiry }}{% else %}no expiry{% endif %}
               </div>
             </div>
             <form method="post" action="/user/settings/tokens/{{ token.id }}/delete">
+              {% include "csrf.html" %}
               <button class="btn btn--danger btn--sm" type="submit">Revoke</button>
             </form>
           </div>
@@ -74,5 +92,7 @@
       </div>
     {% endif %}
   </section>
+    </div>
+  </div>
 </div>
 {% endblock %}

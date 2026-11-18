@@ -17,6 +17,7 @@
 
   <form class="form card" method="post"
         action="/{{ repo.owner_name }}/{{ repo.name }}/{% if is_pull %}pulls{% else %}issues{% endif %}/new">
+    {% include "csrf.html" %}
     <div class="field">
       <label for="title">Title</label>
       <input class="input" id="title" name="title" value="{{ title_value }}" placeholder="{% if is_pull %}Improve the README{% else %}Something is broken{% endif %}" required autofocus>

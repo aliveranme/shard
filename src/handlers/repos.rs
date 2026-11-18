@@ -6,6 +6,7 @@ use crate::ctx::AppState;
 use crate::crypto;
 use crate::db;
 use crate::models::Ts;
+use crate::pagination::{query_url, Pagination, PAGE_SIZE};
 use crate::templates::{
     render, Chrome, CommitRow, CommitsPage, Crumb, FilePage, FileRow, NewRepoPage, RepoCodePage,
     SettingsPage,
@@ -19,7 +20,7 @@ pub async fn new_form(_req: Request, ctx: RouteContext<AppState>) -> Result<Resp
         return util::redirect("/user/login?next=/new");
     }
     let page = NewRepoPage {
-        chrome: Chrome::new(&state.user),
+        chrome: Chrome::new(&state),
         title: page_title(&["New repository"]),
         error: None,
         name_value: String::new(),
@@ -29,12 +30,12 @@ pub async fn new_form(_req: Request, ctx: RouteContext<AppState>) -> Result<Resp
     render(&page)
 }
 
-pub async fn create(mut req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
+pub async fn create(_req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = ctx.data.clone();
     let Some(user) = state.user.as_ref() else {
         return util::redirect("/user/login?next=/new");
     };
-    let form = req.form_data().await?;
+    let form = state.form()?;
     let name = util::form_value(&form, "name")
         .unwrap_or_default()
         .trim()
@@ -44,7 +45,7 @@ pub async fn create(mut req: Request, ctx: RouteContext<AppState>) -> Result<Res
 
     let invalid = |message: &str| -> Result<Response> {
         let page = NewRepoPage {
-            chrome: Chrome::new(&state.user),
+            chrome: Chrome::new(&state),
             title: page_title(&["New repository"]),
             error: Some(message.to_string()),
             name_value: name.clone(),
@@ -145,7 +146,7 @@ pub async fn view(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
     }
 
     let page = RepoCodePage {
-        chrome: Chrome::new(&state.user),
+        chrome: Chrome::new(&state),
         title: page_title(&[&repo.full_name()]),
         repo: repo.clone(),
         tab: "code".into(),
@@ -199,7 +200,7 @@ pub async fn tree(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
     }
 
     let page = RepoCodePage {
-        chrome: Chrome::new(&state.user),
+        chrome: Chrome::new(&state),
         title: page_title(&[&repo.full_name(), &path]),
         repo: repo.clone(),
         tab: "code".into(),
@@ -243,7 +244,7 @@ pub async fn file(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
     let size = bytes.len();
     let (content, is_binary, truncated) = render_blob(&bytes);
     let page = FilePage {
-        chrome: Chrome::new(&state.user),
+        chrome: Chrome::new(&state),
         title: page_title(&[&repo.full_name(), &path]),
         repo,
         tab: "code".into(),
@@ -292,23 +293,42 @@ pub async fn commits(req: Request, ctx: RouteContext<AppState>) -> Result<Respon
         return not_found(&state, "Repository not found.");
     };
     let branch = util::query_param(&req, "branch").unwrap_or_else(|| repo.default_branch.clone());
+    let start = util::query_param(&req, "start").map(|hash| hash.to_ascii_lowercase());
+    if start.as_ref().is_some_and(|hash| hash.len() != 40 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit())) {
+        return crate::templates::error_response(Chrome::new(&state), 400, "The commit cursor must be a full Git commit hash.");
+    }
     let is_owner = can_admin(&state, &repo);
     let artifacts = Artifacts::from_env(&state.env)?;
     let handle = artifacts.get(&repo.artifacts_repo).await?;
-    let commits = handle
-        .log(&branch, 50)
-        .await?
-        .into_iter()
-        .map(commit_row)
-        .collect();
+    // Artifacts log accepts a commit hash as its ref and walks first parents.
+    // The extra commit is the inclusive start of the next page, so every call
+    // reads at most 21 commits regardless of how far back the history goes.
+    let mut history = handle.log(start.as_deref().unwrap_or(&branch), (PAGE_SIZE + 1) as u32).await?;
+    let next = if history.len() > PAGE_SIZE { history.pop().map(|commit| commit.hash) } else { None };
+    let pagination = Pagination {
+        page: 1,
+        status: if start.is_some() { "Older commits".into() } else { "Latest commits".into() },
+        previous: None,
+        next: match next {
+            Some(hash) => Some(query_url(&req, &[("start", Some(&hash)), ("branch", Some(&branch)), ("page", None)], None)?),
+            None => None,
+        },
+    };
+    let latest_url = if start.is_some() {
+        Some(query_url(&req, &[("start", None), ("branch", Some(&branch)), ("page", None)], None)?)
+    } else {
+        None
+    };
     let page = CommitsPage {
-        chrome: Chrome::new(&state.user),
+        chrome: Chrome::new(&state),
         title: page_title(&[&repo.full_name(), "Commits"]),
         repo,
         tab: "commits".into(),
         branch,
-        commits,
+        commits: history.into_iter().map(commit_row).collect(),
         is_owner,
+        pagination,
+        latest_url,
     };
     render(&page)
 }
@@ -324,7 +344,7 @@ pub async fn settings(req: Request, ctx: RouteContext<AppState>) -> Result<Respo
         return super::common::forbidden(&state, "Only the repository owner can change settings.");
     }
     let page = SettingsPage {
-        chrome: Chrome::new(&state.user),
+        chrome: Chrome::new(&state),
         title: page_title(&[&repo.full_name(), "Settings"]),
         description_value: repo.description.clone(),
         visibility_value: repo.visibility.clone(),
@@ -337,7 +357,7 @@ pub async fn settings(req: Request, ctx: RouteContext<AppState>) -> Result<Respo
     render(&page)
 }
 
-pub async fn update_settings(mut req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
+pub async fn update_settings(_req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = ctx.data.clone();
     let owner = ctx.param("owner").cloned().unwrap_or_default();
     let name = ctx.param("repo").cloned().unwrap_or_default();
@@ -347,7 +367,7 @@ pub async fn update_settings(mut req: Request, ctx: RouteContext<AppState>) -> R
     if !can_admin(&state, &repo) {
         return super::common::forbidden(&state, "Only the repository owner can change settings.");
     }
-    let form = req.form_data().await?;
+    let form = state.form()?;
     let description = util::form_value(&form, "description").unwrap_or_default();
     let visibility = match util::form_value(&form, "visibility").as_deref() {
         Some("private") => "private",
@@ -373,7 +393,7 @@ pub async fn update_settings(mut req: Request, ctx: RouteContext<AppState>) -> R
     util::redirect(&format!("/{}/{}/settings?saved=1", repo.owner_name, repo.name))
 }
 
-pub async fn delete(mut req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
+pub async fn delete(_req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = ctx.data.clone();
     let owner = ctx.param("owner").cloned().unwrap_or_default();
     let name = ctx.param("repo").cloned().unwrap_or_default();
@@ -383,7 +403,7 @@ pub async fn delete(mut req: Request, ctx: RouteContext<AppState>) -> Result<Res
     if !can_admin(&state, &repo) {
         return super::common::forbidden(&state, "Only the repository owner can delete it.");
     }
-    let form = req.form_data().await?;
+    let form = state.form()?;
     let confirmation = util::form_value(&form, "confirm").unwrap_or_default();
     if confirmation != repo.name {
         return util::redirect_with_flash(
@@ -392,6 +412,16 @@ pub async fn delete(mut req: Request, ctx: RouteContext<AppState>) -> Result<Res
             "Type the repository name to confirm deletion.",
         );
     }
+    let settings_url = format!("/{}/{}/settings", repo.owner_name, repo.name);
+    let artifacts = match Artifacts::from_env(&state.env) {
+        Ok(artifacts) => artifacts,
+        Err(error) => return util::redirect_with_flash(&settings_url, "error", &format!("Could not delete Git storage: {error}")),
+    };
+    if let Err(error) = artifacts.delete(&repo.artifacts_repo).await {
+        return util::redirect_with_flash(&settings_url, "error", &format!("Could not delete Git storage: {error}"));
+    }
+    // A false result means Git storage is already absent, allowing a retry
+    // after storage deletion succeeded but a previous D1 deletion failed.
     let database = state.db()?;
     db::run(
         &database,
@@ -399,9 +429,6 @@ pub async fn delete(mut req: Request, ctx: RouteContext<AppState>) -> Result<Res
         &[util::js_int(repo.id)],
     )
     .await?;
-    if let Ok(artifacts) = Artifacts::from_env(&state.env) {
-        let _ = artifacts.delete(&repo.artifacts_repo).await;
-    }
     util::redirect("/")
 }
 

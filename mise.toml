@@ -14,7 +14,7 @@ run = """
 rustup target add wasm32-unknown-unknown
 cargo install worker-build --version 0.9.0 --locked
 cargo fetch
-npm install --no-audit --no-fund
+npm ci --no-audit --no-fund
 """
 
 [tasks.dev]
@@ -37,6 +37,11 @@ wrangler deploy
 [tasks.check]
 description = "Type-check the Worker for wasm32"
 run = "cargo check --target wasm32-unknown-unknown"
+
+[tasks.test]
+description = "Build and run isolated local HTTP regression tests"
+depends = ["build"]
+run = "node --test tests/http.test.mjs"
 
 [tasks.fmt]
 description = "Format the Rust sources"

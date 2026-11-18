@@ -36,11 +36,11 @@ pub fn can_view(state: &AppState, repo: &Repo) -> bool {
 }
 
 pub fn not_found(state: &AppState, message: &str) -> Result<Response> {
-    error_response(Chrome::new(&state.user), 404, message)
+    error_response(Chrome::new(state), 404, message)
 }
 
 pub fn forbidden(state: &AppState, message: &str) -> Result<Response> {
-    error_response(Chrome::new(&state.user), 403, message)
+    error_response(Chrome::new(state), 403, message)
 }
 
 

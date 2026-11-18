@@ -3,9 +3,10 @@ use crate::artifacts::Artifacts;
 use crate::ctx::AppState;
 use crate::db;
 use crate::markdown;
-use crate::models::{Comment, Issue, Pull};
+use crate::models::{Issue, Pull, Repo, Ts};
+use crate::pagination::{query_url, PageRequest, PAGE_SIZE};
 use crate::templates::{
-    render, ChangedRow, Chrome, CommentRow, IssueNewPage, IssuePage, IssueRow, IssuesPage, PullView,
+    render, ChangedRow, Chrome, DiscussionRow, IssueNewPage, IssuePage, IssueRow, IssuesPage, PullView,
 };
 use crate::util;
 use worker::*;
@@ -32,6 +33,7 @@ async fn list(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result<R
         _ => "open",
     };
     let query = util::query_param(&req, "q").unwrap_or_default();
+    let request_page = PageRequest::new(&req, "page");
     let database = state.db()?;
 
     #[derive(serde::Deserialize)]
@@ -56,7 +58,7 @@ async fn list(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result<R
     .unwrap_or(0);
 
     let like = format!("%{}%", query.trim());
-    let issues: Vec<Issue> = db::all(
+    let mut issues: Vec<Issue> = db::all(
         &database,
         "SELECT i.id, i.repo_id, i.number, i.kind, i.title, i.state, i.body,
                 i.author_id, u.username AS author_name, i.created_at, i.updated_at, i.closed_at,
@@ -64,20 +66,19 @@ async fn list(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result<R
            FROM issues i LEFT JOIN users u ON u.id = i.author_id
           WHERE i.repo_id = ? AND i.kind = ? AND (? = 'all' OR i.state = ?)
                 AND (? = '' OR i.title LIKE ?)
-          ORDER BY i.updated_at DESC LIMIT 100",
+          ORDER BY i.updated_at DESC, i.id DESC LIMIT ? OFFSET ?",
         &[
-            util::js_int(repo.id),
-            util::js_text(kind),
-            util::js_text(state_filter),
-            util::js_text(state_filter),
-            util::js_text(query.trim()),
-            util::js_text(&like),
+            util::js_int(repo.id), util::js_text(kind),
+            util::js_text(state_filter), util::js_text(state_filter),
+            util::js_text(query.trim()), util::js_text(&like),
+            util::js_int((PAGE_SIZE + 1) as i64), util::js_int(request_page.offset()),
         ],
     )
     .await?;
+    let pagination = request_page.finish(&req, &mut issues, None)?;
 
     let page = IssuesPage {
-        chrome: Chrome::new(&state.user),
+        chrome: Chrome::new(&state),
         title: page_title(&[&repo.full_name(), if kind == "pull" { "Pull requests" } else { "Issues" }]),
         issues: issues
             .iter()
@@ -99,6 +100,10 @@ async fn list(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result<R
         closed_count,
         is_pull: kind == "pull",
         is_owner,
+        open_url: query_url(&req, &[("state", Some("open")), ("page", None)], None)?,
+        closed_url: query_url(&req, &[("state", Some("closed")), ("page", None)], None)?,
+        all_url: query_url(&req, &[("state", Some("all")), ("page", None)], None)?,
+        pagination,
     };
     render(&page)
 }
@@ -128,7 +133,7 @@ async fn new_form(_req: Request, ctx: RouteContext<AppState>, kind: &str) -> Res
     }
     let is_owner = can_admin(&state, &repo);
     let page = IssueNewPage {
-        chrome: Chrome::new(&state.user),
+        chrome: Chrome::new(&state),
         title: page_title(&[&repo.full_name(), if kind == "pull" { "New pull request" } else { "New issue" }]),
         tab: if kind == "pull" { "pulls" } else { "issues" }.into(),
         is_pull: kind == "pull",
@@ -152,7 +157,7 @@ pub async fn create_pull(req: Request, ctx: RouteContext<AppState>) -> Result<Re
     create(req, ctx, "pull").await
 }
 
-async fn create(mut req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result<Response> {
+async fn create(_req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result<Response> {
     let state = ctx.data.clone();
     let owner = ctx.param("owner").cloned().unwrap_or_default();
     let name = ctx.param("repo").cloned().unwrap_or_default();
@@ -162,7 +167,7 @@ async fn create(mut req: Request, ctx: RouteContext<AppState>, kind: &str) -> Re
     let Some(user) = state.user.as_ref() else {
         return util::redirect("/user/login");
     };
-    let form = req.form_data().await?;
+    let form = state.form()?;
     let title = util::form_value(&form, "title").unwrap_or_default();
     let body = util::form_value(&form, "body").unwrap_or_default();
     let base_branch = util::form_value(&form, "base_branch")
@@ -172,7 +177,7 @@ async fn create(mut req: Request, ctx: RouteContext<AppState>, kind: &str) -> Re
     let is_owner = can_admin(&state, &repo);
     let invalid = |message: &str| -> Result<Response> {
         let page = IssueNewPage {
-            chrome: Chrome::new(&state.user),
+            chrome: Chrome::new(&state),
             title: page_title(&[&repo.full_name()]),
             tab: if kind == "pull" { "pulls" } else { "issues" }.into(),
             is_pull: kind == "pull",
@@ -288,7 +293,7 @@ pub async fn detail_pull(req: Request, ctx: RouteContext<AppState>) -> Result<Re
     detail(req, ctx, "pull").await
 }
 
-async fn detail(_req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result<Response> {
+async fn detail(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result<Response> {
     let state = ctx.data.clone();
     let owner = ctx.param("owner").cloned().unwrap_or_default();
     let name = ctx.param("repo").cloned().unwrap_or_default();
@@ -315,15 +320,23 @@ async fn detail(_req: Request, ctx: RouteContext<AppState>, kind: &str) -> Resul
         return not_found(&state, "Not found.");
     };
 
-    let comments: Vec<Comment> = db::all(
+
+    let request_page = PageRequest::new(&req, "comments_page");
+    let mut entries: Vec<DiscussionEntry> = db::all(
         &database,
-        "SELECT c.id, c.issue_id, c.body, c.created_at, u.username AS author_name
-           FROM comments c LEFT JOIN users u ON u.id = c.author_id
-          WHERE c.issue_id = ? ORDER BY c.created_at ASC, c.id ASC",
-        &[util::js_int(issue.id)],
+        "SELECT c.id AS id, c.body, 'comment' AS kind, c.created_at AS created_at, u.username AS author_name, 0 AS item_order
+           FROM comments c LEFT JOIN users u ON u.id = c.author_id WHERE c.issue_id = ?
+         UNION ALL
+         SELECT e.id, '' AS body, e.event AS kind, e.created_at, u.username AS author_name, 1 AS item_order
+           FROM issue_events e LEFT JOIN users u ON u.id = e.actor_id WHERE e.issue_id = ?
+         ORDER BY created_at ASC, item_order ASC, id ASC LIMIT ? OFFSET ?",
+        &[
+            util::js_int(issue.id), util::js_int(issue.id),
+            util::js_int((PAGE_SIZE + 1) as i64), util::js_int(request_page.offset()),
+        ],
     )
     .await?;
-
+    let pagination = request_page.finish(&req, &mut entries, Some("discussion"))?;
     let pull: Option<Pull> = if kind == "pull" {
         db::first(
             &database,
@@ -369,11 +382,12 @@ async fn detail(_req: Request, ctx: RouteContext<AppState>, kind: &str) -> Resul
     };
     let is_owner = can_admin(&state, &repo);
     let page = IssuePage {
-        chrome: Chrome::new(&state.user),
+        chrome: Chrome::new(&state),
         title: page_title(&[&repo.full_name(), &format!("#{number}")]),
         author_initial: crate::templates::initial(issue.author()),
         body_html: markdown::render(&issue.body),
-        comments: comments.iter().map(CommentRow::from_comment).collect(),
+        discussion: entries.into_iter().map(DiscussionEntry::into_row).collect(),
+        pagination,
         pull: pull.as_ref().map(PullView::from_pull),
         changed,
         diff_error,
@@ -386,112 +400,161 @@ async fn detail(_req: Request, ctx: RouteContext<AppState>, kind: &str) -> Resul
     render(&page)
 }
 
-pub async fn comment(mut req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
+pub async fn comment(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = ctx.data.clone();
     let owner = ctx.param("owner").cloned().unwrap_or_default();
     let name = ctx.param("repo").cloned().unwrap_or_default();
     let number: i64 = ctx.param("number").and_then(|v| v.parse().ok()).unwrap_or(0);
+    let kind = route_kind(&req)?;
     let Some(repo) = visible_repo(&state, &owner, &name).await? else {
         return not_found(&state, "Repository not found.");
     };
     let Some(user) = state.user.as_ref() else {
         return util::redirect("/user/login");
     };
-    let form = req.form_data().await?;
-    let body = util::form_value(&form, "body").unwrap_or_default();
-    if body.trim().is_empty() {
-        return util::redirect(&format!(
-            "/{}/{}/issues/{}",
-            repo.owner_name, repo.name, number
-        ));
-    }
     let database = state.db()?;
     let issue: Option<Issue> = db::first(
         &database,
         "SELECT id, repo_id, number, kind, title, body, state, author_id, NULL AS author_name,
                 created_at, updated_at, closed_at, 0 AS comment_count
-           FROM issues WHERE repo_id = ? AND number = ?",
-        &[util::js_int(repo.id), util::js_int(number)],
+           FROM issues WHERE repo_id = ? AND number = ? AND kind = ?",
+        &[util::js_int(repo.id), util::js_int(number), util::js_text(kind)],
     )
     .await?;
     let Some(issue) = issue else {
         return not_found(&state, "Not found.");
     };
-    db::run(
-        &database,
-        "INSERT INTO comments (issue_id, author_id, body, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-        &[
-            util::js_int(issue.id),
-            util::js_int(user.id),
-            util::js_text(&body),
-            util::js_int(util::now()),
-            util::js_int(util::now()),
-        ],
-    )
-    .await?;
-    db::run(
-        &database,
-        "UPDATE issues SET updated_at = ? WHERE id = ?",
-        &[util::js_int(util::now()), util::js_int(issue.id)],
-    )
-    .await?;
-    let section = if issue.kind == "pull" { "pulls" } else { "issues" };
-    util::redirect(&format!(
-        "/{}/{}/{}/{}#comment-latest",
-        repo.owner_name, repo.name, section, number
-    ))
+    let form = state.form()?;
+    let body = util::form_value(form, "body").unwrap_or_default();
+    if body.trim().is_empty() {
+        let request_page = PageRequest::new(&req, "comments_page");
+        return util::redirect(&format!(
+            "/{}/{}/{}/{}?comments_page={}#discussion",
+            repo.owner_name, repo.name, section(kind), number, request_page.number
+        ));
+    }
+    let now = util::now();
+    let insert = database.prepare(
+        "INSERT INTO comments (issue_id, author_id, body, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
+    ).bind(&[
+        util::js_int(issue.id), util::js_int(user.id), util::js_text(&body),
+        util::js_int(now), util::js_int(now),
+    ])?;
+    let update = database.prepare("UPDATE issues SET updated_at = ? WHERE id = ?")
+        .bind(&[util::js_int(now), util::js_int(issue.id)])?;
+    database.batch(vec![insert, update]).await?;
+    redirect_to_discussion(&database, &repo, &issue).await
 }
 
-pub async fn set_state(mut req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
+pub async fn set_state(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = ctx.data.clone();
     let owner = ctx.param("owner").cloned().unwrap_or_default();
     let name = ctx.param("repo").cloned().unwrap_or_default();
     let number: i64 = ctx.param("number").and_then(|v| v.parse().ok()).unwrap_or(0);
+    let kind = route_kind(&req)?;
     let Some(repo) = visible_repo(&state, &owner, &name).await? else {
         return not_found(&state, "Repository not found.");
     };
-    if state.user.is_none() {
+    let Some(user) = state.user.as_ref() else {
         return util::redirect("/user/login");
-    }
-    let form = req.form_data().await?;
-    let desired = match util::form_value(&form, "state").as_deref() {
-        Some("closed") => "closed",
-        _ => "open",
     };
     let database = state.db()?;
     let issue: Option<Issue> = db::first(
         &database,
         "SELECT id, repo_id, number, kind, title, body, state, author_id, NULL AS author_name,
                 created_at, updated_at, closed_at, 0 AS comment_count
-           FROM issues WHERE repo_id = ? AND number = ?",
-        &[util::js_int(repo.id), util::js_int(number)],
+           FROM issues WHERE repo_id = ? AND number = ? AND kind = ?",
+        &[util::js_int(repo.id), util::js_int(number), util::js_text(kind)],
     )
     .await?;
     let Some(issue) = issue else {
         return not_found(&state, "Not found.");
     };
-    if state.user_id() != issue.author_id && !can_admin(&state, &repo) {
+    if Some(user.id) != issue.author_id && !can_admin(&state, &repo) {
         return forbidden(&state, "Only the author or a repository owner can change this state.");
     }
-    db::run(
-        &database,
-        "UPDATE issues SET state = ?, closed_at = ?, updated_at = ? WHERE id = ?",
-        &[
-            util::js_text(desired),
-            if desired == "closed" {
-                util::js_int(util::now())
-            } else {
-                util::js_null()
-            },
-            util::js_int(util::now()),
-            util::js_int(issue.id),
-        ],
-    )
-    .await?;
-    let section = if issue.kind == "pull" { "pulls" } else { "issues" };
-    util::redirect(&format!(
-        "/{}/{}/{}/{}",
-        repo.owner_name, repo.name, section, number
-    ))
+    let form = state.form()?;
+    let desired = match util::form_value(form, "state").as_deref() {
+        Some("closed") => "closed",
+        Some("open") => "open",
+        _ => return crate::templates::error_response(Chrome::new(&state), 400, "State must be open or closed."),
+    };
+    let now = util::now();
+    // D1 executes the batch as one transaction. Test the live state inside it,
+    // so concurrent or repeated submissions cannot create duplicate events.
+    let event = database.prepare(
+        "INSERT INTO issue_events (issue_id, actor_id, event, created_at)
+         SELECT id, ?, ?, ? FROM issues WHERE id = ? AND state <> ?"
+    ).bind(&[
+        util::js_int(user.id), util::js_text(if desired == "closed" { "closed" } else { "reopened" }),
+        util::js_int(now), util::js_int(issue.id), util::js_text(desired),
+    ])?;
+    let update = database.prepare(
+        "UPDATE issues SET state = ?, closed_at = ?, updated_at = ? WHERE id = ? AND state <> ?"
+    ).bind(&[
+        util::js_text(desired),
+        if desired == "closed" { util::js_int(now) } else { util::js_null() },
+        util::js_int(now), util::js_int(issue.id), util::js_text(desired),
+    ])?;
+    database.batch(vec![event, update]).await?;
+    redirect_to_discussion(&database, &repo, &issue).await
 }
 
+
+#[derive(serde::Deserialize)]
+struct DiscussionEntry {
+    id: i64,
+    body: String,
+    kind: String,
+    author_name: Option<String>,
+    created_at: Ts,
+}
+
+impl DiscussionEntry {
+    fn into_row(self) -> DiscussionRow {
+        let is_comment = self.kind == "comment";
+        let author = if is_comment {
+            Some(self.author_name.unwrap_or_else(|| "ghost".into()))
+        } else {
+            self.author_name
+        };
+        DiscussionRow {
+            id: self.id,
+            initial: if is_comment { crate::templates::initial(author.as_deref().unwrap_or("ghost")) } else { String::new() },
+            author,
+            date: self.created_at,
+            html: if is_comment { markdown::render(&self.body) } else { String::new() },
+            action: self.kind,
+            is_comment,
+        }
+    }
+}
+
+fn section(kind: &str) -> &'static str {
+    if kind == "pull" { "pulls" } else { "issues" }
+}
+
+fn route_kind(req: &Request) -> Result<&'static str> {
+    match req.url()?.path().split('/').nth(3) {
+        Some("issues") => Ok("issue"),
+        Some("pulls") => Ok("pull"),
+        _ => Err(Error::RustError("Invalid discussion route".into())),
+    }
+}
+
+async fn redirect_to_discussion(database: &worker::d1::D1Database, repo: &Repo, issue: &Issue) -> Result<Response> {
+    #[derive(serde::Deserialize)]
+    struct Count { n: i64 }
+    let count = db::first::<Count>(
+        database,
+        "SELECT (SELECT COUNT(*) FROM comments WHERE issue_id = ?)
+              + (SELECT COUNT(*) FROM issue_events WHERE issue_id = ?) AS n",
+        &[util::js_int(issue.id), util::js_int(issue.id)],
+    ).await?.map(|count| count.n).unwrap_or(0);
+    let page = (count.saturating_sub(1).max(0) / PAGE_SIZE as i64 + 1)
+        .min(i64::from(crate::pagination::MAX_PAGE));
+    util::redirect(&format!(
+        "/{}/{}/{}/{}?comments_page={}#discussion",
+        repo.owner_name, repo.name, section(&issue.kind), issue.number, page
+    ))
+}

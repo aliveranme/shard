@@ -26,11 +26,12 @@
     <div class="nav__actions">
       {% if chrome.signed_in %}
         <a class="btn btn--ghost btn--sm" href="/new">New repository</a>
-        <a class="nav__user" href="/user/settings/tokens" title="Account and access tokens">
+        <a class="nav__user" href="/user/settings" title="Account settings">
           <span class="avatar avatar--sm" aria-hidden="true">{{ chrome.user_initial }}</span>
           {{ chrome.user_name }}
         </a>
         <form method="post" action="/user/logout">
+          {% include "csrf.html" %}
           <button class="btn btn--quiet btn--sm" type="submit">Sign out</button>
         </form>
       {% else %}

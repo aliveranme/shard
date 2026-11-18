@@ -1,3 +1,4 @@
+use std::rc::Rc;
 use crate::models::User;
 use worker::*;
 
@@ -5,6 +6,8 @@ use worker::*;
 pub struct AppState {
     pub env: Env,
     pub user: Option<User>,
+    pub csrf_token: String,
+    pub form: Option<Rc<FormData>>,
 }
 
 impl AppState {
@@ -14,6 +17,12 @@ impl AppState {
 
     pub fn user_id(&self) -> Option<i64> {
         self.user.as_ref().map(|u| u.id)
+    }
+
+    pub fn form(&self) -> Result<&FormData> {
+        self.form
+            .as_deref()
+            .ok_or_else(|| Error::RustError("missing validated form data".into()))
     }
 
 }

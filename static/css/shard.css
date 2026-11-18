@@ -1003,6 +1003,23 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .token-value code { font-size: 0.8125rem; overflow-wrap: anywhere; }
 
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding: 24px 0 8px;
+}
+.pagination__status { color: var(--muted); font-size: 0.875rem; }
+.pagination [aria-disabled="true"] { opacity: 0.5; cursor: default; pointer-events: none; }
+
+.settings-main .card__sub { max-width: 58ch; }
+.settings-main .alert { margin: 0; }
+.settings-main .token-value { min-width: 0; }
+.list__meta { overflow-wrap: anywhere; }
+.nav__user { max-width: 200px; overflow-wrap: anywhere; }
+
 /* ── Footer ─────────────────────────────────────────────────── */
 
 .footer {
@@ -1042,6 +1059,9 @@ button, input, select, textarea { font: inherit; color: inherit; }
   .nav__links { display: none; }
   .nav__inner { min-height: 68px; gap: 14px; }
   .nav__actions { margin-left: auto; }
+  .nav__actions { gap: 4px; min-width: 0; }
+  .nav__user { max-width: 140px; }
+  .nav__actions .btn--quiet { padding-left: 10px; padding-right: 10px; }
   .nav__actions .btn--ghost { display: none; }
   .hero { padding: 56px 0 48px; }
   .hero__title { font-size: clamp(2.6rem, 12vw, 3.6rem); }
@@ -1051,6 +1071,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
   .card, .repo-card { padding: 22px; border-radius: 22px; }
   .two-col { grid-template-columns: minmax(0, 1fr); }
   .list__row { padding: 16px 18px; }
+  .list__row { gap: 12px; flex-wrap: wrap; }
+  .list__trailing { white-space: normal; }
+  .page-title { overflow-wrap: anywhere; }
+  .repo-head__title { overflow-wrap: anywhere; }
   .file-row { grid-template-columns: 34px minmax(0, 1fr); }
   .file-row__size { display: none; }
   .page-head { padding-top: 28px; }

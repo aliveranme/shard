@@ -16,6 +16,7 @@
       <div class="alert alert--error" role="alert">{{ message }}</div>
     {% endif %}
     <form class="form" method="post" action="{% if mode == "login" %}/user/login{% else %}/user/sign_up{% endif %}">
+      {% include "csrf.html" %}
       <input type="hidden" name="next" value="{{ next }}">
       <div class="field">
         <label for="login">Username{% if mode == "login" %} or email{% endif %}</label>

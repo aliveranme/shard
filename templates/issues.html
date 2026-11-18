@@ -13,13 +13,13 @@
 
   <div class="list-toolbar">
     <div class="tabs" role="tablist" aria-label="State">
-      <a class="tab" role="tab" {% if state == "open" %}aria-current="page"{% endif %} href="?state=open">
+      <a class="tab" role="tab" {% if state == "open" %}aria-current="page"{% endif %} href="{{ open_url }}">
         Open <span class="badge badge--count">{{ open_count }}</span>
       </a>
-      <a class="tab" role="tab" {% if state == "closed" %}aria-current="page"{% endif %} href="?state=closed">
+      <a class="tab" role="tab" {% if state == "closed" %}aria-current="page"{% endif %} href="{{ closed_url }}">
         Closed <span class="badge badge--count">{{ closed_count }}</span>
       </a>
-      <a class="tab" role="tab" {% if state == "all" %}aria-current="page"{% endif %} href="?state=all">All</a>
+      <a class="tab" role="tab" {% if state == "all" %}aria-current="page"{% endif %} href="{{ all_url }}">All</a>
     </div>
 
     <form class="hero__search" method="get" role="search">
@@ -39,7 +39,7 @@
   {% if issues.is_empty() %}
     <div class="card empty">
       <p class="empty__title">Nothing here</p>
-      <p>{% if state == "open" %}No open {% if is_pull %}pull requests{% else %}issues{% endif %}.{% else %}No matching entries.{% endif %}</p>
+      <p>{% if pagination.page != 1 %}No matching entries on this page.{% else if state == "open" %}No open {% if is_pull %}pull requests{% else %}issues{% endif %}.{% else %}No matching entries.{% endif %}</p>
     </div>
   {% else %}
     <div class="list">
@@ -67,5 +67,6 @@
       {% endfor %}
     </div>
   {% endif %}
+  {% include "pagination.html" %}
 </div>
 {% endblock %}

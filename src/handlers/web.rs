@@ -2,32 +2,36 @@ use super::common::{REPO_COLUMNS, page_title};
 use crate::ctx::AppState;
 use crate::db;
 use crate::models::{Repo, Ts};
+use crate::pagination::{query_url, PageRequest, PAGE_SIZE};
 use crate::templates::{
     render, Chrome, GlobalIssueRow, GlobalIssuesPage, HomePage, ProfilePage, RepoRow,
 };
 use crate::util;
 use worker::*;
 
-pub async fn home(_req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
+pub async fn home(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = ctx.data.clone();
     let viewer = state.user_id().unwrap_or(-1);
+    let request_page = PageRequest::new(&req, "page");
     let database = state.db()?;
-    let repos: Vec<Repo> = db::all(
+    let mut repos: Vec<Repo> = db::all(
         &database,
         &format!(
             "SELECT {REPO_COLUMNS} FROM repos r JOIN users u ON u.id = r.owner_id
              WHERE r.visibility = 'public' OR r.owner_id = ?
-             ORDER BY r.updated_at DESC LIMIT 30"
+             ORDER BY r.updated_at DESC, r.id DESC LIMIT ? OFFSET ?"
         ),
-        &[util::js_int(viewer)],
+        &[util::js_int(viewer), util::js_int((PAGE_SIZE + 1) as i64), util::js_int(request_page.offset())],
     )
     .await?;
+    let pagination = request_page.finish(&req, &mut repos, None)?;
     let page = HomePage {
-        chrome: Chrome::new(&state.user),
+        chrome: Chrome::new(&state),
         title: page_title(&["Dashboard"]),
         repos: repos.iter().map(RepoRow::from_repo).collect(),
         is_explore: false,
         query: String::new(),
+        pagination,
     };
     render(&page)
 }
@@ -35,42 +39,37 @@ pub async fn home(_req: Request, ctx: RouteContext<AppState>) -> Result<Response
 pub async fn explore(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = ctx.data.clone();
     let query = util::query_param(&req, "q").unwrap_or_default();
+    let request_page = PageRequest::new(&req, "page");
     let database = state.db()?;
-    let repos: Vec<Repo> = if query.trim().is_empty() {
-        db::all(
-            &database,
-            &format!(
-                "SELECT {REPO_COLUMNS} FROM repos r JOIN users u ON u.id = r.owner_id
-                 WHERE r.visibility = 'public'
-                 ORDER BY r.updated_at DESC LIMIT 50"
-            ),
-            &[],
-        )
-        .await?
-    } else {
-        let like = format!("%{}%", query.trim());
-        db::all(
-            &database,
-            &format!(
-                "SELECT {REPO_COLUMNS} FROM repos r JOIN users u ON u.id = r.owner_id
-                 WHERE r.visibility = 'public' AND (r.name LIKE ? OR r.description LIKE ? OR u.username LIKE ?)
-                 ORDER BY r.updated_at DESC LIMIT 50"
-            ),
-            &[util::js_text(&like), util::js_text(&like), util::js_text(&like)],
-        )
-        .await?
-    };
+    let like = format!("%{}%", query.trim());
+    let mut repos: Vec<Repo> = db::all(
+        &database,
+        &format!(
+            "SELECT {REPO_COLUMNS} FROM repos r JOIN users u ON u.id = r.owner_id
+             WHERE r.visibility = 'public'
+               AND (? = '' OR r.name LIKE ? OR r.description LIKE ? OR u.username LIKE ?)
+             ORDER BY r.updated_at DESC, r.id DESC LIMIT ? OFFSET ?"
+        ),
+        &[
+            util::js_text(query.trim()), util::js_text(&like),
+            util::js_text(&like), util::js_text(&like),
+            util::js_int((PAGE_SIZE + 1) as i64), util::js_int(request_page.offset()),
+        ],
+    )
+    .await?;
+    let pagination = request_page.finish(&req, &mut repos, None)?;
     let page = HomePage {
-        chrome: Chrome::new(&state.user),
+        chrome: Chrome::new(&state),
         title: page_title(&["Explore"]),
         repos: repos.iter().map(RepoRow::from_repo).collect(),
         is_explore: true,
         query,
+        pagination,
     };
     render(&page)
 }
 
-pub async fn profile(_req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
+pub async fn profile(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = ctx.data.clone();
     let username = ctx.param("owner").cloned().unwrap_or_default();
     let database = state.db()?;
@@ -90,23 +89,26 @@ pub async fn profile(_req: Request, ctx: RouteContext<AppState>) -> Result<Respo
         return super::common::not_found(&state, "User not found.");
     };
     let viewer = state.user_id().unwrap_or(-1);
-    let repos: Vec<Repo> = db::all(
+    let request_page = PageRequest::new(&req, "page");
+    let mut repos: Vec<Repo> = db::all(
         &database,
         &format!(
             "SELECT {REPO_COLUMNS} FROM repos r JOIN users u ON u.id = r.owner_id
              WHERE r.owner_id = ? AND (r.visibility = 'public' OR r.owner_id = ?)
-             ORDER BY r.updated_at DESC LIMIT 100"
+             ORDER BY r.updated_at DESC, r.id DESC LIMIT ? OFFSET ?"
         ),
-        &[util::js_int(user.id), util::js_int(viewer)],
+        &[util::js_int(user.id), util::js_int(viewer), util::js_int((PAGE_SIZE + 1) as i64), util::js_int(request_page.offset())],
     )
     .await?;
+    let pagination = request_page.finish(&req, &mut repos, None)?;
     let page = ProfilePage {
-        chrome: Chrome::new(&state.user),
+        chrome: Chrome::new(&state),
         title: page_title(&[&user.username]),
         name: user.username.clone(),
         joined: user.created_at,
         repos: repos.iter().map(RepoRow::from_repo).collect(),
         is_self: viewer == user.id,
+        pagination,
     };
     render(&page)
 }
@@ -117,6 +119,7 @@ struct GlobalRow {
     pub title: String,
     pub created_at: Ts,
     pub kind: String,
+    pub state: String,
     pub author_name: Option<String>,
     pub repo_name: String,
     pub repo_owner: String,
@@ -131,28 +134,43 @@ pub async fn global_pulls(req: Request, ctx: RouteContext<AppState>) -> Result<R
 }
 
 async fn global_list(
-    _req: Request,
+    req: Request,
     ctx: RouteContext<AppState>,
     kind: &str,
 ) -> Result<Response> {
     let state = ctx.data.clone();
     let Some(user) = state.user.as_ref() else {
-        return util::redirect("/user/login?next=/issues");
+        return util::redirect(if kind == "pull" { "/user/login?next=/pulls" } else { "/user/login?next=/issues" });
     };
+    let state_filter = match util::query_param(&req, "state").as_deref() {
+        Some("closed") => "closed",
+        Some("all") => "all",
+        _ => "open",
+    };
+    let query = util::query_param(&req, "q").unwrap_or_default();
+    let like = format!("%{}%", query.trim());
+    let request_page = PageRequest::new(&req, "page");
     let database = state.db()?;
-    let rows: Vec<GlobalRow> = db::all(
+    let mut rows: Vec<GlobalRow> = db::all(
         &database,
-        "SELECT i.number, i.title, i.created_at, i.kind, u.username AS author_name,
+        "SELECT i.number, i.title, i.created_at, i.kind, i.state, u.username AS author_name,
                 r.name AS repo_name, o.username AS repo_owner
            FROM issues i
            JOIN repos r ON r.id = i.repo_id
            JOIN users o ON o.id = r.owner_id
            LEFT JOIN users u ON u.id = i.author_id
-          WHERE i.kind = ? AND i.state = 'open' AND (r.owner_id = ? OR r.visibility = 'public')
-          ORDER BY i.updated_at DESC LIMIT 50",
-        &[util::js_text(kind), util::js_int(user.id)],
+          WHERE i.kind = ? AND (? = 'all' OR i.state = ?)
+            AND (r.owner_id = ? OR r.visibility = 'public')
+            AND (? = '' OR i.title LIKE ?)
+          ORDER BY i.updated_at DESC, i.id DESC LIMIT ? OFFSET ?",
+        &[
+            util::js_text(kind), util::js_text(state_filter), util::js_text(state_filter),
+            util::js_int(user.id), util::js_text(query.trim()), util::js_text(&like),
+            util::js_int((PAGE_SIZE + 1) as i64), util::js_int(request_page.offset()),
+        ],
     )
     .await?;
+    let pagination = request_page.finish(&req, &mut rows, None)?;
     let issues = rows
         .into_iter()
         .map(|row| GlobalIssueRow {
@@ -164,11 +182,12 @@ async fn global_list(
             author: row.author_name.unwrap_or_else(|| "ghost".into()),
             date: row.created_at,
             is_pull: row.kind == "pull",
+            state: row.state,
         })
         .collect();
     let is_pull = kind == "pull";
     let page = GlobalIssuesPage {
-        chrome: Chrome::new(&state.user),
+        chrome: Chrome::new(&state),
         title: page_title(&[if is_pull { "Pull requests" } else { "Issues" }]),
         heading: if is_pull {
             "Pull requests across your projects".into()
@@ -176,6 +195,12 @@ async fn global_list(
             "Issues across your projects".into()
         },
         issues,
+        state: state_filter.into(),
+        query,
+        open_url: query_url(&req, &[("state", Some("open")), ("page", None)], None)?,
+        closed_url: query_url(&req, &[("state", Some("closed")), ("page", None)], None)?,
+        all_url: query_url(&req, &[("state", Some("all")), ("page", None)], None)?,
+        pagination,
     };
     render(&page)
 }
