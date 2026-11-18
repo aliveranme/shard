@@ -789,6 +789,12 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       assert.doesNotMatch((await outsider.get("/issues?q=private-body-needle")).body, /Protected classification/);
       redirected(await owner.post(`${thread.location}/comments`, { body: "private-comment-needle" }));
       assert.match((await viewer.get(`${privateRepo}/issues?q=private-comment-needle`)).body, /Protected classification/);
+      const filters = new URLSearchParams({ label: "review-required", milestone: "delivery-window", assignee: "suiteviewer", q: "private-comment-needle" });
+      assert.match((await viewer.get(`${privateRepo}/issues?${filters}`)).body, />Protected classification</);
+      assert.match((await viewer.get(`/issues?${filters}`)).body, />Protected classification</);
+      assert.doesNotMatch((await outsider.get(`/issues?${filters}`)).body, />Protected classification</);
+      filters.set("milestone", "unassigned-milestone");
+      assert.doesNotMatch((await viewer.get(`${privateRepo}/issues?${filters}`)).body, />Protected classification</);
       const inbox = await viewer.get("/user/notifications");
       const notification = inbox.body.match(/notification-title-(\d+)"[^>]*>Protected classification/)?.[1];
       assert.ok(notification);

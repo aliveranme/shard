@@ -41,46 +41,20 @@ async fn list(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result<R
     let request_page = PageRequest::new(&req, "page");
     let database = state.db()?;
 
-    #[derive(serde::Deserialize)]
-    struct Count {
-        n: i64,
-    }
-    let open_count = db::first::<Count>(
-        &database,
-        "SELECT COUNT(*) AS n FROM issues WHERE repo_id = ? AND kind = ? AND state = 'open'",
-        &[util::js_int(repo.id), util::js_text(kind)],
-    )
-    .await?
-    .map(|c| c.n)
-    .unwrap_or(0);
-    let closed_count = db::first::<Count>(
-        &database,
-        "SELECT COUNT(*) AS n FROM issues WHERE repo_id = ? AND kind = ? AND state = 'closed'",
-        &[util::js_int(repo.id), util::js_text(kind)],
-    )
-    .await?
-    .map(|c| c.n)
-    .unwrap_or(0);
-
-    let like = format!("%{}%", query.trim());
-    let mut issues: Vec<Issue> = db::all(
-        &database,
+    let filters = crate::issue_filters::IssueFilters::from_request(&req);
+    let (open_count, closed_count) = filters.repo_counts(&database, repo.id, kind, &query).await?;
+    let mut sql = String::from(
         "SELECT i.id, i.repo_id, i.number, i.kind, i.title, i.state, i.body,
                 i.author_id, u.username AS author_name, i.created_at, i.updated_at, i.closed_at,
                 (SELECT COUNT(*) FROM comments c WHERE c.issue_id = i.id) AS comment_count
            FROM issues i LEFT JOIN users u ON u.id = i.author_id
-          WHERE i.repo_id = ? AND i.kind = ? AND (? = 'all' OR i.state = ?)
-                AND (?5 = '' OR i.title LIKE ?6 OR i.body LIKE ?6
-                     OR EXISTS (SELECT 1 FROM comments c WHERE c.issue_id = i.id AND c.body LIKE ?6))
-          ORDER BY i.updated_at DESC, i.id DESC LIMIT ? OFFSET ?",
-        &[
-            util::js_int(repo.id), util::js_text(kind),
-            util::js_text(state_filter), util::js_text(state_filter),
-            util::js_text(query.trim()), util::js_text(&like),
-            util::js_int((PAGE_SIZE + 1) as i64), util::js_int(request_page.offset()),
-        ],
-    )
-    .await?;
+          WHERE i.repo_id = ? AND i.kind = ? AND (? = 'all' OR i.state = ?)"
+    );
+    let mut args = vec![util::js_int(repo.id), util::js_text(kind), util::js_text(state_filter), util::js_text(state_filter)];
+    filters.append(&mut sql, &mut args, &query);
+    sql.push_str(" ORDER BY i.updated_at DESC, i.id DESC LIMIT ? OFFSET ?");
+    args.extend([util::js_int((PAGE_SIZE + 1) as i64), util::js_int(request_page.offset())]);
+    let mut issues: Vec<Issue> = db::all(&database, &sql, &args).await?;
     let pagination = request_page.finish(&req, &mut issues, None)?;
     let heading = state.locale.t(if kind == "pull" {
         CommonText::PullRequests
@@ -107,6 +81,7 @@ async fn list(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result<R
         tab: if kind == "pull" { "pulls" } else { "issues" }.into(),
         state: state_filter.into(),
         query,
+        filters,
         open_count,
         closed_count,
         is_pull: kind == "pull",

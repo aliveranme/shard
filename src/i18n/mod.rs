@@ -24,6 +24,7 @@ mod lifecycle;
 mod notifications;
 mod repo;
 mod repo_objects;
+mod search;
 mod web;
 mod webhooks;
 
@@ -37,6 +38,7 @@ pub use lifecycle::LifecycleText;
 pub use notifications::{NotificationAction, NotificationText};
 pub use repo::RepoText;
 pub use repo_objects::RepoObjectText;
+pub use search::SearchText;
 pub use web::WebText;
 pub use webhooks::WebhookText;
 

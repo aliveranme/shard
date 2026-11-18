@@ -167,32 +167,29 @@ async fn global_list(
         _ => "open",
     };
     let query = util::query_param(&req, "q").unwrap_or_default();
-    let like = format!("%{}%", query.trim());
     let request_page = PageRequest::new(&req, "page");
     let database = state.db()?;
-    let mut rows: Vec<GlobalRow> = db::all(
-        &database,
-        &format!(
-            "SELECT i.number, i.title, i.created_at, i.kind, i.state, u.username AS author_name,
-                    r.name AS repo_name, o.username AS repo_owner
-               FROM issues i
-               JOIN repos r ON r.id = i.repo_id
-               JOIN users o ON o.id = r.owner_id
-               LEFT JOIN users u ON u.id = i.author_id
-              WHERE {VISIBLE_REPO_SQL}
-                AND i.kind = ? AND (? = 'all' OR i.state = ?)
-                AND (?6 = '' OR i.title LIKE ?7 OR i.body LIKE ?7
-                     OR EXISTS (SELECT 1 FROM comments c WHERE c.issue_id = i.id AND c.body LIKE ?7))
-              ORDER BY i.updated_at DESC, i.id DESC LIMIT ? OFFSET ?"
-        ),
-        &[
-            viewer_id, viewer_admin,
-            util::js_text(kind), util::js_text(state_filter), util::js_text(state_filter),
-            util::js_text(query.trim()), util::js_text(&like),
-            util::js_int((PAGE_SIZE + 1) as i64), util::js_int(request_page.offset()),
-        ],
-    )
-    .await?;
+    let filters = crate::issue_filters::IssueFilters::from_request(&req);
+    let mut sql = format!(
+        "SELECT i.number, i.title, i.created_at, i.kind, i.state, u.username AS author_name,
+                r.name AS repo_name, o.username AS repo_owner
+           FROM issues i
+           JOIN repos r ON r.id = i.repo_id
+           JOIN users o ON o.id = r.owner_id
+           LEFT JOIN users u ON u.id = i.author_id
+          WHERE {VISIBLE_REPO_SQL}
+            AND i.kind = ? AND (? = 'all' OR i.state = ?)"
+    );
+    let mut args = vec![
+        viewer_id, viewer_admin,
+        util::js_text(kind), util::js_text(state_filter), util::js_text(state_filter),
+    ];
+    filters.append(&mut sql, &mut args, &query);
+    sql.push_str(" ORDER BY i.updated_at DESC, i.id DESC LIMIT ? OFFSET ?");
+    args.extend([
+        util::js_int((PAGE_SIZE + 1) as i64), util::js_int(request_page.offset()),
+    ]);
+    let mut rows: Vec<GlobalRow> = db::all(&database, &sql, &args).await?;
     let pagination = request_page.finish(&req, &mut rows, None)?;
     let issues = rows
         .into_iter()
@@ -216,6 +213,7 @@ async fn global_list(
         issues,
         state: state_filter.into(),
         query,
+        filters,
         open_url: query_url(&req, &[("state", Some("open")), ("page", None)], None)?,
         closed_url: query_url(&req, &[("state", Some("closed")), ("page", None)], None)?,
         all_url: query_url(&req, &[("state", Some("all")), ("page", None)], None)?,

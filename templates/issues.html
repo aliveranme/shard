@@ -22,14 +22,13 @@
       <a class="tab" {% if state == "all" %}aria-current="page"{% endif %} href="{{ all_url }}">{{ chrome.locale.t(crate::i18n::CommonText::All) }}</a>
     </nav>
 
-    {% include "discussion_search.html" %}
-
     {% if chrome.signed_in %}
       <a class="btn btn--primary" href="/{{ repo.owner_name }}/{{ repo.name }}/{% if is_pull %}pulls{% else %}issues{% endif %}/new">
         {% if is_pull %}{{ chrome.locale.t(crate::i18n::DiscussionText::NewPullRequest) }}{% else %}{{ chrome.locale.t(crate::i18n::DiscussionText::NewIssue) }}{% endif %}
       </a>
     {% endif %}
   </div>
+  {% include "discussion_search.html" %}
 
   {% if issues.is_empty() %}
     <div class="card empty">
@@ -37,6 +36,8 @@
       <p>
         {% if pagination.page != 1 %}
           {{ chrome.locale.t(crate::i18n::DiscussionText::NoMatchesOnPage) }}
+        {% else if filters.active() || !query.trim().is_empty() %}
+          {{ chrome.locale.t(crate::i18n::DiscussionText::NoMatches) }}
         {% else if state == "open" %}
           {% if is_pull %}{{ chrome.locale.t(crate::i18n::DiscussionText::NoOpenPullRequests) }}{% else %}{{ chrome.locale.t(crate::i18n::DiscussionText::NoOpenIssues) }}{% endif %}
         {% else %}

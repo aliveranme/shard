@@ -13,8 +13,8 @@
       <a class="tab" {% if state == "closed" %}aria-current="page"{% endif %} href="{{ closed_url }}">{{ chrome.locale.t(crate::i18n::CommonText::Closed) }}</a>
       <a class="tab" {% if state == "all" %}aria-current="page"{% endif %} href="{{ all_url }}">{{ chrome.locale.t(crate::i18n::CommonText::All) }}</a>
     </nav>
-    {% include "discussion_search.html" %}
   </div>
+  {% include "discussion_search.html" %}
   {% if issues.is_empty() %}
     <div class="card empty">
       <p class="empty__title">{{ chrome.locale.t(crate::i18n::WebText::NoMatchingDiscussions) }}</p>
