@@ -9,13 +9,13 @@ WRANGLER_SEND_METRICS = "false"
 
 [tasks.setup]
 description = "Install the pinned Rust toolchain components, worker-build and Node dependencies"
-run = """
-rustup target add wasm32-unknown-unknown
-rustup component add rust-analyzer rust-src rustfmt clippy
-cargo install worker-build --version 0.9.0 --locked
-cargo fetch --locked
-npm ci --no-audit --no-fund
-"""
+run = [
+  "rustup target add wasm32-unknown-unknown",
+  "rustup component add rust-analyzer rust-src rustfmt clippy",
+  "cargo install worker-build --version 0.9.0 --locked",
+  "cargo fetch --locked",
+  "npm ci --no-audit --no-fund",
+]
 
 [tasks.dev]
 description = "Run shard locally with the Artifacts simulator and a local D1"

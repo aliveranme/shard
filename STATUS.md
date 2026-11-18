@@ -107,7 +107,7 @@ Architecture decisions and provider evidence are recorded in [PLAN.md](PLAN.md).
 | 2026-11-18 | Wasm release build and focused HTTP/Git regression | Excluded target-only changes, rejected ambiguous ancestry and stale review forms, allowed one concurrent update, preserved historical line links, and verified an actual Git merge. |
 | 2026-11-18 | Migration 0013 and Ego Browser, desktop and 390px | Updated an existing PR from version 1 to 2 in Simplified Chinese, followed a historical comment to its original line, and verified that long lines scroll within the diff. |
 | 2026-11-18 | Clean Linux Workers Builds rehearsal and Wrangler dry run | Installed the pinned Rust/Wasm toolchain, built the bundle, resolved all four bindings, and applied all 13 migrations to an isolated D1 database with a different name. |
-| 2026-11-18 | Rendered README and Cloudflare deploy link | Browser opened the Cloudflare creation wizard. The repository-specific URL forwards the public Shard source. |
+| 2026-11-18 | Published GitHub README badge | Cloudflare opened the Shard configuration with a new D1 database option and prefilled `npm run build` and `npm run deploy`. |
 
 ## How to update
 
