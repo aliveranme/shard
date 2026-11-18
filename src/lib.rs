@@ -22,6 +22,7 @@ mod markdown;
 mod models;
 mod native_git;
 mod notifications;
+mod organizations;
 mod templates;
 mod pagination;
 mod pull_base;

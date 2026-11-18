@@ -1,0 +1,50 @@
+catalog! {
+    OrganizationText {
+        Organizations => "Organizations", "组织";
+        Organization => "Organization", "组织";
+        OrganizationName => "Organization name", "组织名称";
+        CreateOrganization => "Create organization", "创建组织";
+        NoOrganizations => "You do not belong to any organizations yet.", "你尚未加入任何组织。";
+        Owner => "Owner", "所有者";
+        Member => "Member", "成员";
+        Members => "Members", "成员";
+        AddMember => "Add member", "添加成员";
+        RemoveMember => "Remove member", "移除成员";
+        Teams => "Teams", "团队";
+        TeamName => "Team name", "团队名称";
+        CreateTeam => "Create team", "创建团队";
+        NoTeams => "There are no teams to show.", "没有可显示的团队。";
+        NoTeamMembers => "This team has no members yet.", "此团队暂无成员。";
+        NoAvailableMembers => "All organization members are already on this team.", "此组织的所有成员都已加入该团队。";
+        SelectMember => "Select a member", "请选择成员";
+        TeamMembershipHelp => "New team members gain access to every repository granted to this team.", "新加入团队的成员将获得此团队获授权的所有仓库的访问权限。";
+        DeleteTeam => "Delete team", "删除团队";
+        DeleteTeamConfirm => "Remove this team and all of its repository grants.", "移除此团队及其所有仓库授权。";
+        OrganizationAccess => "Organization access", "组织访问权限";
+        OfferRepository => "Offer repository", "提交仓库关联请求";
+        OfferHelp => "The organization owner will see the repository name and can grant teams read or write access after accepting. The repository keeps its owner and URL.", "组织所有者将看到仓库名称，并可在接受后授予团队读取或写入权限。仓库仍保留原所有者和网址。";
+        NoOrganizationToChoose => "Create or join an organization to offer this repository.", "请先创建或加入一个组织，再提交此仓库的关联请求。";
+        SelectOrganization => "Select an organization", "请选择组织";
+        Pending => "Awaiting acceptance", "等待接受";
+        Connected => "Connected", "已关联";
+        Accept => "Accept repository", "接受仓库";
+        Decline => "Decline repository", "拒绝仓库";
+        CancelOffer => "Cancel offer", "取消关联请求";
+        Detach => "Disconnect repository", "解除仓库关联";
+        DetachConfirm => "Remove all team access granted by this organization.", "移除此组织授予所有团队的访问权限。";
+        NoLinkedRepositories => "There are no organization repositories to show.", "没有可显示的组织仓库。";
+        NoTeamGrants => "This team has no repository grants yet.", "此团队暂无仓库授权。";
+        NoGrantableRepositories => "Accept a repository offer before granting access to this team.", "请先接受仓库关联请求，再向此团队授予访问权限。";
+        SelectRepository => "Select a repository", "请选择仓库";
+        SaveGrant => "Save team access", "保存团队访问权限";
+        InvalidSlug => "Enter up to 100 letters, digits, dots, dashes or underscores, starting with a letter or digit.", "请输入不超过 100 个字符，仅可使用英文字母、数字、点、连字符或下划线，并以字母或数字开头。";
+        SlugTaken => "That name is already in use.", "该名称已被使用。";
+        OrganizationNotFound => "Organization not found.", "找不到此组织。";
+        TeamNotFound => "Team not found.", "找不到此团队。";
+        ManageForbidden => "Only the organization owner can manage the organization and its teams.", "只有组织所有者可以管理此组织及其团队。";
+        RepositoryOwnerRequired => "Only the repository owner can offer or disconnect this repository here.", "只有仓库所有者可以在此提交或解除此仓库的关联。";
+        MemberUnavailable => "Enter an existing account that does not already belong to this organization.", "请输入尚未加入此组织的现有账号。";
+        InvalidAction => "Check the form and try again.", "请检查表单后重试。";
+        StaleAction => "The operation could not be applied. Return to the settings page and check the current state.", "无法应用此操作。请返回设置页面查看当前状态。";
+    }
+}

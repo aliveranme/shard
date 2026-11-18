@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page">
+  <div class="page-head">
+    <div>
+      <p class="page-sub"><a href="/{{ repo.owner_name }}/{{ repo.name }}">{{ repo.full_name() }}</a></p>
+      <h1 class="page-title">{{ chrome.locale.t(crate::i18n::OrganizationText::OrganizationAccess) }}</h1>
+    </div>
+  </div>
+  <div class="settings-layout">
+    <nav class="settings-nav" aria-label="{{ chrome.locale.t(crate::i18n::RepoText::RepositorySettings) }}">
+      <a href="/{{ repo.owner_name }}/{{ repo.name }}/settings">{{ chrome.locale.t(crate::i18n::LifecycleText::BackToRepositorySettings) }}</a>
+      <a href="/user/organizations">{{ chrome.locale.t(crate::i18n::OrganizationText::Organizations) }}</a>
+    </nav>
+    <div class="settings-main">
+      {% if let Some(link) = link %}
+        <form class="form card" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/settings/organization">
+          {% include "csrf.html" %}
+          <input type="hidden" name="link_id" value="{{ link.id }}">
+          <h2 class="card__title">{{ link.slug }}</h2>
+          {% if link.accepted == 1 %}
+            <p class="card__sub">{{ chrome.locale.t(crate::i18n::OrganizationText::Connected) }}</p>
+            <label class="checkbox">
+              <input type="checkbox" name="confirm" value="1" required>
+              {{ chrome.locale.t(crate::i18n::OrganizationText::DetachConfirm) }}
+            </label>
+            <div class="form__actions">
+              <button class="btn btn--danger" type="submit" name="action" value="detach">{{ chrome.locale.t(crate::i18n::OrganizationText::Detach) }}</button>
+            </div>
+          {% else %}
+            <p class="card__sub">{{ chrome.locale.t(crate::i18n::OrganizationText::Pending) }}</p>
+            <div class="form__actions">
+              <button class="btn btn--ghost" type="submit" name="action" value="detach">{{ chrome.locale.t(crate::i18n::OrganizationText::CancelOffer) }}</button>
+            </div>
+          {% endif %}
+        </form>
+      {% else %}
+        {% if organizations.is_empty() %}
+          <div class="card card--warm">
+            <p>{{ chrome.locale.t(crate::i18n::OrganizationText::NoOrganizationToChoose) }}</p>
+          </div>
+        {% else %}
+          <form class="form card" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/settings/organization">
+            {% include "csrf.html" %}
+            <h2 class="card__title">{{ chrome.locale.t(crate::i18n::OrganizationText::OfferRepository) }}</h2>
+            <p class="card__sub">{{ chrome.locale.t(crate::i18n::OrganizationText::OfferHelp) }}</p>
+            <div class="field">
+              <label for="repository-organization">{{ chrome.locale.t(crate::i18n::OrganizationText::Organization) }}</label>
+              <select class="select" id="repository-organization" name="organization_id" required>
+                <option value="" disabled selected>{{ chrome.locale.t(crate::i18n::OrganizationText::SelectOrganization) }}</option>
+                {% for organization in organizations %}<option value="{{ organization.id }}">{{ organization.slug }}</option>{% endfor %}
+              </select>
+            </div>
+            <div class="form__actions">
+              <button class="btn btn--primary" type="submit" name="action" value="offer">{{ chrome.locale.t(crate::i18n::OrganizationText::OfferRepository) }}</button>
+            </div>
+          </form>
+        {% endif %}
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

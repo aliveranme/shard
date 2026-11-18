@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page">
+  <div class="page-head">
+    <div>
+      <p class="page-sub"><a href="/user/organizations/{{ organization.slug }}">{{ organization.slug }}</a></p>
+      <h1 class="page-title">{{ team.slug }}</h1>
+    </div>
+  </div>
+  <div class="settings-layout">
+    <nav class="settings-nav" aria-label="{{ chrome.locale.t(crate::i18n::OrganizationText::Teams) }}">
+      <a href="#repositories">{{ chrome.locale.t(crate::i18n::WebText::Repositories) }}</a>
+      <a href="#members">{{ chrome.locale.t(crate::i18n::OrganizationText::Members) }}</a>
+      {% if manager %}<a href="#delete-team">{{ chrome.locale.t(crate::i18n::OrganizationText::DeleteTeam) }}</a>{% endif %}
+    </nav>
+    <div class="settings-main">
+      <section class="settings-main" id="repositories" aria-labelledby="repositories-heading">
+        <h2 class="card__title" id="repositories-heading">{{ chrome.locale.t(crate::i18n::WebText::Repositories) }}</h2>
+        {% if grants.is_empty() %}
+          <div class="card card--warm"><p>{{ chrome.locale.t(crate::i18n::OrganizationText::NoTeamGrants) }}</p></div>
+        {% else %}
+          <div class="list">
+            {% for repo in grants %}
+              <div class="list__row">
+                <div class="list__main">
+                  <div class="list__title">
+                    {% if repo.can_view == 1 %}<a href="/{{ repo.owner }}/{{ repo.name }}">{{ repo.owner }}/{{ repo.name }}</a>{% else %}{{ repo.owner }}/{{ repo.name }}{% endif %}
+                  </div>
+                  <span class="badge">{% if repo.role == "write" %}{{ chrome.locale.t(crate::i18n::CollaboratorText::Writer) }}{% else %}{{ chrome.locale.t(crate::i18n::CollaboratorText::Reader) }}{% endif %}</span>
+                </div>
+                {% if manager %}
+                  <form method="post" action="/user/organizations/{{ organization.slug }}/teams/{{ team.slug }}">
+                    {% include "csrf.html" %}
+                    <input type="hidden" name="link_id" value="{{ repo.id }}">
+                    <button class="btn btn--ghost btn--sm" type="submit" name="action" value="revoke">{{ chrome.locale.t(crate::i18n::CollaboratorText::Revoke) }}</button>
+                  </form>
+                {% endif %}
+              </div>
+            {% endfor %}
+          </div>
+        {% endif %}
+        {% if manager %}
+          {% if available_repositories.is_empty() %}
+            <p class="card__sub">{{ chrome.locale.t(crate::i18n::OrganizationText::NoGrantableRepositories) }}</p>
+          {% else %}
+            <form class="form card" method="post" action="/user/organizations/{{ organization.slug }}/teams/{{ team.slug }}">
+              {% include "csrf.html" %}
+              <div class="field">
+                <label for="team-repository">{{ chrome.locale.t(crate::i18n::RepoText::Repository) }}</label>
+                <select class="select" id="team-repository" name="link_id" required>
+                  <option value="" disabled selected>{{ chrome.locale.t(crate::i18n::OrganizationText::SelectRepository) }}</option>
+                  {% for repo in available_repositories %}<option value="{{ repo.id }}">{{ repo.owner }}/{{ repo.name }}</option>{% endfor %}
+                </select>
+              </div>
+              <div class="field">
+                <label for="team-repository-role">{{ chrome.locale.t(crate::i18n::CollaboratorText::Role) }}</label>
+                <select class="select" id="team-repository-role" name="role">
+                  <option value="read">{{ chrome.locale.t(crate::i18n::CollaboratorText::Reader) }}</option>
+                  <option value="write">{{ chrome.locale.t(crate::i18n::CollaboratorText::Writer) }}</option>
+                </select>
+                <span class="help">{{ chrome.locale.t(crate::i18n::CollaboratorText::AccessHelp) }}</span>
+              </div>
+              <div class="form__actions">
+                <button class="btn btn--primary" type="submit" name="action" value="grant">{{ chrome.locale.t(crate::i18n::OrganizationText::SaveGrant) }}</button>
+              </div>
+            </form>
+          {% endif %}
+        {% endif %}
+      </section>
+      <section class="settings-main" id="members" aria-labelledby="members-heading">
+        <h2 class="card__title" id="members-heading">{{ chrome.locale.t(crate::i18n::OrganizationText::Members) }}</h2>
+        {% if members.is_empty() %}
+          <div class="card card--warm"><p>{{ chrome.locale.t(crate::i18n::OrganizationText::NoTeamMembers) }}</p></div>
+        {% else %}
+          <div class="list">
+            {% for member in members %}
+              <div class="list__row">
+                <a class="list__main list__title" href="/{{ member.username }}">{{ member.username }}</a>
+                {% if manager %}
+                  <form method="post" action="/user/organizations/{{ organization.slug }}/teams/{{ team.slug }}">
+                    {% include "csrf.html" %}
+                    <input type="hidden" name="user_id" value="{{ member.id }}">
+                    <button class="btn btn--ghost btn--sm" type="submit" name="action" value="remove_member">{{ chrome.locale.t(crate::i18n::OrganizationText::RemoveMember) }}</button>
+                  </form>
+                {% endif %}
+              </div>
+            {% endfor %}
+          </div>
+        {% endif %}
+        {% if manager %}
+          {% if available_members.is_empty() %}
+            <p class="card__sub">{{ chrome.locale.t(crate::i18n::OrganizationText::NoAvailableMembers) }}</p>
+          {% else %}
+            <form class="form card" method="post" action="/user/organizations/{{ organization.slug }}/teams/{{ team.slug }}">
+              {% include "csrf.html" %}
+              <div class="field">
+                <label for="team-member">{{ chrome.locale.t(crate::i18n::OrganizationText::Member) }}</label>
+                <select class="select" id="team-member" name="user_id" aria-describedby="team-membership-help" required>
+                  <option value="" disabled selected>{{ chrome.locale.t(crate::i18n::OrganizationText::SelectMember) }}</option>
+                  {% for member in available_members %}<option value="{{ member.id }}">{{ member.username }}</option>{% endfor %}
+                </select>
+                <span class="help" id="team-membership-help">{{ chrome.locale.t(crate::i18n::OrganizationText::TeamMembershipHelp) }}</span>
+              </div>
+              <div class="form__actions">
+                <button class="btn btn--ghost" type="submit" name="action" value="add_member">{{ chrome.locale.t(crate::i18n::OrganizationText::AddMember) }}</button>
+              </div>
+            </form>
+          {% endif %}
+        {% endif %}
+      </section>
+      {% if manager %}
+        <form class="form card" id="delete-team" method="post" action="/user/organizations/{{ organization.slug }}/teams/{{ team.slug }}">
+          {% include "csrf.html" %}
+          <h2 class="card__title">{{ chrome.locale.t(crate::i18n::OrganizationText::DeleteTeam) }}</h2>
+          <label class="checkbox">
+            <input type="checkbox" name="confirm" value="1" required>
+            {{ chrome.locale.t(crate::i18n::OrganizationText::DeleteTeamConfirm) }}
+          </label>
+          <div class="form__actions">
+            <button class="btn btn--danger" type="submit" name="action" value="delete_team">{{ chrome.locale.t(crate::i18n::OrganizationText::DeleteTeam) }}</button>
+          </div>
+        </form>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page">
+  <div class="page-head">
+    <h1 class="page-title">{{ chrome.locale.t(crate::i18n::OrganizationText::Organizations) }}</h1>
+  </div>
+  <div class="settings-main">
+    {% if organizations.is_empty() %}
+      <div class="card card--warm"><p>{{ chrome.locale.t(crate::i18n::OrganizationText::NoOrganizations) }}</p></div>
+    {% else %}
+      <div class="list">
+        {% for organization in organizations %}
+          <a class="list__row" href="/user/organizations/{{ organization.slug }}">
+            <span class="list__main list__title">{{ organization.slug }}</span>
+            <span class="badge">{% if organization.owner_id == actor %}{{ chrome.locale.t(crate::i18n::OrganizationText::Owner) }}{% else %}{{ chrome.locale.t(crate::i18n::OrganizationText::Member) }}{% endif %}</span>
+          </a>
+        {% endfor %}
+      </div>
+    {% endif %}
+    <form class="form card card--narrow" method="post" action="/user/organizations">
+      {% include "csrf.html" %}
+      <h2 class="card__title">{{ chrome.locale.t(crate::i18n::OrganizationText::CreateOrganization) }}</h2>
+      <div class="field">
+        <label for="organization-slug">{{ chrome.locale.t(crate::i18n::OrganizationText::OrganizationName) }}</label>
+        <input class="input" id="organization-slug" name="slug" maxlength="100" pattern="[A-Za-z0-9][A-Za-z0-9._\-]*" aria-describedby="organization-slug-help" required>
+        <span class="help" id="organization-slug-help">{{ chrome.locale.t(crate::i18n::RepoText::NameHelp) }}</span>
+      </div>
+      <div class="form__actions">
+        <button class="btn btn--primary" type="submit">{{ chrome.locale.t(crate::i18n::OrganizationText::CreateOrganization) }}</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
