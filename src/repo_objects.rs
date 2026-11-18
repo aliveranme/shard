@@ -3,7 +3,7 @@ use crate::ctx::AppState;
 use crate::handlers::common::{can_admin, not_found, page_title, visible_repo};
 use crate::i18n::{CommonText, RepoObjectText, RepoText};
 use crate::models::{Repo, Ts};
-use crate::templates::{Chrome, error_response, render};
+use crate::templates::{Avatar, Chrome, error_response, render};
 use crate::util;
 use askama::Template;
 use worker::*;
@@ -18,6 +18,7 @@ struct CommitPage {
     is_owner: bool,
     branch_url: String,
     commit: Commit,
+    author_avatar: Avatar,
     date: Option<Ts>,
     parents: Vec<String>,
     checks: crate::handlers::checks::CommitChecks,
@@ -80,6 +81,8 @@ pub async fn commit(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
     };
     let branch = util::query_param(&req, "branch");
     let checks = crate::handlers::checks::load(state, repo.id, &commit.hash).await?;
+    let avatars = crate::avatar::git_author_ids(state, commit.author_email.iter().map(String::as_str)).await?;
+    let author_avatar = Avatar::new(&commit.author, commit.author_email.as_ref().and_then(|email| avatars.get(email)).copied());
     let page = CommitPage {
         chrome: Chrome::new(state),
         title: page_title(&[&repo.full_name(), state.locale.t(RepoObjectText::Commit), &commit.hash[..12]]),
@@ -89,6 +92,7 @@ pub async fn commit(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
         date: commit.timestamp.map(Ts),
         repo,
         commit,
+        author_avatar,
         parents,
         checks,
     };

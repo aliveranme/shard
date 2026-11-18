@@ -251,23 +251,23 @@ async function exactObject(hash, type, options) {
 }
 
 async function readCommits(hash, limit, fullMessage, options) {
-  const format = `%H%x00%T%x00%an%x00%at%x00%P%x00${fullMessage ? "%B" : "%s"}`;
+  const format = `%H%x00%T%x00%an%x00%ae%x00%at%x00%P%x00${fullMessage ? "%B" : "%s"}`;
   const output = await gitOutput("log", [
     "--first-parent", "--no-show-signature", "--no-notes", "--encoding=UTF-8", "-z",
     `--max-count=${limit}`, `--format=tformat:${format}`, hash, "--",
   ], options);
   const fields = output.toString("utf8").split("\0");
-  if (fields.pop() !== "" || fields.length % 6 !== 0) throw new Error("Invalid Git commit output");
+  if (fields.pop() !== "" || fields.length % 7 !== 0) throw new Error("Invalid Git commit output");
   const commits = [];
-  for (let index = 0; index < fields.length; index += 6) {
-    const [hash, tree, author, seconds, parentList, message] = fields.slice(index, index + 6);
+  for (let index = 0; index < fields.length; index += 7) {
+    const [hash, tree, author, author_email, seconds, parentList, message] = fields.slice(index, index + 7);
     const parents = parentList ? parentList.split(" ") : [];
     const timestamp = Number(seconds);
     if (!OID.test(hash) || !OID.test(tree) || !parents.every((parent) => OID.test(parent)) ||
         !/^-?\d+$/.test(seconds) || !Number.isSafeInteger(timestamp)) {
       throw new Error("Invalid Git commit fields");
     }
-    commits.push({ hash, tree, message, author, timestamp, parents });
+    commits.push({ hash, tree, message, author, author_email, timestamp, parents });
   }
   if (commits[0]?.hash !== hash) throw new Error("Invalid Git commit lookup");
   return commits;

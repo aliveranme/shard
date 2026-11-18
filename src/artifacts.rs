@@ -316,6 +316,8 @@ fn parse_commit(value: &Value, full_message: bool) -> Option<Commit> {
             a.get("name").and_then(|n| n.as_str()).map(str::to_string)
         }
     });
+    let author_email = value.get("author").and_then(|author| author.get("email"))
+        .and_then(Value::as_str).map(str::to_owned);
     let timestamp = value
         .get("authoredAt")
         .or_else(|| value.get("committedAt"))
@@ -340,6 +342,7 @@ fn parse_commit(value: &Value, full_message: bool) -> Option<Commit> {
         tree,
         message: message.to_string(),
         author: author.unwrap_or_else(|| "unknown".into()),
+        author_email,
         timestamp,
     })
 }

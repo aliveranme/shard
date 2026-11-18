@@ -9,7 +9,7 @@ use crate::models::{Repo, Ts};
 use crate::pagination::{query_url, Pagination, PAGE_SIZE};
 use crate::refs::{self, Inventory, RefsError, RefsPage};
 use crate::templates::{
-    render, Chrome, CommitRow, CommitsPage, Crumb, FilePage, FileRow, NewRepoPage, RepoCodePage,
+    render, Avatar, Chrome, CommitRow, CommitsPage, Crumb, FilePage, FileRow, NewRepoPage, RepoCodePage,
     SettingsPage,
 };
 use crate::util;
@@ -208,12 +208,16 @@ pub async fn tree(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
     }
     .await;
     let (files, last_commit, readme, storage_notice) = match loaded {
-        Ok(Some((BrowseEntry::Directory(entries, commit), readme))) => (
-            entries.into_iter().map(|entry| file_row_at(entry, &path)).collect(),
-            commit.map(commit_row),
-            readme,
-            None,
-        ),
+        Ok(Some((BrowseEntry::Directory(entries, commit), readme))) => {
+            let last_commit = if let Some(commit) = commit {
+                let avatars = crate::avatar::git_author_ids(&state, commit.author_email.iter().map(String::as_str)).await?;
+                let id = commit.author_email.as_ref().and_then(|email| avatars.get(email)).copied();
+                Some(commit_row(commit, id))
+            } else {
+                None
+            };
+            (entries.into_iter().map(|entry| file_row_at(entry, &path)).collect(), last_commit, readme, None)
+        }
         Ok(Some((BrowseEntry::File, _))) => {
             let mut location = format!("/{}/{}/blob/{}", repo.owner_name, repo.name, util::url_path(&path));
             if let Some(query) = req.url()?.query() {
@@ -453,13 +457,17 @@ pub async fn commits(req: Request, ctx: RouteContext<AppState>) -> Result<Respon
     } else {
         None
     };
+    let avatars = crate::avatar::git_author_ids(&state, history.iter().filter_map(|commit| commit.author_email.as_deref())).await?;
     let page = CommitsPage {
         chrome: Chrome::new(&state),
         title: page_title(&[&repo.full_name(), state.locale.t(CommonText::Commits)]),
         repo,
         tab: "commits".into(),
         branch,
-        commits: history.into_iter().map(commit_row).collect(),
+        commits: history.into_iter().map(|commit| {
+            let id = commit.author_email.as_ref().and_then(|email| avatars.get(email)).copied();
+            commit_row(commit, id)
+        }).collect(),
         is_owner,
         pagination,
         latest_url,
@@ -655,12 +663,12 @@ async fn load_readme(handle: &RepoHandle, repo: &Repo, commit: &str) -> Option<S
     None
 }
 
-fn commit_row(commit: Commit) -> CommitRow {
+fn commit_row(commit: Commit, avatar_id: Option<i64>) -> CommitRow {
     CommitRow {
         short: util::short_hash(&commit.hash),
         hash: commit.hash,
         message: commit.message,
-        author_initial: crate::templates::initial(&commit.author),
+        avatar: Avatar::new(&commit.author, avatar_id),
         author: commit.author,
         date: commit.timestamp.map(Ts),
     }

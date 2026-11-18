@@ -23,7 +23,9 @@
     <div class="list">
       {% for commit in commits %}
         <div class="list__row">
-          <span class="avatar avatar--sm" aria-hidden="true">{{ commit.author_initial }}</span>
+          {% let avatar = commit.avatar %}
+          {% let avatar_class = "avatar--sm" %}
+          {% include "avatar.html" %}
           <div class="list__main">
             <div class="list__title"><a href="/{{ repo.owner_name }}/{{ repo.name }}/commit/{{ commit.hash }}?branch={{ repo_nav_branch }}">{{ commit.message }}</a></div>
             <div class="list__meta">{{ commit.author }}{% if let Some(date) = commit.date %} · {{ date.relative(chrome.locale) }}{% endif %}</div>

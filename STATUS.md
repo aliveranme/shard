@@ -19,7 +19,7 @@ Update this file whenever a milestone lands or a limitation changes.
 | Area | Behavior |
 |---|---|
 | Accounts | Registration, login throttling, password-confirmed settings changes, account deletion with an ownership guard, and single-use verification and reset links through the email simulator. Password reset revokes all browser sessions. |
-| Avatars | Account settings accept PNG, JPEG and WebP uploads. The Worker stores one metadata-free PNG thumbnail per user in D1. Profiles, navigation and discussions display it. Removal and account deletion remove the stored image. |
+| Avatars | Account settings accept PNG, JPEG and WebP and store one metadata-free PNG thumbnail per user in D1. Uploaded avatars appear in profiles, discussions, branch summaries, commit history and commit details. Git author emails match account emails and fall back to initials. Removal and account deletion remove the stored image. |
 | Browser security | Session-bound CSRF, same-origin checks, CSP, safe redirects, and origin-only referrers on recovery pages. |
 | Internationalization | Typed English and Simplified Chinese catalogs. Guest language follows the browser cookie or header. Account settings persist across sessions. |
 | Access tokens | Read/write scopes, expiry and revocation, one-time secret display, last usage, and legacy credential compatibility. |

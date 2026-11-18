@@ -59,6 +59,7 @@ pub(crate) struct Commit {
     pub tree: Option<String>,
     pub message: String,
     pub author: String,
+    pub author_email: Option<String>,
     pub timestamp: Option<i64>,
 }
 

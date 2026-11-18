@@ -3,6 +3,7 @@ use crate::{db, util};
 use image::{codecs::png::PngEncoder, ImageEncoder, ImageError, ImageFormat, ImageReader, Limits};
 use js_sys::{Reflect, Uint8Array};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::io::Cursor;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
@@ -190,6 +191,32 @@ fn check_webp_chunks(mut bytes: &[u8], allow_frames: bool) -> std::result::Resul
         bytes = rest.get(length % 2..).ok_or(UploadError::Invalid)?;
     }
     Ok(())
+}
+
+/// Resolve author emails in one query without exposing them in the page model.
+pub(crate) async fn git_author_ids<'a>(
+    state: &AppState,
+    emails: impl Iterator<Item = &'a str>,
+) -> Result<HashMap<String, i64>> {
+    #[derive(Deserialize)]
+    struct AuthorAvatar {
+        email: String,
+        id: i64,
+    }
+
+    let emails: Vec<_> = emails.filter(|email| !email.is_empty() && email.len() <= 254).collect();
+    if emails.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let emails = serde_json::to_string(&emails)
+        .map_err(|error| Error::RustError(error.to_string()))?;
+    let authors = db::all::<AuthorAvatar>(
+        &state.db()?,
+        "SELECT DISTINCT e.value AS email, a.user_id AS id FROM json_each(?1) e
+         JOIN users u ON u.email = e.value COLLATE NOCASE JOIN user_avatars a ON a.user_id = u.id",
+        &[util::js_text(&emails)],
+    ).await?;
+    Ok(authors.into_iter().map(|author| (author.email, author.id)).collect())
 }
 
 pub(crate) async fn show(_req: Request, ctx: RouteContext<AppState>) -> Result<Response> {

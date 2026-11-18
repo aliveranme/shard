@@ -99,7 +99,7 @@ pub struct CommitRow {
     pub short: String,
     pub message: String,
     pub author: String,
-    pub author_initial: String,
+    pub avatar: Avatar,
     pub date: Option<Ts>,
 }
 
