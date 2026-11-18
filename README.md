@@ -353,10 +353,10 @@ at 03:00 UTC removes expired sessions, tokens, login throttle windows, and email
 
 ## Design
 
-Shard follows the system's light or dark appearance. The interface uses
-self-hosted variable monospace fonts, adaptive grids, and subtle surface
-steps. Askama renders the pages. A shared stylesheet provides interaction
-feedback and respects reduced-motion preferences.
+Shard follows the system's light or dark appearance. Geist and Shard Han set
+interface text with tabular figures. JetBrains Mono sets code, paths and Git
+identifiers. Askama renders the pages. The shared stylesheet provides adaptive
+grids, subtle surface steps and reduced-motion support.
 [Design guide](DESIGN.md) · [Palette](static/css/theme.css) · [Stylesheet](static/css/shard.css)
 
 ## Prior art

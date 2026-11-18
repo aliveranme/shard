@@ -3,7 +3,7 @@
 Living record of what works, what is missing, and how it was verified.
 Update this file whenever a milestone lands or a limitation changes.
 
-**Snapshot:** 2026-11-18 · adaptive reference lists and light/dark UI · local development
+**Snapshot:** 2026-11-18 · proportional UI typography and tabular figures · local development
 
 | Item | Value |
 |---|---|
@@ -33,7 +33,7 @@ Update this file whenever a milestone lands or a limitation changes.
 | Notifications and integrations | Permission-aware inbox, one current CI result per commit and context, and signed webhook retries using stable event IDs. |
 | Maintenance | Per-source limits, `X-Request-ID` correlation, and daily removal of expired sessions, tokens, throttle windows, and email links. |
 | Backups | Rehearsed D1 export and restore into isolated persistence and Git bundle restore with matching refs and object IDs. |
-| UI and development | The shared theme follows system appearance. Local variable fonts provide Latin monospace and two-cell Simplified Chinese glyphs. The refs grid displays default branches and wraps full annotated-tag object IDs on narrow screens. |
+| UI and development | The shared theme follows system appearance. Geist and Shard Han set proportional UI text with tabular figures. JetBrains Mono sets code and Git identifiers, with two-cell Han glyphs in code. Buttons and form controls use calibrated font metrics. The refs grid marks default branches and wraps full annotated-tag object IDs on narrow screens. |
 
 ## Remaining work and prerequisites
 
@@ -114,6 +114,7 @@ Architecture decisions and provider evidence are recorded in [PLAN.md](PLAN.md).
 | 2026-11-18 | Isolated native Git and Chromium settings | The native suite passed all 3 reported tests. The origin required its own credential, rejected an unlisted import host and preserved repository permissions through rename and revocation. English and Simplified Chinese storage settings fit 1365px and 390px widths. |
 | 2026-11-18 | `mise run build` and Chromium at 1365px, 820px, 390px and 320px | Verified repository search, branch selection, file preview, a submitted line comment and its historical link, the keyboard-operated mobile menu, saved Chinese language preferences and reduced motion. Confirmed a palette override recolors the page logo. |
 | 2026-11-18 | `mise run build`, B-end template audit, and Chromium at 1365px, 1089px, 820px, 390px and 320px | Verified system appearance and reduced motion, the 40-unit dark weight offset, local font rendering, responsive refs and settings, empty states, an annotated tag, a long slash branch and keyboard navigation. Narrow home, code, file, review and login pages fit, with long diffs scrolling internally. |
+| 2026-11-18 | `mise run build`, FontTools, B-end template audit and Chromium at 1365px and 320px | Verified proportional UI text, distinct code and path fonts, equal advances for digits 0–9, and the 40-unit dark weight offset. Home, language settings, repository, file and refs pages fit the tested widths. In 3× captures, the visible text of 12 English and Simplified Chinese buttons, fields, tabs and badges centered within 1.1 CSS px of their controls. |
 
 ## How to update
 

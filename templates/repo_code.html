@@ -14,7 +14,7 @@
       <div class="repo-toolbar">
         <form method="get" action="/{{ repo.owner_name }}/{{ repo.name }}{% if let Some(directory) = crumbs.last() %}/src/{{ directory.url_path }}{% endif %}">
           <label class="sr-only" for="branch">{{ chrome.locale.t(crate::i18n::RepoText::Branch) }}</label>
-          <select class="select" id="branch" name="branch">
+          <select class="select mono" id="branch" name="branch">
             {% for name in branches %}
               <option value="{{ name }}" {% if name.as_str() == branch.as_str() %}selected{% endif %}>{{ name }}</option>
             {% endfor %}
@@ -36,7 +36,7 @@
       {% endif %}
 
       {% if !crumbs.is_empty() %}
-        <div class="breadcrumb breadcrumb--path">
+        <div class="breadcrumb breadcrumb--path mono">
           <a href="/{{ repo.owner_name }}/{{ repo.name }}/src?branch={{ branch_url }}">{{ repo.name }}</a>
           {% for crumb in crumbs %}
             <span class="sep" aria-hidden="true">/</span>
@@ -76,7 +76,7 @@ git push -u origin {{ repo.default_branch }}</code></pre>
               <svg class="icon file-row__icon{% if file.is_dir %} file-row__icon--dir{% endif %}" aria-hidden="true">
                 <use href="/img/icons.svg#{% if file.is_dir %}folder{% else %}file{% endif %}"></use>
               </svg>
-              <span class="file-row__name">{{ file.name }}{% if file.is_dir %}/{% endif %}</span>
+              <span class="file-row__name mono">{{ file.name }}{% if file.is_dir %}/{% endif %}</span>
               <span class="file-row__size">{{ file.size }}</span>
             </a>
           {% endfor %}

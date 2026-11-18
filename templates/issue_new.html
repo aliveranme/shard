@@ -26,11 +26,11 @@
     <div class="two-col">
       <div class="field">
         <label for="base_branch">{{ chrome.locale.t(crate::i18n::DiscussionText::BaseBranch) }}</label>
-        <input class="input" id="base_branch" name="base_branch" value="{{ base_value }}" dir="ltr" required>
+        <input class="input mono" id="base_branch" name="base_branch" value="{{ base_value }}" dir="ltr" required>
       </div>
       <div class="field">
         <label for="head_branch">{{ chrome.locale.t(crate::i18n::DiscussionText::HeadBranch) }}</label>
-        <input class="input" id="head_branch" name="head_branch" value="{{ head_value }}" placeholder="feature/my-change" list="branches" dir="ltr" required>
+        <input class="input mono" id="head_branch" name="head_branch" value="{{ head_value }}" placeholder="feature/my-change" list="branches" dir="ltr" required>
         <datalist id="branches">
           {% for branch in branches %}<option value="{{ branch }}"></option>{% endfor %}
         </datalist>

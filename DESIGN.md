@@ -142,18 +142,24 @@ precedence over the system preference and can select a palette defined by
 `:root[data-theme="name"]`. Page logo fills follow the theme. The standalone
 favicon carries the original brand colors.
 
-The interface uses self-hosted JetBrains Mono and Shard Han. The data UI uses
-12, 14, 16 and 28px type. Light weights are 500 for body text, 550 for controls,
-and 600 for headings. Dark weights are 460, 510, and 560. The Chinese font's
-Han glyphs use two Latin character cells. Characters outside the bundled fonts
-use the local fallback stack. The font assets are served by the Worker.
+Use self-hosted Geist for interface text and Shard Han for Simplified Chinese.
+Use JetBrains Mono for code, commands, paths, Git refs and object IDs. In
+code, a separate face for the same Han asset gives ideographs two Latin
+character cells. Characters outside the bundled fonts use local fallbacks.
 
-JetBrains Mono comes from Fontsource 5.3.0. Shard Han is built from Google Fonts
-revision `2894aab31764f10f29c421bdfd2340d3b382d384` of Noto Sans SC. Its variable
-WOFF2 selects GB2312 level-one Han, Han from the UI catalogs and templates, and
-CJK punctuation and fullwidth forms. The build keeps the weight axis from 460
-to 600 and sets its default to 500. The assets include their SIL OFL notices.
-[JetBrains Mono OFL](static/fonts/jetbrains-mono-OFL.txt) · [Shard Han OFL](static/fonts/shard-han-OFL.txt)
+The data UI uses 12, 14, 16 and 28px type. Light weights are 500 for body text,
+550 for controls and 600 for headings. Dark weights are 460, 510 and 560.
+Tabular figures keep equal-length numbers equally wide in text, counts and
+form controls. The UI faces use calibrated font metrics to center visible
+letterforms in buttons, inputs and badges.
+
+The Worker serves Geist and JetBrains Mono from Fontsource 5.3.0. Shard Han
+is built from Google Fonts revision `2894aab31764f10f29c421bdfd2340d3b382d384`
+of Noto Sans SC. Its variable WOFF2 selects GB2312 level-one Han, Han from the
+UI catalogs and templates, and CJK punctuation and fullwidth forms. The build
+keeps the weight axis from 460 to 600 and sets its default to 500. The assets
+include their SIL OFL notices.
+[Geist OFL](static/fonts/geist-OFL.txt) · [JetBrains Mono OFL](static/fonts/jetbrains-mono-OFL.txt) · [Shard Han OFL](static/fonts/shard-han-OFL.txt)
 
 Use the 4px spacing grid and preserve the reading order as columns stack. On
 the branches and tags page, the title gap is 32px on desktop and 24px on mobile,

@@ -1,5 +1,28 @@
 /* Shard interface. Color roles live in theme.css. */
 
+/* Match the UI baselines to the visible letterforms in centered controls. */
+@font-face {
+  font-family: "Geist";
+  src: url("/fonts/geist-latin.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  ascent-override: 100%;
+  descent-override: 30%;
+}
+
+@font-face {
+  font-family: "Shard Han UI";
+  src: url("/fonts/shard-han-sc.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 460 600;
+  font-display: swap;
+  ascent-override: 110%;
+  descent-override: 18%;
+  line-gap-override: 0%;
+  unicode-range: U+3000-303F, U+3400-9FFF, U+FF00-FFEF;
+}
+
 @font-face {
   font-family: "JetBrains Mono";
   src: url("/fonts/jetbrains-mono-latin.woff2") format("woff2");
@@ -8,6 +31,7 @@
   font-display: swap;
 }
 
+/* Scale Han advances to two JetBrains Mono cells in code. */
 @font-face {
   font-family: "Shard Han";
   src: url("/fonts/shard-han-sc.woff2") format("woff2");
@@ -33,6 +57,8 @@
   --surface-sheen: linear-gradient(180deg, var(--surface), transparent);
   --primary-gradient: linear-gradient(180deg, var(--primary-sheen), transparent);
 
+  --font-ui: "Geist", "Shard Han UI", "Microsoft YaHei UI", "PingFang SC",
+    "Noto Sans CJK SC", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", "Shard Han", "Sarasa Mono SC", "Noto Sans Mono CJK SC",
     "Cascadia Mono", Consolas, "Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC", monospace;
   --type-meta: 0.75rem;
@@ -67,10 +93,9 @@ body {
   margin: 0;
   background: var(--canvas);
   color: var(--ink);
-  font-family: var(--font-mono);
+  font-family: var(--font-ui);
   font-size: var(--type-body);
   font-weight: var(--weight-body);
-  font-variant-ligatures: none;
   font-variant-numeric: tabular-nums;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
@@ -91,7 +116,7 @@ h1, h2, h3, h4 {
 b, strong { font-weight: var(--weight-strong); }
 
 p { margin: 0; }
-button, input, select, textarea { font: inherit; color: inherit; }
+button, input, select, textarea { font: inherit; font-variant-numeric: inherit; color: inherit; }
 ::placeholder { color: var(--muted); opacity: 1; }
 :focus-visible { outline: 2px solid var(--action); outline-offset: 2px; }
 ::selection { background: var(--highlight-surface); color: var(--ink); }
@@ -117,7 +142,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 .muted { color: var(--muted); }
 .meta { color: var(--muted); font-size: var(--type-meta); }
-.mono, code, pre { font-family: var(--font-mono); }
+.mono, code, pre, kbd, samp {
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+}
 .icon {
   width: 16px;
   height: 16px;
@@ -830,7 +858,6 @@ a.file-row:hover { background-color: var(--hover); text-decoration: none; }
   margin-bottom: 16px;
   border-bottom: 1px solid var(--border);
 }
-.readme-card__head .badge { font-family: var(--font-mono); }
 
 /* ── Issue + PR layout ────────────────────────────────────── */
 

@@ -21,7 +21,7 @@
                   <svg class="icon" aria-hidden="true"><use href="/img/icons.svg#branch"></use></svg>
                   <span class="refs-row__body">
                     <span class="refs-row__name">
-                      <bdi>{{ branch.name }}</bdi>
+                      <bdi class="mono">{{ branch.name }}</bdi>
                       {% if branch.name == repo.default_branch %}<span class="badge">{{ chrome.locale.t(crate::i18n::RepoText::DefaultBranch) }}</span>{% endif %}
                     </span>
                     <code class="refs-row__hash" dir="ltr">{{ branch.oid }}</code>
@@ -43,7 +43,7 @@
               <li class="refs-row">
                 <svg class="icon" aria-hidden="true"><use href="/img/icons.svg#tag"></use></svg>
                 <div class="refs-row__body">
-                  <div class="refs-row__name"><bdi>{{ tag.name }}</bdi></div>
+                  <div class="refs-row__name"><bdi class="mono">{{ tag.name }}</bdi></div>
                   <dl class="refs-row__objects">
                     <dt>{{ chrome.locale.t(crate::i18n::RepoText::TagObject) }}</dt>
                     <dd><code class="refs-row__hash" dir="ltr">{{ tag.oid }}</code></dd>

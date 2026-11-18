@@ -18,7 +18,7 @@ Shard is a Rust Git forge on Cloudflare Workers. D1 stores forge metadata. Git u
 
 ## UI contract
 
-Use the `b-end-design-system` skill for data and settings pages and follow the Shard section of `DESIGN.md`. Keep light and dark colors in `static/css/theme.css`. Use shared type, spacing, radius, ring and motion tokens. Use the local monospace fonts and adaptive grids. Verify keyboard focus, narrow screens and reduced motion. Label form controls and show real empty and error states.
+Use the `b-end-design-system` skill for data and settings pages and follow the Shard section of `DESIGN.md`. Keep light and dark colors in `static/css/theme.css`. Use shared type, spacing, radius, ring and motion tokens. Use the local proportional UI face with tabular figures and the local monospace face for code and Git identifiers. Keep control text optically centered and use adaptive grids. Verify keyboard focus, narrow screens and reduced motion. Label form controls and show real empty and error states.
 
 ## Data and security
 

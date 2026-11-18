@@ -6,7 +6,7 @@
   <div class="page-head">
     <h1 class="page-title">{% if let Some(file) = crumbs.last() %}{{ file.name }}{% else %}{{ chrome.locale.t(crate::i18n::RepoText::File) }}{% endif %}</h1>
   </div>
-  <div class="breadcrumb breadcrumb--path">
+  <div class="breadcrumb breadcrumb--path mono">
     <a href="/{{ repo.owner_name }}/{{ repo.name }}/src?branch={{ branch_url }}">{{ repo.name }}</a>
     {% for crumb in crumbs %}
       <span class="sep" aria-hidden="true">/</span>
