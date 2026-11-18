@@ -41,7 +41,7 @@ wrangler.jsonc      bindings: DB (D1), ARTIFACTS, ASSETS
 ## Local development
 
 ```sh
-mise install          # Rust, Node and Wrangler versions pinned by the project
+mise install          # Rust and Node versions pinned by the project
 mise run setup        # WebAssembly target, IDE tools, worker-build and dependencies
 mise run db:migrate   # apply migrations to the local D1
 mise run dev          # wrangler dev on http://localhost:8787
@@ -52,11 +52,13 @@ installs rust-analyzer, Rust sources, rustfmt and Clippy for that toolchain. Wit
 an editor using rust-analyzer, open the repository root and set its Cargo target
 to `wasm32-unknown-unknown` to match the Worker build.
 
+Mise uses the Wrangler executable installed by `npm ci`. This keeps local
+development and CI on the version pinned by `package-lock.json`.
+
 Run `mise run check` to type-check the Worker, `mise run lint` to run Clippy,
-and `mise run test` to build and run
-the HTTP regression suite. Tests start their own local simulator, apply all
-migrations in a temporary directory, and remove it afterward. They never use
-your development database or a deployed service. `npm test` runs the same suite
+and `mise run test` to build and run the HTTP regression suite. Tests start
+their own local simulator, apply all migrations in a temporary directory, and
+remove it afterward. They use isolated local data. `npm test` runs the same suite
 against an existing build. Git must be on `PATH`, including in CI.
 
 The Artifacts binding uses Wrangler's local simulator (git 2.32+ must be on
@@ -75,9 +77,8 @@ git clone http://localhost:8787/<user>/<repo>.git
 Artifacts requires the **Workers Paid** plan.
 
 ```sh
-wrangler d1 create shard            # copy database_id into wrangler.jsonc
-wrangler d1 migrations apply shard --remote
-mise run deploy                     # worker-build --release && wrangler deploy
+node node_modules/wrangler/bin/wrangler.js d1 create shard # copy database_id into wrangler.jsonc
+mise run deploy                                         # apply remote migrations, build and deploy
 ```
 
 Optional custom domain via `routes` in `wrangler.jsonc`.

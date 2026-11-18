@@ -2,7 +2,6 @@
 [tools]
 rust = "1.100.0"
 node = "26.13.1"
-"npm:wrangler" = "4.164.0"
 
 [env]
 CARGO_TERM_COLOR = "always"
@@ -21,7 +20,7 @@ npm ci --no-audit --no-fund
 [tasks.dev]
 description = "Run shard locally with the Artifacts simulator and a local D1"
 depends = ["db:migrate"]
-run = "wrangler dev"
+run = "node node_modules/wrangler/bin/wrangler.js dev --local"
 
 [tasks.build]
 description = "Build the Worker bundle"
@@ -30,9 +29,9 @@ run = "worker-build --release"
 [tasks.deploy]
 description = "Apply D1 migrations and deploy to Cloudflare"
 run = """
-wrangler d1 migrations apply shard --remote
+node node_modules/wrangler/bin/wrangler.js d1 migrations apply shard --remote
 worker-build --release
-wrangler deploy
+node node_modules/wrangler/bin/wrangler.js deploy
 """
 
 [tasks.check]
@@ -54,8 +53,8 @@ run = "cargo fmt"
 
 [tasks."db:migrate"]
 description = "Apply migrations to the local D1 database"
-run = "wrangler d1 migrations apply shard --local"
+run = "node node_modules/wrangler/bin/wrangler.js d1 migrations apply shard --local"
 
 [tasks."db:console"]
 description = "Open a SQL console against the local D1 database"
-run = "wrangler d1 execute shard --local --command \"select name from sqlite_master where type='table'\""
+run = "node node_modules/wrangler/bin/wrangler.js d1 execute shard --local --command \"select name from sqlite_master where type='table'\""
