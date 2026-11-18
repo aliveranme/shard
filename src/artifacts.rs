@@ -8,6 +8,7 @@ use serde_json::Value;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use worker::*;
+use worker::web_sys::Blob;
 
 #[derive(Debug, Clone)]
 pub struct CreatedRepo {
@@ -150,7 +151,7 @@ impl RepoHandle {
         Ok(items.iter().filter_map(|item| parse_commit(item, false)).collect())
     }
 
-    pub async fn read_file(&self, git_ref: &str, path: &str) -> Result<Option<Vec<u8>>> {
+    pub async fn read_file(&self, git_ref: &str, path: &str) -> Result<Option<Blob>> {
         let opts = Object::new();
         Reflect::set(&opts, &JsValue::from_str("ref"), &JsValue::from_str(git_ref))
             .map_err(js_error)?;
@@ -160,9 +161,9 @@ impl RepoHandle {
         if blob.is_null() || blob.is_undefined() {
             return Ok(None);
         }
-        let buffer = call_async(&blob, "arrayBuffer", &[]).await?;
-        let bytes = Uint8Array::new(&buffer).to_vec();
-        Ok(Some(bytes))
+        let blob = blob.dyn_into::<Blob>()
+            .map_err(|_| Error::RustError("Artifacts returned an invalid file blob".into()))?;
+        Ok(Some(blob))
     }
 
     pub async fn read_commit(&self, hash: &str) -> Result<Option<Commit>> {

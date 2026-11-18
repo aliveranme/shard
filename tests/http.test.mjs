@@ -346,7 +346,8 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       await git("-C", worktree, "checkout", "-b", "feature/readme");
       await writeFile(join(worktree, "README.md"), "# Updated branch\n<div>literal text</div>");
       await writeFile(join(worktree, "IMAGE.bin"), Buffer.from([0, 1, 2]));
-      await writeFile(join(worktree, "LARGE.txt"), "long fixture line\n".repeat(513));
+      const largeFile = "long fixture line\n".repeat(16_000) + "raw-download-tail\n";
+      await writeFile(join(worktree, "LARGE.txt"), largeFile);
       await writeFile(join(worktree, "FEATURE.md"), "# A branch with a slash\n");
       const folder = join(worktree, "docs and examples");
       await mkdir(folder);
@@ -375,6 +376,15 @@ test("forge HTTP regression scenarios", { timeout: 240_000 }, async (t) => {
       assert.deepEqual(members.get(`${prefix}IMAGE.bin`), Buffer.from([0, 1, 2]));
       assert.equal(members.get(`${prefix}docs and examples/release%20notes.txt`)?.toString(), "A nested file from the slash branch.\n");
       const history = "/suiteowner/history";
+      const preview = await owner.get(`${history}/blob/LARGE.txt?branch=feature%2Freadme`);
+      assert.match(preview.body, /Preview truncated to the first 256 KiB/);
+      assert.match(preview.body, /long fixture line/);
+      assert.doesNotMatch(preview.body, /raw-download-tail/);
+      const rawFile = await owner.get(`${history}/raw/LARGE.txt?branch=feature%2Freadme`);
+      assert.equal(rawFile.headers.get("content-type"), "application/octet-stream");
+      assert.equal(rawFile.body, largeFile);
+      const binary = await owner.get(`${history}/blob/IMAGE.bin?branch=feature%2Freadme`);
+      assert.match(binary.body, /Binary file/);
       const tag = "review-tag";
       await git("-C", worktree, "tag", "-a", tag, "-m", "Annotated tag");
       await git("-C", worktree, "push", "origin", tag);

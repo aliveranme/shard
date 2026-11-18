@@ -12,8 +12,13 @@ use crate::templates::{
     SettingsPage,
 };
 use crate::util;
+use js_sys::Uint8Array;
 use std::borrow::Cow;
+use wasm_bindgen_futures::JsFuture;
+use worker::web_sys::Blob;
 use worker::*;
+
+const PREVIEW_BYTES: usize = 256 * 1024;
 
 pub async fn new_form(_req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = ctx.data.clone();
@@ -140,8 +145,13 @@ async fn storage_handle(state: &AppState, repository: &str) -> Result<RepoHandle
     Artifacts::from_env(&state.env)?.get(repository).await
 }
 
-async fn read_blob(state: &AppState, repository: &str, branch: &str, path: &str) -> Result<Option<Vec<u8>>> {
+async fn file_blob(state: &AppState, repository: &str, branch: &str, path: &str) -> Result<Option<Blob>> {
     storage_handle(state, repository).await?.read_file(branch, path).await
+}
+
+async fn blob_bytes(blob: &Blob) -> Result<Vec<u8>> {
+    let buffer = JsFuture::from(blob.array_buffer()).await.map_err(Error::from)?;
+    Ok(Uint8Array::new(&buffer).to_vec())
 }
 
 fn requested_path(ctx: &RouteContext<AppState>) -> Option<Cow<'_, str>> {
@@ -204,10 +214,9 @@ pub async fn tree(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
         let Some((entries, commit)) = load_dir(&handle, &branch, &path).await? else {
             return Ok(None);
         };
-        let readme = if path.is_empty() && commit.is_some() {
-            load_readme(&handle, &branch).await
-        } else {
-            None
+        let readme = match &commit {
+            Some(commit) if path.is_empty() => load_readme(&handle, &commit.hash).await,
+            _ => None,
         };
         Ok(Some((entries, commit, readme)))
     }
@@ -265,13 +274,31 @@ pub async fn file(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
         .unwrap_or_else(|| repo.default_branch.clone());
     let branch_url = util::url_path(&branch);
     let is_owner = can_admin(&state, &repo);
-    let bytes = match read_blob(&state, &repo.artifacts_repo, &branch, &path).await {
-        Ok(Some(bytes)) => bytes,
+    let preview = async {
+        let Some(blob) = file_blob(&state, &repo.artifacts_repo, &branch, &path).await? else {
+            return Ok(None);
+        };
+        let size = blob.size() as u64;
+        let truncated = size > PREVIEW_BYTES as u64;
+        let prefix = if truncated {
+            blob.slice_with_f64_and_f64(0.0, PREVIEW_BYTES as f64)
+                .map_err(Error::from)?
+        } else {
+            blob
+        };
+        Ok(Some((blob_bytes(&prefix).await?, size, truncated)))
+    }.await;
+    let (bytes, size, truncated) = match preview {
+        Ok(Some(preview)) => preview,
         Ok(None) => return not_found(&state, state.locale.t(RepoText::FileNotFound)),
         Err(error) => return storage_error(&state, "read file preview", error),
     };
-    let size = bytes.len();
-    let (content, is_binary, truncated) = render_blob(&bytes);
+    let is_binary = bytes.iter().take(8000).any(|byte| *byte == 0);
+    let content = if is_binary {
+        String::new()
+    } else {
+        String::from_utf8_lossy(&bytes).into_owned()
+    };
     let page = FilePage {
         chrome: Chrome::new(&state),
         title: page_title(&[&repo.full_name(), &path]),
@@ -282,8 +309,8 @@ pub async fn file(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
         crumbs: crumbs(&path),
         content,
         is_binary,
-        truncated,
-        size: util::human_size(size as u64),
+        truncated: truncated && !is_binary,
+        size: util::human_size(size),
         is_owner,
     };
     render(&page)
@@ -301,8 +328,8 @@ pub async fn raw(req: Request, ctx: RouteContext<AppState>) -> Result<Response> 
     };
     let branch = util::query_param(&req, "branch")
         .unwrap_or_else(|| repo.default_branch.clone());
-    let bytes = match read_blob(&state, &repo.artifacts_repo, &branch, &path).await {
-        Ok(Some(bytes)) => bytes,
+    let blob = match file_blob(&state, &repo.artifacts_repo, &branch, &path).await {
+        Ok(Some(blob)) => blob,
         Ok(None) => return not_found(&state, state.locale.t(RepoText::FileNotFound)),
         Err(error) => return storage_error(&state, "read raw file", error),
     };
@@ -316,7 +343,7 @@ pub async fn raw(req: Request, ctx: RouteContext<AppState>) -> Result<Response> 
         format!("inline; filename*=UTF-8''{}", urlencoding::encode(filename))
     };
     headers.set("Content-Disposition", &disposition)?;
-    Ok(Response::from_bytes(bytes)?.with_headers(headers))
+    Ok(Response::from_body(ResponseBody::Stream(blob.stream()))?.with_headers(headers))
 }
 
 pub async fn commits(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
@@ -533,15 +560,19 @@ async fn load_dir(
     Ok(Some((entries, Some(commit))))
 }
 
-async fn load_readme(handle: &RepoHandle, branch: &str) -> Option<String> {
+async fn load_readme(handle: &RepoHandle, commit: &str) -> Option<String> {
     for candidate in ["README.md", "readme.md", "Readme.md", "README"] {
-        match handle.read_file(branch, candidate).await {
-            Ok(Some(bytes)) => {
+        let content = match handle.read_file(commit, candidate).await {
+            Ok(Some(blob)) if blob.size() <= PREVIEW_BYTES as f64 => blob_bytes(&blob).await,
+            Ok(_) => continue,
+            Err(error) => Err(error),
+        };
+        match content {
+            Ok(bytes) => {
                 if let Ok(text) = String::from_utf8(bytes) {
                     return Some(crate::markdown::render(&text));
                 }
             }
-            Ok(None) => {}
             Err(error) => console_log!("repository: read {candidate}: {error}"),
         }
     }
@@ -589,14 +620,3 @@ fn crumbs(path: &str) -> Vec<Crumb> {
     out
 }
 
-fn render_blob(bytes: &[u8]) -> (String, bool, bool) {
-    const LIMIT: usize = 256 * 1024;
-    let binary = bytes.iter().take(8000).any(|b| *b == 0);
-    if binary {
-        return (String::new(), true, false);
-    }
-    let truncated = bytes.len() > LIMIT;
-    let slice = &bytes[..bytes.len().min(LIMIT)];
-    let text = String::from_utf8_lossy(slice).to_string();
-    (text, false, truncated)
-}
