@@ -3,7 +3,7 @@
 Living record of what works, what is missing, and how it was verified.
 Update this file whenever a milestone lands or a limitation changes.
 
-**Snapshot:** 2026-11-19 · Shard 0.3.0 · local verification
+**Snapshot:** 2026-11-19 · Shard 0.3.1 · local verification
 
 | Item | Value |
 |---|---|
@@ -11,7 +11,7 @@ Update this file whenever a milestone lands or a limitation changes.
 | Tooling | Node 26.13.1, Wrangler 4.164.0, mise |
 | Storage | D1 with SQLite Durable Objects by default. Named environments use Cloudflare Artifacts, an authenticated native Git origin, or private R2 packs with Durable Object refs and Cloudflare Containers. LFS has its own R2 binding. |
 | UI | Server-rendered Askama templates using `static/css/theme.css` and `static/css/shard.css` |
-| Deployment | The Free badge uses the default deploy command. `--env artifacts` targets the original Artifacts Worker. `deploy:paid` configures R2 multipart LFS. `--env r2` selects Cloudflare-hosted Git with a separate pack bucket and resumable Git pushes. Managed CD verifies staged releases with a Workflow. |
+| Deployment | The Free button can create a private GitHub or GitLab repository linked to Workers Builds. A production push updates the same Worker, migrates the selected D1 database, and tags the version with the commit SHA. `--env artifacts` targets the original Artifacts Worker. `deploy:paid` configures R2 multipart LFS. `--env r2` selects Cloudflare-hosted Git with resumable Git pushes. Managed CD verifies staged releases with a Workflow. |
 | Source | [aliveranme/shard](https://github.com/aliveranme/shard) |
 
 ## Verified locally
@@ -50,7 +50,7 @@ Update this file whenever a milestone lands or a limitation changes.
 
 | Area | Requirement |
 |---|---|
-| Deployment | Verify the Free badge's account provisioning and quotas on hosted Workers Free. Exercise managed releases and Artifacts in isolated Workers Paid staging. Verify direct native Git on an HTTPS origin with persistent disk at the intended production transfer sizes. |
+| Deployment | Exercise a hosted Free deployment and its next production push on a connected repository. Measure hosted Free quotas. Exercise managed releases and Artifacts in isolated Workers Paid staging. Verify direct native Git on an HTTPS origin with persistent disk at the intended production transfer sizes. |
 | Hosted R2 Git | Exercise signed `ListParts`, FUSE range reads and container restarts against a private Cloudflare staging bucket. Measure the intended push sizes, clone latency and pack index costs on the selected container type. |
 | Large LFS uploads | Paid multipart defaults to the single-PUT ceiling. Explicit limits above it require hosted checks of whole-object hashing, conditional multipart publication, fork copy throughput and the Worker CPU budget. |
 | Email | An onboarded sending domain, an `EMAIL` binding, and an available mailbox to verify real delivery. |
@@ -174,6 +174,7 @@ The [deployment capacity guide](docs/deployment-capacity.md) covers Dashboard se
 | 2026-11-19 | Git LFS regressions | Three tests passed. A Paid multipart Batch accepted the exact default and an explicit R2-sized cap. The Worker rejected larger requests and preserved downloads after reducing the cap. |
 | 2026-11-19 | Managed CD rollback fixture and Wrangler preflight | All 29 CD checks and 52 deploy checks passed. The local fixture exercised post-activation failures, exact version restoration, competing publishes and failed rollback verification. The managed and staging dry runs built the bridge image and resolved their separate bindings. |
 | 2026-11-19 | R2 Git compaction and recovery in Docker/FUSE | The integration passed with real Git and Miniflare. A concurrent push invalidated the first compaction, and a later compaction reduced the manifest while retaining a deleted branch's saved review. Restored D1 and R2 state into fresh Durable Objects. A missing index and invalid ref were rejected. The private repository and fork cloned, passed `git fsck --full`, and returned byte-identical LFS data. The recovery Worker configuration bundled in Wrangler dry-run. |
+| 2026-11-19 | Free private-repository deployment | The Cloudflare setup panel displayed the private repository option, the D1 selector, `npm run build` and `npm run deploy`. All 84 local deployment checks passed. The Workers Builds fixture used the same Worker and D1 UUID for the initial deployment and a production push, with a different commit tag for each. |
 
 ## How to update
 

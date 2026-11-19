@@ -1,7 +1,7 @@
 {
   "name": "shard",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Shard - a self-hosted, Cloudflare-native Git forge",
   "bin": {
     "git-remote-shard": "scripts/git-remote-shard.mjs"
@@ -19,7 +19,7 @@
   "cloudflare": {
     "bindings": {
       "DB": {
-        "description": "Stores accounts, repository metadata, issues and pull requests. The deploy script applies the schema."
+        "description": "Stores Shard accounts, repository metadata, issues and pull requests. Each production deploy applies migrations to this database. The build token needs D1 Edit."
       },
       "LFS_OBJECTS": {
         "description": "Private R2 bucket for Git LFS. Use a separate bucket for each Shard instance."

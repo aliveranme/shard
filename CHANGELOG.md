@@ -2,9 +2,21 @@
 
 ## Unreleased
 
-- Paid LFS multipart defaults to R2's single-PUT size. Raising the limit above it requires an explicit `SHARD_LFS_MAX_BYTES` value. Existing published objects remain readable.
-- Managed CD restores the previous active Worker version after an owned production publish or verification fails. It confirms the restored version and runs its release Workflow when available.
-- R2 Git compacts small packs in the background and preserves objects used by historical reviews. The recovery helper exports and restores Durable Object manifests alongside D1 and R2 backups.
+## 0.3.1
+
+### Storage and deployment
+
+- R2 Git compacts small packs in the background and retains objects used by reviews of deleted branches. The manifest switches after the replacement pack and index are durable. Replaced pairs remain available for 24 hours.
+- The R2 Git recovery helper exports and restores Durable Object manifests alongside D1 and R2 backups. The local Docker/FUSE rehearsal restored a private repository, a fork, a historical review and byte-identical LFS data. [Recovery procedure](https://github.com/aliveranme/shard/blob/v0.3.1/README.md#r2-git-backup-and-restore)
+- Managed CD restores the previous active Worker version after a failed production publish or probe when the failed release owns the active deployment. It verifies the restored version and, when available, runs its release Workflow.
+- Paid multipart LFS defaults to 5,363,466,240 bytes. Existing published objects remain readable after lowering the upload cap.
+- The Chinese deployment guide covers Cloudflare Dashboard setup, prebuilt archives, the Free deployment button, and multipart sizing. [Deployment guide](https://github.com/aliveranme/shard/blob/v0.3.1/docs/deployment-capacity.md)
+- The Free deploy button supports a private GitHub or GitLab deployment repository. Production branch pushes deploy to the same Worker, migrate its selected D1 database, and tag Worker versions with the Git commit SHA.
+
+### Upgrade
+
+- Preserve the existing Worker and resource bindings. For a new LFS object larger than the default, including an unfinished upload, set `SHARD_LFS_MAX_BYTES` explicitly after measuring verification and publication capacity.
+- Serialize production releases and keep D1 migrations compatible with the previous Worker so the rollback can serve the migrated database.
 
 ## 0.3.0
 

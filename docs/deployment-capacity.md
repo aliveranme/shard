@@ -25,12 +25,12 @@
 
 ### 从 Release 包直接发布
 
-1. 在 GitHub Releases 下载 `shard-v<版本>-worker.tar.gz` 和同名 `.sha256`。以下以 `v0.3.0` 为例。校验通过后解包，进入解出的目录。Windows PowerShell 可用 `Get-FileHash -Algorithm SHA256` 计算归档摘要，与 `.sha256` 文件中的值比对。[公开发布包](https://github.com/aliveranme/shard/releases/tag/v0.3.0)
+1. 在 GitHub Releases 下载 `shard-v<版本>-worker.tar.gz` 和同名 `.sha256`。以下以 `v0.3.1` 为例。校验通过后解包，进入解出的目录。Windows PowerShell 可用 `Get-FileHash -Algorithm SHA256` 计算归档摘要，与 `.sha256` 文件中的值比对。[公开发布包](https://github.com/aliveranme/shard/releases/tag/v0.3.1)
 
    ```sh
-   sha256sum --check shard-v0.3.0-worker.tar.gz.sha256
-   tar -xzf shard-v0.3.0-worker.tar.gz
-   cd shard-v0.3.0-worker
+   sha256sum --check shard-v0.3.1-worker.tar.gz.sha256
+   tar -xzf shard-v0.3.1-worker.tar.gz
+   cd shard-v0.3.1-worker
    ```
 
 2. 按包内 `.node-version` 安装 Node，执行 `npm ci`。修改包内 `wrangler.json` 的目标 Worker 和资源名称。升级时填入原 D1 UUID、Git 绑定、R2 桶和路由。`managed` 与 `r2` 还需运行 Docker 或兼容引擎以构建容器镜像。包内已有 Worker Wasm 和静态资源，由 Wrangler 直接上传。Dashboard 的 **Upload your static files** 入口用于静态站点。[发布包内容](../README.md#project-releases)
@@ -47,9 +47,10 @@
 
 ### Free 一键部署按钮
 
-1. 点击 [Deploy to Cloudflare Free](https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Faliveranme%2Fshard)，登录并选择 Cloudflare 账号，授权 GitHub 或 GitLab。Cloudflare 将仓库复制到所选 Git 账号。[按钮流程](https://developers.cloudflare.com/workers/platform/deploy-buttons/)
-2. 确认目标仓库、Worker 名和 `DB` 数据库名。构建根目录使用仓库根目录，保留 `npm run build` 和 `npm run deploy`。点击 **Deploy**，等待发布后打开分配的 `workers.dev` 地址。顶层配置使用 D1 和 SQLite Durable Objects，默认启用普通 Git HTTPS。
-3. 注册测试账号、建私库、创建写入令牌，用 Git HTTPS 推一个提交并克隆校验。需要 LFS 时，创建私有桶，在自己的仓库顶层 Wrangler 配置添加 `LFS_OBJECTS`，再发布一次。需要自定义域名时，在 Worker 的 **Settings → Domains & Routes** 添加 **Custom Domain**。[首次推送](../README.md#first-repository) · [域名配置](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)
+1. 点击 [Deploy to Cloudflare Free](https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Faliveranme%2Fshard)，登录并选择 Cloudflare 账号。在「设置您的应用程序」的「Git 帐户」中选择 GitHub 或 GitLab，勾选「创建专用 Git 存储库」。[按钮流程](https://developers.cloudflare.com/workers/platform/deploy-buttons/)
+2. 确认项目名称和 `DB` 数据库。根目录使用仓库根目录，保留 `npm run build` 和 `npm run deploy`。「高级设置」中的构建 API 令牌需要目标账号的 **Workers Scripts Edit** 和 **D1 Edit**。点击「部署」，完成后打开 `workers.dev` 地址。[构建设置](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/)
+3. Cloudflare 将代码复制到所选 Git 帐户并绑定新仓库。后续推送到生产分支会重新构建，迁移原 `DB`，更新同一个 Worker。合并 Shard 新版本时保留 Cloudflare 写入的 Worker 名和 D1 UUID。在 Worker 的「部署」页可查看构建记录和版本对应的 Git 提交。
+4. 注册测试账号，创建私库和写入令牌，用 Git HTTPS 推送一个提交并克隆校验。需要 LFS 时，创建私有桶，在部署仓库的顶层 Wrangler 配置添加 `LFS_OBJECTS`，再推送至生产分支。需要域名时，在 Worker 的 **Settings → Domains & Routes** 添加 **Custom Domain**。[首次推送](../README.md#first-repository) · [域名配置](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)
 
 ## 部署配置
 

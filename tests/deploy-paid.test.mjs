@@ -29,6 +29,7 @@ function exercise(t, {
   deployStatus = 0,
   workerOverride,
   workersBuilds = false,
+  workersCommit,
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "shard-deploy-paid-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -103,7 +104,9 @@ function exercise(t, {
   delete env.CLOUDFLARE_ACCOUNT_ID;
   delete env.WRANGLER_CI_OVERRIDE_NAME;
   delete env.WORKERS_CI;
+  delete env.WORKERS_CI_COMMIT_SHA;
   if (workersBuilds) env.WORKERS_CI = "1";
+  if (workersCommit !== undefined) env.WORKERS_CI_COMMIT_SHA = workersCommit;
   if (workerOverride !== undefined) env.WRANGLER_CI_OVERRIDE_NAME = workerOverride;
   if (accountId !== null) env.CLOUDFLARE_ACCOUNT_ID = accountId;
   env[secretName] = "different-shell-value";
@@ -350,6 +353,33 @@ test("deployment accepts the connected Worker for the default and matching named
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(result.commands, ["d1 migrations", "deploy"]);
     assert.equal(result.calls[1].workerOverride, workerOverride);
+  }
+});
+
+test("Workers Builds deploys the initial commit and updates the same private-repo instance", async (t) => {
+  const workerName = "private-shard";
+  const database = { binding: "DB", database_name: "private-shard-db", database_id: uuid, migrations_dir: "migrations" };
+  for (const [name, commit] of [["first deployment", "1".repeat(40)], ["production branch push", "2".repeat(40)]]) {
+    await t.test(name, (t) => {
+      const result = exercise(t, {
+        args: [], secrets: null, workersBuilds: true, workersCommit: commit, workerOverride: workerName,
+        configure(raw) {
+          raw.name = workerName;
+          raw.d1_databases = [database];
+        },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(result.commands, ["d1 migrations", "deploy"]);
+      const [migrate, deploy] = result.calls;
+      assert.deepEqual(migrate.args.slice(0, 5), ["d1", "migrations", "apply", "DB", "--remote"]);
+      assert.deepEqual(deploy.args.slice(0, 3), ["deploy", "--tag", commit]);
+      for (const call of result.calls) {
+        assert.equal(call.configPath, result.configPath);
+        assert.equal(call.config.name, workerName);
+        assert.equal(call.workerOverride, workerName);
+        assert.deepEqual(call.config.d1_databases, [database]);
+      }
+    });
   }
 });
 

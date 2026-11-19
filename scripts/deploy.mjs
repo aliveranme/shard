@@ -210,7 +210,10 @@ function deploy() {
     deployArgs.push("--secrets-file", secretsFile);
   }
   if (values.outdir) deployArgs.push("--outdir", resolve(values.outdir));
-  if (values.tag) deployArgs.push("--tag", values.tag);
+  const buildsCommit = process.env.WORKERS_CI_COMMIT_SHA ?? "";
+  const tag = values.tag ?? (!environment && process.env.WORKERS_CI === "1" &&
+    /^[0-9a-f]{40}$/.test(buildsCommit) ? buildsCommit : undefined);
+  if (tag) deployArgs.push("--tag", tag);
   if (values.message) deployArgs.push("--message", values.message);
 
   let deploymentConfig = resolve(configPath);

@@ -116,21 +116,29 @@ See the [Chinese deployment and capacity guide](docs/deployment-capacity.md) for
 
 ### Deploy from GitHub or GitLab
 
-1. Click **Deploy to Cloudflare** and select your account.
-2. Connect GitHub or GitLab and confirm the destination repository, Worker
-   name and D1 database. The default template also provisions its SQLite
-   Durable Object class through the `free-git-v1` migration.
+1. Click **Deploy to Cloudflare** and select your Cloudflare account.
+2. Under **Set up your application**, select your GitHub or GitLab account
+   and check **Create a private Git repository**. Confirm the Worker name
+   and choose or create the D1 database for `DB`. Use a build token with
+   **Workers Scripts Edit** and **D1 Edit** in the target account.
 3. Keep the repository root as the build root, `npm run build` as the build
    command, and `npm run deploy` as the deploy command. Click **Deploy** and
    open the `workers.dev` URL when the build finishes.
 4. Follow [First repository](#first-repository) to verify registration, repository
    creation and the first push.
 
-For a repository you already own, connect it in Workers & Pages and use the
-same commands. Select a Workers Builds token with Workers Scripts Edit and D1
-Edit in the target account. Add Workers Routes Edit when deploying routes in a zone.
-Workers Builds uses `.node-version`, the pinned Rust toolchain and `worker-build`.
-The deploy command applies the D1 migrations before publishing the Worker.
+Cloudflare records the Worker name and D1 ID in the new repository's
+Wrangler configuration. Push changes to that repository's production branch
+to update the Worker automatically. Each build runs the pending D1 migrations
+against the selected database before publishing a Worker version tagged with
+the Git commit SHA. See the build and deployed version under **Deployments**.
+Keep these resource IDs when merging changes from a newer Shard release.
+
+To connect a repository you already own, open the Worker's **Settings → Build**
+and select the repository and its production branch. Use the same commands
+and build token permissions. Add **Workers Routes Edit** when deploying routes
+in a zone. Workers Builds uses `.node-version`, the pinned Rust toolchain and
+`worker-build`.
 [Deploy to Cloudflare buttons](https://developers.cloudflare.com/workers/platform/deploy-buttons/) · [Workers Builds settings](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/)
 
 ### Deploy from a local checkout
@@ -631,7 +639,7 @@ Shard 是部署在 Cloudflare 上的自托管 Git 平台，适用于个人项目
 
 [部署配置、资源限制与扩容空间](docs/deployment-capacity.md) 提供 Dashboard、Release 包和 Free 一键按钮的逐步教程，以及 Git 与 LFS 的分片计算和并发边界。
 
-点击 **Deploy to Cloudflare**，选择账户并确认 Worker 和 D1 数据库。构建完成后即可注册、创建仓库和推送 Git。命令行可在登录 Wrangler 后执行 `mise run deploy`。默认配置的 Git LFS 可通过绑定私有 `LFS_OBJECTS` R2 存储桶启用。[Free 部署指南](#deploy-to-cloudflare)
+点击 **Deploy to Cloudflare**，在「设置您的应用程序」中选择 Git 帐户，勾选「创建专用 Git 存储库」，确认 Worker 和 D1 数据库后部署。Cloudflare 会绑定新仓库，之后推送到该仓库的生产分支就会自动更新同一个 Worker，并在原 D1 数据库上应用迁移。命令行可在登录 Wrangler 后执行 `mise run deploy`。需要 Git LFS 时可绑定私有 `LFS_OBJECTS` R2 存储桶。[Free 一键部署步骤](docs/deployment-capacity.md#free-一键部署按钮)
 
 在本地试用无需 Cloudflare 账号。安装 Git 2.32 或更高版本和 mise 后，运行 `mise install`、`mise run setup`、`mise run dev`，打开 `http://localhost:8787`。
 
@@ -651,7 +659,7 @@ Add an exact `## <version>` section to [CHANGELOG.md](CHANGELOG.md) in the
 tagged commit. Pushing `v0.2.0` publishes that version's notes. A prerelease
 such as `v0.3.1-rc.1` requires its own `## 0.3.1-rc.1` section and is marked
 as a prerelease on GitHub. Check the selected notes locally with
-`mise exec -- node scripts/release-notes.mjs v0.3.0`.
+`mise exec -- node scripts/release-notes.mjs v0.3.1`.
 
 The workflow checks the tag against the npm, Cargo, and built Worker versions.
 It builds and tests both Git container images, dry-runs the extracted archive
