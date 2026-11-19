@@ -1,5 +1,5 @@
 use crate::git_storage::{is_object_id, BlobRead, RepoHandle, TreeEntry};
-use crate::native_git::{NativeRepo, SnapshotRead};
+use crate::native_git::{GitServiceRepo, SnapshotRead};
 use serde::{Deserialize, Deserializer};
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -99,7 +99,7 @@ pub async fn compare(target: &RepoHandle, source: &RepoHandle, base: &str, head:
     if !is_object_id(base) || !is_object_id(head) {
         return Ok(Comparison::MissingSnapshot);
     }
-    if let Some((target, source)) = NativeRepo::comparison_pair(target, source) {
+    if let Some((target, source)) = GitServiceRepo::comparison_pair(target, source) {
         return match target.file_changes(source, base, head).await? {
             SnapshotRead::Found(files) => native_files(files),
             SnapshotRead::Missing => Ok(Comparison::MissingSnapshot),

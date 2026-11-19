@@ -465,14 +465,16 @@ async fn check_integration(
     if !is_object_id(tip) || tip == base {
         return Ok(Err(DiscussionText::MergeAbsent));
     }
-    if let RepoHandle::Native(native) = repo {
-        use crate::native_git::SnapshotRead;
-        return Ok(match native.integrated(tip, base, head).await? {
-            SnapshotRead::Found(true) => Ok(()),
-            SnapshotRead::Found(false) => Err(DiscussionText::MergeAbsent),
-            SnapshotRead::Missing => Err(DiscussionText::MergeUnavailable),
-            SnapshotRead::Limited => Err(DiscussionText::MergeLimited),
-        });
+    if let RepoHandle::Service(native) = repo {
+        if !native.is_durable() {
+            use crate::native_git::SnapshotRead;
+            return Ok(match native.integrated(tip, base, head).await? {
+                SnapshotRead::Found(true) => Ok(()),
+                SnapshotRead::Found(false) => Err(DiscussionText::MergeAbsent),
+                SnapshotRead::Missing => Err(DiscussionText::MergeUnavailable),
+                SnapshotRead::Limited => Err(DiscussionText::MergeLimited),
+            });
+        }
     }
     let mut seen = HashSet::from([tip.to_owned()]);
     let mut queue = VecDeque::from([tip.to_owned()]);

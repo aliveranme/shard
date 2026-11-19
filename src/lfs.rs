@@ -42,11 +42,19 @@ type HttpError = (u16, &'static str);
 const HIDDEN: HttpError = (404, "Repository not found");
 const CREDENTIALS: HttpError = (401, "A Shard access token is required");
 const STORAGE: HttpError = (503, "LFS storage unavailable");
+const DISABLED: HttpError = (501, "Git LFS is disabled on this instance");
 const MISSING: HttpError = (404, "LFS object not found");
 const INVALID_OBJECT: HttpError = (422, "Invalid SHA-256 object ID or size");
 const WRONG_SIZE: HttpError = (422, "Object size does not match");
 const TOO_LARGE: HttpError = (413, "LFS object exceeds the configured upload limit");
 const BAD_DIGEST: HttpError = (422, "Object content does not match its SHA-256 ID");
+
+fn storage_bucket(env: &Env) -> Result<Option<Bucket>> {
+    if Reflect::get(env.as_ref(), &JsValue::from_str("LFS_OBJECTS")).map_err(Error::from)?.is_undefined() {
+        return Ok(None);
+    }
+    env.bucket("LFS_OBJECTS").map(Some)
+}
 
 #[derive(Deserialize)]
 struct Repository {
@@ -119,6 +127,11 @@ pub async fn batch(req: Request, ctx: RouteContext<AppState>) -> Result<Response
         Ok(repo) => repo,
         Err(error) => return failure(error),
     };
+    let bucket = match storage_bucket(&ctx.data.env) {
+        Ok(Some(bucket)) => bucket,
+        Ok(None) => return failure(DISABLED),
+        Err(_) => return failure(STORAGE),
+    };
     if batch.hash_algo.as_deref().is_some_and(|hash| hash != "sha256") {
         return failure((409, "Only SHA-256 object IDs are supported"));
     }
@@ -143,11 +156,6 @@ pub async fn batch(req: Request, ctx: RouteContext<AppState>) -> Result<Response
         }
     } else {
         None
-    };
-
-    let bucket = match ctx.data.env.bucket("LFS_OBJECTS") {
-        Ok(bucket) => bucket,
-        Err(_) => return failure(STORAGE),
     };
     let url = req.url()?;
     let Some(path) = url.path().strip_suffix("/batch") else {
@@ -362,7 +370,7 @@ async fn transfer<'a>(
     let oid = ctx.param("oid").ok_or(INVALID_OBJECT)?;
     let size = ctx.param("size").and_then(|size| decimal(size)).ok_or(INVALID_OBJECT)?;
     validate_oid(oid)?;
-    let bucket = ctx.data.env.bucket("LFS_OBJECTS").map_err(|_| STORAGE)?;
+    let bucket = storage_bucket(&ctx.data.env).map_err(|_| STORAGE)?.ok_or(DISABLED)?;
     let key = format!("{}{oid}", Namespace::for_repo(repo.id, repo.lfs_copy_id).prefix());
     Ok(Transfer { bucket, repo_id: repo.id, key, oid, size })
 }
@@ -459,7 +467,7 @@ pub(crate) async fn copy_page(
     expires: i64,
     limit: u32,
 ) -> Result<Option<String>> {
-    let bucket = env.bucket("LFS_OBJECTS")?;
+    let Some(bucket) = storage_bucket(env)? else { return Ok(None) };
     let source = source.prefix();
     let target = target.prefix();
     if source == target {
@@ -517,7 +525,7 @@ pub(crate) async fn copy_page(
 }
 
 pub(crate) async fn delete_page(env: &Env, namespace: Namespace, limit: u32) -> Result<bool> {
-    let bucket = env.bucket("LFS_OBJECTS")?;
+    let Some(bucket) = storage_bucket(env)? else { return Ok(true) };
     let prefix = namespace.prefix();
     let list = bucket.list().prefix(&prefix).limit(limit).execute().await?;
     let keys: Vec<_> = list.objects().into_iter().map(|object| object.key()).collect();

@@ -3,15 +3,15 @@
 Living record of what works, what is missing, and how it was verified.
 Update this file whenever a milestone lands or a limitation changes.
 
-**Snapshot:** 2026-11-19 · Managed Cloudflare execution and staged releases · local development
+**Snapshot:** 2026-11-19 · Default Workers Free deployment and managed Paid preset · local verification
 
 | Item | Value |
 |---|---|
 | Runtime | Rust 1.100.0, `worker` 0.9.0, `worker-build` 0.9.0 |
 | Tooling | Node 26.13.1, Wrangler 4.164.0, mise |
-| Storage | D1 with Cloudflare Artifacts by default or an authenticated native Git origin. Both environments use a private R2 bucket for LFS objects. |
+| Storage | D1 with SQLite Durable Objects by default, Cloudflare Artifacts in Paid environments, or an authenticated native Git origin. LFS is available with a private R2 binding. |
 | UI | Server-rendered Askama templates using `static/css/theme.css` and `static/css/shard.css` |
-| Deployment | Default and native deployment use the unified deploy command. Managed deployment uses Workers Builds, isolated staging and production bindings, and a release Workflow for each deployment. Hosted verification is pending. |
+| Deployment | The Free badge uses the default deploy command. `--env artifacts` targets the original Artifacts Worker, and `deploy:paid` configures managed R2 multipart. Managed CD uses independent staging and production resources and verifies each deploy with a Workflow. |
 | Source | [aliveranme/shard](https://github.com/aliveranme/shard) |
 
 ## Verified locally
@@ -26,8 +26,9 @@ Update this file whenever a milestone lands or a limitation changes.
 | Repository access | Owners and organization teams grant read or write access. Web, Git, search, downloads and notification reads enforce current grants. Revocation removes access on subsequent requests. |
 | Repository lifecycle | Rename and accepted transfers preserve Web and Git routes. Forks preserve Git refs. The native origin imports private sources over Basic or Bearer HTTPS and publishes them privately. The minute cron reconciles pending copies. Portable metadata import applies each bundle atomically. |
 | Default branch and refs | Settings update the branch selected by new clones through Shard. Owners can create branches and lightweight tags from commit IDs, and delete individual refs after confirming their names. |
-| Git transport | Smart HTTP request and response bodies are streamed. Private clone requires a credential, and push also requires write scope and repository write access. |
-| Git LFS | Both Git backends enforce repository and token permissions. The default Worker upload is 100 MB. Standard Git LFS can use a presigned R2 PUT. The packaged multipart adapter resumes from recorded parts and verifies the whole object before publication. Forks use independent R2 keys, and deletion removes access immediately and schedules cleanup. |
+| Git transport | The Worker forwards Smart HTTP bodies as streams. The Free Git engine buffers packs within its configured compressed size limit. Private clone requires a credential, and push requires write scope and repository write access. |
+| Default Free Git | On fresh local state, real Git pushes, private repository access, raw reads, ref and HEAD changes, and Web fast-forward merges work with D1 and a SQLite Durable Object per repository. A fork retained its refs and cloned after source deletion and Worker restart. |
+| Git LFS | All Git backends use repository and token permissions. The Free config leaves R2 optional. With R2 bound, proxy uploads default to 100 MB. Standard Git LFS can use a presigned R2 PUT. The packaged multipart adapter resumes from recorded parts and verifies the whole object before publication. Forks use independent R2 keys. |
 | Native Git origin | The native environment supports Git push, clone, fetch, ref browsing, raw downloads, pull request diffs and access revocation. Forked refs and files stay readable after source deletion. Same-origin PRs use commit-pinned merge-base, file comparison and ancestry requests. Authenticated origin controls set HEAD, update refs against an expected tip, merge reviewed commits and import private HTTPS repositories. |
 | Code browsing | Branch and tag inventory, branch-scoped trees and files, cursor-paginated first-parent history, parent links, and commit-pinned source TAR downloads. Text previews read at most 256 KiB. README links and images use the displayed commit, and raw downloads stream full files. |
 | Pull requests | Common-ancestor diffs support source and target branches in distinct repositories. Accepted branch pushes schedule refreshes. Reviews retain the saved comparison and line. Protected branches require the configured approvals and checks. The queue advanced an Artifacts branch by fast-forward and created a two-parent merge from a fork on the native origin. |
@@ -46,10 +47,10 @@ Update this file whenever a milestone lands or a limitation changes.
 
 | Area | Requirement |
 |---|---|
-| Deployment | Verify hosted managed releases and Artifacts operations in a separate Workers Paid environment. Use isolated D1, R2 and Artifacts state. Native staging needs an HTTPS Git origin and persistent storage. |
+| Deployment | Verify the Free badge's full account provisioning and resource limits on hosted Workers Free. Exercise managed releases and Artifacts in an isolated Workers Paid environment. Hosted native staging needs an HTTPS Git origin and persistent storage. |
 | Large LFS uploads | Verify presigned S3 uploads with a hosted private R2 bucket. Objects above the single-PUT ceiling require a hosted check of whole-object hashing, conditional multipart publication, fork copy throughput and the Worker CPU budget. |
 | Email | An onboarded sending domain, an `EMAIL` binding, and an available mailbox to verify real delivery. |
-| Web merges | Verify divergent and cross-repository merges against hosted Artifacts through the managed Git container. Standalone Artifacts deployments use an external Git 2.38+ bridge. Mixed-backend Web merges require manual integration. |
+| Web merges | The Free Git UI advances same-repository fast-forwards. For other Free and mixed-backend merges, integrate through Git. Verify the managed Git container against hosted Artifacts for divergent and cross-repository merges. |
 | Repository search | Scans one selected snapshot with explicit limits. A persistent index and whole-history search remain outside the current search scope. |
 | Git protocol | Artifacts switches through Shard to the classic advertisement when HEAD is overridden. Production partial clone and fetch compatibility require verification. Provider-side updates that bypass Shard need separate event ingestion. |
 | Operations | Live metrics, token-list pagination, and further CSP tightening after moving inline styles. |
@@ -142,6 +143,12 @@ Architecture, service boundaries, and operational constraints are recorded in [P
 | 2026-11-19 | Release Workflow on Linux with Docker | The local Workflow checked the configured version tag, D1, R2 and CSS, then started the actual Git image through its Durable Object and verified readiness. It rejected an invalid release tag. |
 | 2026-11-19 | Managed prebuilt deployment dry run | The release archive layout supplied the Worker entrypoint, Wasm, migrations and Docker context without a local Rust build. Wrangler built the merge image and bundled `managed-staging`. |
 | 2026-11-19 | CD gate and native Git cron regressions | Four isolated Wrangler fixture cases checked the staging result, revision, branch and deployment order. With the coordinator unbound, the native Git test confirmed that one scheduled tick advanced a queued protected merge after its required check passed. |
+| 2026-11-19 | Fresh Free Worker with a real Git client | Registration, public and private push, read-scoped access, pull request diff and fast-forward, ref and HEAD updates, an explicit LFS-disabled response, and fork clone after restart passed with the shipped Free bindings. |
+| 2026-11-19 | Populated D1 upgrade | Migration 0027 preserved legacy backend IDs, a linked PR, a pending native fork, and the cleanup queue's high-water mark. It enforced the existing backend-matched path guard and queued cleanup for a Durable Object repository. |
+| 2026-11-19 | Prebuilt deployment dry runs | Free, original Artifacts, native, Paid and Paid staging bundles passed. The Free upload compressed to about 1.34 MiB. Both Paid dry runs built the merge container and resolved multipart mode with the selected bucket. |
+| 2026-11-19 | Deployment and existing backends | The deploy script and managed release-gate cases passed. The local Artifacts HTTP suite, native Git suite, and signed R2 direct and multipart tests passed against the new Worker bundle. |
+| 2026-11-19 | First Free publish through Wrangler and a loopback Cloudflare API | A dashboard-style D1 binding applied all 25 schema migrations before Worker upload. Upload metadata contained the `free-git-v1` SQLite class migration and no R2, Artifacts or Workflow bindings. |
+| 2026-11-19 | Free public Git import | A local Git `upload-pack` fixture supplied the HTTPS advertisement and pack response. The repository kept its `trunk` default, refs and imported file contents. |
 
 ## How to update
 

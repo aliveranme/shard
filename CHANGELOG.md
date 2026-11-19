@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- New deployments use Workers Free with D1 and SQLite Durable Objects for Git. The Deploy to Cloudflare button opens this configuration. Upgrade the original Artifacts instance with `npm run deploy -- --env artifacts` and its existing bindings.
+- `npm run deploy:paid` selects the managed Paid environment, configures the Artifacts origin, and enables R2 multipart uploads with bucket-scoped credentials.
 - Source checkouts and prebuilt archives share one deploy command. It creates or reuses the selected D1 database, applies migrations and then publishes the Worker. A first deploy can upload Worker secrets with `--secrets-file`.
 - Shipped Wrangler configurations preserve dashboard-managed Worker variables across deployments.
 - Automatic D1 reuse by name checks for an empty schema or an existing Shard database before applying migrations.

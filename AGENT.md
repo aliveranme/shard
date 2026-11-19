@@ -2,7 +2,7 @@
 
 ## Project and scope
 
-Shard is a Rust Git forge on Cloudflare Workers. D1 stores forge metadata. Git uses Cloudflare Artifacts by default or an optional native Git origin. Askama renders the HTML and `static/css/shard.css` is the shared stylesheet. Read `README.md`, `STATUS.md` and `DESIGN.md` before changing behavior. Preserve unrelated local changes. Never deploy, create paid resources, or delete user data without an explicit request.
+Shard is a Rust Git forge on Cloudflare Workers. D1 stores forge metadata. SQLite Durable Objects store Git by default. Named environments use Cloudflare Artifacts or an authenticated native Git origin. Askama renders the HTML and `static/css/shard.css` is the shared stylesheet. Read `README.md`, `STATUS.md` and `DESIGN.md` before changing behavior. Preserve unrelated local changes. Never deploy, create paid resources, or delete user data without an explicit request.
 
 ## Architecture
 
@@ -12,6 +12,7 @@ Shard is a Rust Git forge on Cloudflare Workers. D1 stores forge metadata. Git u
 - `src/git_storage.rs`: shared Git backend boundary. Persist the backend with its repository and copy jobs.
 - `src/artifacts.rs`: the Artifacts binding adapter. The binding has no merge, branch enumeration or object-write API.
 - `src/native_git.rs` and `scripts/git-origin.mjs`: authenticated native Git transport and bare-repository management.
+- `worker/git-repository.mjs`: SQLite Durable Object for Free Git storage. It serves the Git protocol and the internal object and ref API.
 - `src/templates.rs` and `templates/`: typed page models and autoescaped HTML. Only render sanitized Markdown as safe HTML.
 - `src/i18n/` defines typed interface messages. Add user-facing UI text, accessibility labels, and browser errors to the matching catalog with both translations. Keep interpolated phrases whole.
 - `migrations/`: append forward-only D1 migrations; never rewrite an applied migration.
@@ -34,10 +35,13 @@ Use the pinned mise toolchain. Standard commands:
 - `mise run lint` runs Clippy for the wasm Worker. `mise run fmt` runs rustfmt.
 - `mise run build`: produce the Worker bundle.
 - `mise run dev`: run the local simulator at `http://localhost:8787`.
-- `mise run test` runs isolated HTTP and real Git regressions for both storage modes.
+- `mise run test` runs isolated HTTP and real Git regressions for all three storage modes.
 - `mise run deploy` and `npm run deploy` resolve the target `DB` binding,
   apply migrations, and publish the Worker. The shipped `keep_vars` preserves
   dashboard-managed Worker variables.
+- `npm run deploy:paid -- --secrets-file .env.deploy.paid` selects the managed
+  Paid environment and enables R2 multipart uploads. Use `--env artifacts`
+  with the regular deploy command to upgrade the original Artifacts instance.
 - Managed Workers Builds use `npm run ci -- --container` for build, tests and
   image smoke checks, then `npm run cd` for staged release verification.
   See [README.md](README.md#deploy-with-managed-cloudflare-services).

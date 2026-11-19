@@ -699,7 +699,7 @@ async fn start_copy(
     let env = state.env.clone();
     let submission = future_to_promise(async move {
         let result = match (credential, &storage) {
-            (Some(credential), GitStorage::Native(origin)) => {
+            (Some(credential), GitStorage::Service(origin)) => {
                 origin.start_copy_with_credential(&storage_id, None, &source_url, Some(&credential.for_origin())).await
             }
             (None, _) => storage.start_copy(&storage_id, &destination.description, source_repo.as_deref(), &source_url).await,

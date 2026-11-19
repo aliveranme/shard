@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "node scripts/deploy.mjs",
+    "deploy:paid": "node scripts/deploy.mjs --paid",
     "build": "node scripts/build-worker.mjs",
     "ci": "node scripts/ci.mjs",
     "cd": "node scripts/cd.mjs",
@@ -24,7 +25,8 @@
   },
   "dependencies": {
     "@xmldom/xmldom": "0.9.12",
-    "aws4fetch": "1.0.20"
+    "aws4fetch": "1.0.20",
+    "durable-git": "0.0.8"
   },
   "devDependencies": {
     "wrangler": "4.164.0"

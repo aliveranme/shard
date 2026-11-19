@@ -56,9 +56,12 @@ async function forge(mode, exercise) {
   await once(relay, "listening");
   try {
     const r2 = `http://127.0.0.1:${relay.address().port}`;
-    const { rawConfig: config } = experimental_readRawConfig({ config: join(root, "wrangler.jsonc") });
+    const { rawConfig: { env: environments, ...baseConfig } } = experimental_readRawConfig({ config: join(root, "wrangler.jsonc") });
+    const config = { ...baseConfig, ...environments.artifacts };
     delete config.build;
     delete config.$schema;
+    delete config.durable_objects;
+    delete config.migrations;
     config.name = "shard-lfs-remote-tests";
     config.main = resolve(root, config.main);
     config.assets.directory = resolve(root, config.assets.directory);

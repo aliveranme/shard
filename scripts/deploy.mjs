@@ -1,13 +1,94 @@
 import { spawnSync } from "node:child_process";
-import { accessSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { parseArgs } from "node:util";
+import { parseArgs, parseEnv } from "node:util";
 
 const require = createRequire(import.meta.url);
 const unsetDatabaseId = "00000000-0000-0000-0000-000000000000";
 const databaseIdPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+const accountIdPattern = /^[0-9a-f]{32}$/i;
+const r2BucketPattern = /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/;
+const r2Jurisdictions = new Set(["eu", "fedramp", "us"]);
+const maxR2ObjectBytes = (5 * 1024 - 5) * 1024 ** 3;
+const r2SecretNames = ["SHARD_LFS_R2_ACCESS_KEY_ID", "SHARD_LFS_R2_SECRET_ACCESS_KEY"];
+
+function readPaidSecrets(file, vars) {
+  if (!file) throw new Error("Provide --secrets-file with the R2 Object Read & Write credentials for LFS_OBJECTS.");
+  let secrets;
+  try {
+    const contents = readFileSync(file, "utf8").trimStart();
+    secrets = contents.startsWith("{") || contents.startsWith("[") ? JSON.parse(contents) : parseEnv(contents);
+  } catch {
+    throw new Error("Could not read --secrets-file as JSON or dotenv.");
+  }
+  if (!secrets || typeof secrets !== "object" || Array.isArray(secrets) ||
+      Object.values(secrets).some((value) => value !== null && typeof value !== "string")) {
+    throw new Error("--secrets-file must contain named string values.");
+  }
+  for (const name of r2SecretNames) {
+    if (!Object.hasOwn(secrets, name) || typeof secrets[name] !== "string" || !/^[!-~]+$/.test(secrets[name])) {
+      throw new Error(`Provide a nonempty ${name} in --secrets-file.`);
+    }
+  }
+  const reserved = ["DB", "ARTIFACTS", "LFS_OBJECTS", "SHARD_LFS_MAX_BYTES", ...Object.keys(vars)];
+  if (reserved.some((name) => Object.hasOwn(secrets, name) && secrets[name] !== null)) {
+    throw new Error("--secrets-file must not redefine paid preset bindings or selected Worker variables.");
+  }
+  return secrets;
+}
+
+function configurePaid(rawConfig, target, lfsBinding, dryRun) {
+  if (!target.artifacts?.some(({ binding, namespace }) => binding === "ARTIFACTS" && namespace)) {
+    throw new Error("Configure an Artifacts namespace bound as ARTIFACTS in the paid environment.");
+  }
+  const bucket = lfsBinding?.bucket_name;
+  if (typeof bucket !== "string" || !r2BucketPattern.test(bucket)) {
+    throw new Error("Configure a named R2 bucket bound as LFS_OBJECTS in the paid environment.");
+  }
+  const jurisdiction = lfsBinding.jurisdiction;
+  if (jurisdiction !== undefined && !r2Jurisdictions.has(jurisdiction)) {
+    throw new Error("Set the LFS_OBJECTS jurisdiction to eu, fedramp or us, or omit it for the standard R2 endpoint.");
+  }
+  const vars = target.vars ??= {};
+  if (r2SecretNames.some((name) => Object.hasOwn(vars, name))) {
+    throw new Error("Supply the LFS credentials through --secrets-file as Worker secrets.");
+  }
+  const maxBytes = vars.SHARD_LFS_MAX_BYTES;
+  if (maxBytes !== undefined) {
+    if (!(typeof maxBytes === "string" || typeof maxBytes === "number") ||
+        !/^\d+$/.test(String(maxBytes)) || Number(maxBytes) < 1 || Number(maxBytes) > maxR2ObjectBytes) {
+      throw new Error(`SHARD_LFS_MAX_BYTES must be a whole number between 1 and ${maxR2ObjectBytes}.`);
+    }
+    vars.SHARD_LFS_MAX_BYTES = String(maxBytes);
+  }
+  vars.SHARD_LIMIT_PROFILE = "paid";
+  vars.SHARD_LFS_UPLOAD_MODE = "r2-multipart";
+  vars.SHARD_LFS_R2_BUCKET = bucket;
+  rawConfig.keep_vars = true;
+  // Whole-object hashing consumes CPU. A fork LFS page can copy eight objects with up to 1,024 parts each.
+  target.limits = { cpu_ms: 300_000, subrequests: 20_000, ...(target.limits ?? rawConfig.limits) };
+  if (dryRun) return;
+
+  const account = process.env.CLOUDFLARE_ACCOUNT_ID?.toLowerCase();
+  if (!accountIdPattern.test(account ?? "")) {
+    throw new Error("Set CLOUDFLARE_ACCOUNT_ID to the 32-digit hexadecimal account ID for the paid deployment.");
+  }
+  const configuredAccount = target.account_id || rawConfig.account_id;
+  if (configuredAccount && String(configuredAccount).toLowerCase() !== account) {
+    throw new Error("CLOUDFLARE_ACCOUNT_ID must match the Wrangler account_id for the paid deployment.");
+  }
+  target.account_id = account;
+  const endpoint = `https://${account}${jurisdiction ? `.${jurisdiction}` : ""}.r2.cloudflarestorage.com`;
+  const configuredEndpoint = vars.SHARD_LFS_R2_ENDPOINT;
+  if (configuredEndpoint !== undefined && configuredEndpoint !== endpoint && configuredEndpoint !== `${endpoint}/`) {
+    throw new Error("SHARD_LFS_R2_ENDPOINT must match the account and jurisdiction of the LFS_OBJECTS binding.");
+  }
+  vars.SHARD_LFS_R2_ENDPOINT = endpoint;
+  vars.SHARD_GIT_ARTIFACTS_ORIGINS = `https://${account}.artifacts.cloudflare.net`;
+}
 
 function readD1Rows(output) {
   const response = JSON.parse(output);
@@ -52,18 +133,24 @@ function deploy() {
     env: { type: "string", short: "e" },
     "secrets-file": { type: "string" },
     tag: { type: "string" },
+    paid: { type: "boolean" },
     "dry-run": { type: "boolean" },
     outdir: { type: "string" },
     help: { type: "boolean", short: "h" },
   } });
   if (values.help) {
-    console.log("npm run deploy -- [--config PATH] [--env NAME] [--secrets-file PATH] [--tag TAG] [--dry-run] [--outdir PATH]");
+    console.log("npm run deploy -- [--paid] [--config PATH] [--env NAME] [--secrets-file PATH] [--tag TAG] [--dry-run] [--outdir PATH]");
     return;
   }
 
   const { experimental_readRawConfig } = require("wrangler");
   const wranglerBin = join(dirname(require.resolve("wrangler/package.json")), "bin", "wrangler.js");
-  const environment = values.env ?? process.env.CLOUDFLARE_ENV;
+  const paid = values.paid;
+  const dryRun = values["dry-run"];
+  const environment = values.env ?? process.env.CLOUDFLARE_ENV ?? (paid ? "managed" : undefined);
+  if (paid && environment !== "managed" && environment !== "managed-staging") {
+    throw new Error("--paid selects managed or managed-staging.");
+  }
   const { rawConfig, configPath } = experimental_readRawConfig({ config: values.config, env: environment });
   if (!configPath) throw new Error("Provide a Wrangler configuration with --config.");
 
@@ -74,9 +161,12 @@ function deploy() {
   const database = target.d1_databases?.find(({ binding }) => binding === "DB");
   if (!database) throw new Error("Configure a D1 database bound as DB in the deployment environment.");
 
-  if (values["secrets-file"]) accessSync(resolve(values["secrets-file"]));
+  const secretsFile = values["secrets-file"] ? resolve(values["secrets-file"]) : undefined;
   const deployArgs = ["deploy"];
-  if (values["secrets-file"]) deployArgs.push("--secrets-file", resolve(values["secrets-file"]));
+  if (secretsFile && !paid) {
+    accessSync(secretsFile);
+    deployArgs.push("--secrets-file", secretsFile);
+  }
   if (values.outdir) deployArgs.push("--outdir", resolve(values.outdir));
   if (values.tag) deployArgs.push("--tag", values.tag);
 
@@ -85,7 +175,11 @@ function deploy() {
     const flags = ["--config", deploymentConfig, "--env", environment ?? ""];
     const result = spawnSync(process.execPath, [wranglerBin, ...args, ...flags], {
       encoding: "utf8",
-      env: ci ? { ...process.env, CI: "true" } : process.env,
+      env: paid || ci ? {
+        ...process.env,
+        ...(paid && { WRANGLER_LOG_SANITIZE: "true" }),
+        ...(ci && { CI: "true" }),
+      } : process.env,
       stdio: capture ? ["inherit", "pipe", "inherit"] : "inherit",
     });
     if (result.error) throw result.error;
@@ -97,13 +191,13 @@ function deploy() {
     return result.stdout;
   }
 
-  if (values["dry-run"]) {
+  if (dryRun && !paid) {
     run([...deployArgs, "--dry-run"]);
     return;
   }
 
   const origin = target.vars?.NATIVE_GIT_ORIGIN;
-  if (origin !== undefined) {
+  if (origin !== undefined && !dryRun) {
     const url = URL.parse(origin);
     if (url?.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
       throw new Error("Use an HTTPS NATIVE_GIT_ORIGIN for deployment, or omit it here to use the Worker's dashboard variable.");
@@ -114,9 +208,33 @@ function deploy() {
   if (lfsBucket !== undefined && lfsBucket !== lfsBinding?.bucket_name) {
     throw new Error("SHARD_LFS_R2_BUCKET must match the LFS_OBJECTS bucket name in this environment.");
   }
+  let paidSecrets;
+  if (paid) {
+    configurePaid(rawConfig, target, lfsBinding, dryRun);
+    if (!dryRun) paidSecrets = readPaidSecrets(secretsFile, target.vars);
+  }
 
   let temporaryConfig;
+  let temporarySecrets;
+  function writeConfig() {
+    // Keep the copy beside the source so asset, build and migration paths still resolve.
+    const copy = temporaryConfig ?? join(dirname(deploymentConfig), `.wrangler.deploy-${randomUUID()}.json`);
+    writeFileSync(copy, JSON.stringify(rawConfig, null, 2) + "\n", { flag: temporaryConfig ? "w" : "wx" });
+    temporaryConfig = deploymentConfig = copy;
+  }
   try {
+    if (paid) writeConfig();
+    if (dryRun) {
+      run([...deployArgs, "--dry-run"]);
+      return;
+    }
+    if (paidSecrets) {
+      // Upload the validated values as JSON so Wrangler does not expand dotenv values or replace them from the shell.
+      temporarySecrets = mkdtempSync(join(tmpdir(), "shard-deploy-secrets-"));
+      const file = join(temporarySecrets, "secrets.json");
+      writeFileSync(file, JSON.stringify(paidSecrets), { flag: "wx", mode: 0o600 });
+      deployArgs.push("--secrets-file", file);
+    }
     if (!database.database_id || database.database_id === unsetDatabaseId) {
       const name = database.database_name;
       if (!name) throw new Error("Set database_name on the DB binding for automatic D1 setup.");
@@ -138,10 +256,7 @@ function deploy() {
         database.database_id = existing.uuid;
       }
 
-      // Keep the copy beside the source so asset, build and migration paths still resolve.
-      const copy = join(dirname(deploymentConfig), `.wrangler.deploy-${randomUUID()}.json`);
-      writeFileSync(copy, JSON.stringify(rawConfig, null, 2) + "\n", { flag: "wx" });
-      temporaryConfig = deploymentConfig = copy;
+      writeConfig();
       if (existing) verifyExistingDatabase(run, database);
       else run(["d1", "create", name, "--binding", "DB"]);
     }
@@ -153,6 +268,7 @@ function deploy() {
     }
     run(deployArgs);
   } finally {
+    if (temporarySecrets) rmSync(temporarySecrets, { recursive: true, force: true });
     if (temporaryConfig) rmSync(temporaryConfig, { force: true });
   }
 }

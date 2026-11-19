@@ -2,7 +2,7 @@ use crate::git_storage::{is_object_id, BlobRead, Commit, CopyError, CreatedRepo,
 use js_sys::Reflect;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsValue;
-use worker::durable::Stub;
+use worker::durable::{ObjectNamespace, Stub};
 use worker::{Env, Error, Fetch, Method, Request, RequestInit, RequestRedirect, Response, ResponseBody, Result, Url};
 
 const MAX_COMPARISON_BYTES: u64 = 4 * 1024 * 1024;
@@ -11,16 +11,16 @@ const ARTIFACTS_MERGE_PATH: &str = "/v1/artifacts/merge";
 
 pub(crate) enum ArtifactsMergeTransport {
     Container(Stub),
-    Native(NativeGit),
+    Native(GitService),
 }
 
-pub(crate) struct NativeGit {
-    origin: String,
-    authorization: String,
+pub(crate) enum GitService {
+    Native { origin: String, authorization: String },
+    Durable(ObjectNamespace),
 }
 
-pub(crate) struct NativeRepo {
-    client: NativeGit,
+pub(crate) struct GitServiceRepo {
+    client: GitService,
     id: String,
 }
 
@@ -132,7 +132,7 @@ impl ArtifactsMergeTransport {
         let binding = Reflect::get(env.as_ref(), &JsValue::from_str(ARTIFACTS_MERGE_BINDING))
             .map_err(|_| WriteError::Unavailable)?;
         if binding.is_undefined() {
-            return NativeGit::from_env(env).map(Self::Native).map_err(|_| WriteError::Unsupported);
+            return GitService::from_env(env).map(Self::Native).map_err(|_| WriteError::Unsupported);
         }
         let container = env.durable_object(ARTIFACTS_MERGE_BINDING)
             .and_then(|namespace| namespace.get_by_name("artifacts-merge"))
@@ -158,7 +158,7 @@ impl ArtifactsMergeTransport {
     ) -> std::result::Result<String, WriteError> {
         let payload = RemoteMerge { inputs: MergeInputs { reference, base_oid, head_oid }, target, source };
         let response = match self {
-            Self::Native(native) => native.write(ARTIFACTS_MERGE_PATH, &payload).await?,
+            Self::Native(native) => native.write(None, ARTIFACTS_MERGE_PATH, &payload).await?,
             Self::Container(container) => {
                 let mut init = json_post(&payload).map_err(|_| WriteError::Unavailable)?;
                 init.redirect = RequestRedirect::Manual;
@@ -171,7 +171,7 @@ impl ArtifactsMergeTransport {
     }
 }
 
-impl NativeGit {
+impl GitService {
     pub(crate) fn from_env(env: &Env) -> Result<Self> {
         let raw = env.var("NATIVE_GIT_ORIGIN")?.to_string();
         let origin = Url::parse(&raw).map_err(|_| invalid_origin())?;
@@ -189,36 +189,56 @@ impl NativeGit {
         if token.is_empty() || !token.bytes().all(|byte| (b'!'..=b'~').contains(&byte)) {
             return Err(Error::RustError("NATIVE_GIT_TOKEN must be a nonempty token".into()));
         }
-        Ok(Self { origin: origin.origin().ascii_serialization(), authorization: format!("Bearer {token}") })
+        Ok(Self::Native { origin: origin.origin().ascii_serialization(), authorization: format!("Bearer {token}") })
     }
 
-    pub(crate) fn repo(self, id: &str) -> Result<NativeRepo> {
-        if !valid_id(id) {
-            return Err(Error::RustError("Invalid native Git repository ID".into()));
+    pub(crate) fn durable(env: &Env) -> Result<Self> {
+        env.durable_object("GIT_REPOS").map(Self::Durable)
+    }
+
+    fn origin(&self) -> &str {
+        match self {
+            Self::Native { origin, .. } => origin,
+            Self::Durable(_) => "https://internal",
         }
-        Ok(NativeRepo { client: self, id: id.to_owned() })
     }
 
-    async fn send(&self, url: &str, mut init: RequestInit) -> Result<Response> {
-        init.headers.set("Authorization", &self.authorization)?;
+    pub(crate) fn repo(self, id: &str) -> Result<GitServiceRepo> {
+        if !valid_id(id) {
+            return Err(Error::RustError("Invalid Git storage ID".into()));
+        }
+        Ok(GitServiceRepo { client: self, id: id.to_owned() })
+    }
+
+    async fn send(&self, id: Option<&str>, url: &str, mut init: RequestInit) -> Result<Response> {
         init.redirect = RequestRedirect::Manual;
-        Fetch::Request(Request::new_with_init(url, &init)?).send().await
+        match self {
+            Self::Native { authorization, .. } => {
+                init.headers.set("Authorization", authorization)?;
+                Fetch::Request(Request::new_with_init(url, &init)?).send().await
+            }
+            Self::Durable(namespace) => {
+                let id = id.ok_or_else(|| Error::RustError("Missing Git storage ID".into()))?;
+                let request = Request::new_with_init(url, &init)?;
+                namespace.get_by_name(id)?.fetch_with_request(request).await
+            }
+        }
     }
 
     async fn control(&self, id: &str, method: Method, creation: Option<Creation<'_>>) -> Result<Response> {
         if !valid_id(id) {
-            return Err(Error::RustError("Invalid native Git repository ID".into()));
+            return Err(Error::RustError("Invalid Git storage ID".into()));
         }
         let init = match creation {
             Some(creation) => json_post(&creation)?,
             None => RequestInit { method, ..Default::default() },
         };
-        self.send(&format!("{}/v1/repos/{id}", self.origin), init).await
+        self.send(Some(id), &format!("{}/v1/repos/{id}", self.origin()), init).await
     }
 
-    async fn write(&self, path: &str, payload: &impl Serialize) -> std::result::Result<Response, WriteError> {
+    async fn write(&self, id: Option<&str>, path: &str, payload: &impl Serialize) -> std::result::Result<Response, WriteError> {
         let init = json_post(payload).map_err(|_| WriteError::Unavailable)?;
-        self.send(&format!("{}{path}", self.origin), init).await.map_err(|_| WriteError::Unavailable)
+        self.send(id, &format!("{}{path}", self.origin()), init).await.map_err(|_| WriteError::Unavailable)
     }
 
     pub(crate) async fn create(&self, id: &str) -> Result<CreatedRepo> {
@@ -244,6 +264,9 @@ impl NativeGit {
     pub(crate) async fn start_copy_with_credential(
         &self, id: &str, source: Option<&str>, url: &str, credential: Option<&ImportCredential<'_>>,
     ) -> std::result::Result<(), CopyError> {
+        if credential.is_some() && matches!(self, Self::Durable(_)) {
+            return Err(CopyError::Rejected);
+        }
         let creation = match source {
             Some(source) => Creation { kind: "fork", source: Some(source), credential },
             None => Creation { kind: "import", source: Some(url), credential },
@@ -267,16 +290,22 @@ impl NativeGit {
     }
 }
 
-impl NativeRepo {
+impl GitServiceRepo {
+    pub(crate) fn is_durable(&self) -> bool {
+        matches!(self.client, GitService::Durable(_))
+    }
+
     async fn read(&self, endpoint: &str, params: &[(&str, &str)]) -> Result<Response> {
-        let mut url = Url::parse(&format!("{}/v1/repos/{}/{endpoint}", self.client.origin, self.id))?;
+        let mut url = Url::parse(&format!("{}/v1/repos/{}/{endpoint}", self.client.origin(), self.id))?;
         url.query_pairs_mut().extend_pairs(params.iter().copied());
-        self.client.send(url.as_str(), RequestInit::default()).await
+        self.client.send(Some(&self.id), url.as_str(), RequestInit::default()).await
     }
 
     pub(crate) fn comparison_pair<'a>(target: &'a RepoHandle, source: &'a RepoHandle) -> Option<(&'a Self, &'a Self)> {
         match (target, source) {
-            (RepoHandle::Native(target), RepoHandle::Native(source)) if target.client.origin == source.client.origin => {
+            (RepoHandle::Service(target), RepoHandle::Service(source))
+                if !target.is_durable() && !source.is_durable() && target.client.origin() == source.client.origin() =>
+            {
                 Some((target, source))
             }
             _ => None,
@@ -325,7 +354,7 @@ impl NativeRepo {
     }
 
     async fn write(&self, endpoint: &str, payload: &impl Serialize) -> std::result::Result<Response, WriteError> {
-        self.client.write(&format!("/v1/repos/{}/{endpoint}", self.id), payload).await
+        self.client.write(Some(&self.id), &format!("/v1/repos/{}/{endpoint}", self.id), payload).await
     }
 
     pub(crate) async fn write_ref(
@@ -358,7 +387,7 @@ impl NativeRepo {
         }
         let data: CommitData = json(response).await?;
         if data.commit.hash != hash || data.parents.iter().any(|hash| !is_object_id(hash)) {
-            return Err(Error::RustError("Native Git origin returned invalid commit metadata".into()));
+            return Err(Error::RustError("Git service returned invalid commit metadata".into()));
         }
         Ok(Some(data))
     }
@@ -408,7 +437,7 @@ impl NativeRepo {
         match response.status_code() {
             200 => {
                 let size = response_length(&response, "X-Shard-Object-Size")?;
-                Ok(Some(GitFile::Native { response, size }))
+                Ok(Some(GitFile::Stream { response, size }))
             }
             404 => {
                 discard(response);
@@ -419,12 +448,12 @@ impl NativeRepo {
     }
 
     pub(crate) async fn git_request(&self, endpoint: &str, query: &str, init: RequestInit) -> Result<Response> {
-        let mut url = format!("{}/v1/git/{}.git/{endpoint}", self.client.origin, self.id);
+        let mut url = format!("{}/v1/git/{}.git/{endpoint}", self.client.origin(), self.id);
         if !query.is_empty() {
             url.push('?');
             url.push_str(query);
         }
-        self.client.send(&url, init).await
+        self.client.send(Some(&self.id), &url, init).await
     }
 }
 
@@ -488,7 +517,7 @@ pub(crate) fn discard(response: Response) {
 fn unexpected(response: Response) -> Error {
     let status = response.status_code();
     discard(response);
-    Error::RustError(format!("Native Git origin returned HTTP {status}"))
+    Error::RustError(format!("Git service returned HTTP {status}"))
 }
 
 fn copy_error(response: Response) -> CopyError {
@@ -498,7 +527,7 @@ fn copy_error(response: Response) -> CopyError {
         202 => CopyError::Pending,
         404 => CopyError::Missing,
         409 => CopyError::Collision,
-        422 => CopyError::Rejected,
+        413 | 422 => CopyError::Rejected,
         _ => CopyError::Unknown,
     }
 }
@@ -506,7 +535,7 @@ fn copy_error(response: Response) -> CopyError {
 async fn metadata(mut response: Response, id: &str) -> Result<CreatedRepo> {
     let metadata: CreatedRepo = response.json().await?;
     if metadata.name != id || metadata.default_branch.is_empty() {
-        return Err(Error::RustError("Native Git origin returned invalid repository metadata".into()));
+        return Err(Error::RustError("Git service returned invalid repository metadata".into()));
     }
     Ok(metadata)
 }
@@ -520,17 +549,17 @@ async fn json<T: serde::de::DeserializeOwned>(mut response: Response) -> Result<
 
 fn response_length(response: &Response, header: &str) -> Result<u64> {
     response.headers().get(header)?.and_then(|length| length.parse().ok())
-        .ok_or_else(|| Error::RustError("Native Git origin omitted its file size".into()))
+        .ok_or_else(|| Error::RustError("Git service omitted its file size".into()))
 }
 
 pub(crate) async fn file_bytes(mut response: Response, length: u64) -> Result<Vec<u8>> {
     if response_length(&response, "Content-Length")? != length {
         discard(response);
-        return Err(Error::RustError("Native Git origin returned an unexpected file size".into()));
+        return Err(Error::RustError("Git service returned an unexpected file size".into()));
     }
     let bytes = response.bytes().await?;
     if bytes.len() as u64 != length {
-        return Err(Error::RustError("Native Git origin returned incomplete file bytes".into()));
+        return Err(Error::RustError("Git service returned incomplete file bytes".into()));
     }
     Ok(bytes)
 }

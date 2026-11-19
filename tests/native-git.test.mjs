@@ -17,6 +17,7 @@ const exec = promisify(execFile);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const wrangler = join(root, "node_modules/wrangler/bin/wrangler.js");
 const bearer = (token) => ({ Authorization: `Bearer ${token}` });
+const minuteCron = encodeURIComponent("* * * * *");
 const remoteUrl = (base, repo) => `${base}${repo}.git`;
 const infoRefs = (repo, service) => `${repo}.git/info/refs?service=git-${service}-pack`;
 const request = (url, options) => fetch(url, {
@@ -96,31 +97,76 @@ async function startWorker(temporary, nativeOrigin, token) {
   config.name = "shard-git-tests";
   config.main = resolve(root, config.main);
   config.assets.directory = resolve(root, config.assets.directory);
-  const native = config.env.native;
-  native.durable_objects = { bindings: [] };
-  native.vars = {
-    ...native.vars,
-    PUBLIC_ORIGIN: "https://forge.example.test",
-    NATIVE_GIT_ORIGIN: nativeOrigin,
-  };
-  native.d1_databases = native.d1_databases.map((binding) => ({
+  const env = nativeOrigin ? "native" : undefined;
+  const target = env ? config.env[env] : config;
+  if (env) {
+    target.vars = { ...target.vars, PUBLIC_ORIGIN: "https://forge.example.test", NATIVE_GIT_ORIGIN: nativeOrigin };
+    await writeFile(join(temporary, ".dev.vars.native"), `NATIVE_GIT_TOKEN=${token}\n`);
+  }
+  target.d1_databases = target.d1_databases.map((binding) => ({
     ...binding, remote: false, migrations_dir: resolve(root, binding.migrations_dir),
   }));
   await writeFile(configPath, JSON.stringify(config));
-  await writeFile(join(temporary, ".dev.vars.native"), `NATIVE_GIT_TOKEN=${token}\n`);
   await exec(process.execPath, [wrangler, "d1", "migrations", "apply", "DB", "--local",
-    "--env", "native", "--persist-to", persistence, "--config", configPath], {
+    ...(env ? ["--env", env] : []), "--persist-to", persistence, "--config", configPath], {
     cwd: root, env: { ...process.env, CI: "true", WRANGLER_SEND_METRICS: "false" },
     timeout: 60_000, maxBuffer: 4 * 1024 * 1024,
   });
   return unstable_dev(config.main, {
-    config: configPath, env: "native", local: true, ip: "127.0.0.1", port: 0,
+    config: configPath, env, local: true, ip: "127.0.0.1", port: 0,
     persist: true, persistTo: persistence, logLevel: "error",
     experimental: {
       disableExperimentalWarning: true, disableDevRegistry: true,
       forceLocal: true, testScheduled: true, watch: false, showInteractiveDevSession: false,
     },
   });
+}
+
+async function tick(base) {
+  const response = await request(`${base}/__scheduled?cron=${minuteCron}`);
+  assert.equal(response.status, 200);
+  await response.text();
+}
+
+async function gitClient(temporary) {
+  const gitConfig = join(temporary, "gitconfig");
+  await writeFile(gitConfig, `[core]
+  autocrlf = false
+[http]
+  proxy =
+[user]
+  name = Native Git Fixture
+  email = native-git@example.test
+[commit]
+  gpgSign = false
+[tag]
+  gpgSign = false
+`);
+  return async (credential, ...args) => (await exec("git", args, {
+    cwd: temporary, timeout: 30_000,
+    env: {
+      ...process.env, GIT_CONFIG_GLOBAL: gitConfig, GIT_CONFIG_NOSYSTEM: "1",
+      GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_COUNT: credential ? "1" : "0",
+      ...(credential ? {
+        GIT_CONFIG_KEY_0: "http.extraHeader", GIT_CONFIG_VALUE_0: `Authorization: Bearer ${credential}`,
+      } : {}),
+    },
+  })).stdout.trim();
+}
+
+async function awaitFork(base, client, response, expectedPath) {
+  redirected(response);
+  if (response.location !== expectedPath) {
+    assert.match(response.location, /^\/user\/settings\/repository-copies\/\d+$/);
+    const statusPath = response.location;
+    for (let attempt = 0; attempt < 12; attempt++) {
+      await tick(base);
+      response = await client.get(statusPath);
+      if (response.status !== 202) break;
+      await delay(150);
+    }
+  }
+  redirected(response, expectedPath);
 }
 
 // Each run owns its origin volume, D1 state, and Git configuration.
@@ -182,34 +228,7 @@ test("forge native Git over loopback", { timeout: 240_000 }, async (t) => {
 
     worker = await startWorker(temporary, nativeOrigin, token);
     const base = `http://127.0.0.1:${worker.port}`;
-    const tick = async () => {
-      const response = await request(`${base}/__scheduled?cron=${encodeURIComponent("* * * * *")}`);
-      assert.equal(response.status, 200);
-      await response.text();
-    };
-    const gitConfig = join(temporary, "gitconfig");
-    await writeFile(gitConfig, `[core]
-  autocrlf = false
-[http]
-  proxy =
-[user]
-  name = Native Git Fixture
-  email = native-git@example.test
-[commit]
-  gpgSign = false
-[tag]
-  gpgSign = false
-`);
-    const git = async (credential, ...args) => (await exec("git", args, {
-      cwd: temporary, timeout: 30_000,
-      env: {
-        ...process.env, GIT_CONFIG_GLOBAL: gitConfig, GIT_CONFIG_NOSYSTEM: "1",
-        GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_COUNT: credential ? "1" : "0",
-        ...(credential ? {
-          GIT_CONFIG_KEY_0: "http.extraHeader", GIT_CONFIG_VALUE_0: `Authorization: Bearer ${credential}`,
-        } : {}),
-      },
-    })).stdout.trim();
+    const git = await gitClient(temporary);
 
     await t.test("browser and Git operations share repository data and forge permissions", async () => {
       const owner = await signup(base, "nativeowner");
@@ -382,19 +401,7 @@ test("forge native Git over loopback", { timeout: 240_000 }, async (t) => {
       await exerciseLfs({ base, repo: renamed, writeToken, readToken, canRunGitLfs });
 
       const fork = "/nativeviewer/project-fork";
-      let copied = await viewer.post(`${project}/fork`, { name: "project-fork" });
-      redirected(copied);
-      if (copied.location !== fork) {
-        assert.match(copied.location, /^\/user\/settings\/repository-copies\/\d+$/);
-        const statusPath = copied.location;
-        for (let attempt = 0; attempt < 12; attempt++) {
-          await tick();
-          copied = await viewer.get(statusPath);
-          if (copied.status !== 202) break;
-          await delay(150);
-        }
-      }
-      redirected(copied, fork);
+      await awaitFork(base, viewer, await viewer.post(`${project}/fork`, { name: "project-fork" }), fork);
       assert.equal((await guest.get(fork)).status, 200);
       const originalRefs = await git(null, "ls-remote", projectRemote);
       assert.equal(await git(null, "ls-remote", remoteUrl(base, fork)), originalRefs);
@@ -497,7 +504,7 @@ test("forge native Git over loopback", { timeout: 240_000 }, async (t) => {
       assert.match(unintegrated.body, /does not contain both saved commits/);
       let after;
       for (let attempt = 0; attempt < 10; attempt++) {
-        await tick();
+        await tick(base);
         after = await owner.get(cross.location);
         if (after.body.includes("Comparison 2")) break;
         await delay(75);
@@ -536,7 +543,7 @@ test("forge native Git over loopback", { timeout: 240_000 }, async (t) => {
       assert.match(ready.body, /ci\/fork[\s\S]*Passed/);
       assert.match(ready.body, waiting);
       assert.equal(await git(null, "ls-remote", projectRemote, "refs/heads/main"), `${targetTip}\trefs/heads/main`);
-      await tick();
+      await tick(base);
       assert.match((await owner.get(cross.location)).body, /Merged by Shard/);
       await git(null, "-C", clone, "fetch", "origin", "main");
       assert.equal(await git(null, "-C", clone, "show", "-s", "--format=%P", "FETCH_HEAD"), `${targetTip} ${forkTip}`);
@@ -573,6 +580,94 @@ test("forge native Git over loopback", { timeout: 240_000 }, async (t) => {
       } finally {
         await rm(temporary, { recursive: true, force: true, maxRetries: 5 });
       }
+    }
+  }
+});
+
+test("default Free deployment serves and persists repositories without paid bindings", { timeout: 120_000 }, async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "shard-free-git-"));
+  let worker;
+  try {
+    worker = await startWorker(temporary);
+    const base = `http://127.0.0.1:${worker.port}`;
+    const owner = await signup(base, "freeowner");
+    const viewer = await signup(base, "freeviewer");
+    const guest = new Client(base);
+    const repo = "/freeowner/notes";
+    const privateRepo = "/freeowner/private-notes";
+    redirected(await owner.post("/repo/create", { name: "notes" }), repo);
+    redirected(await owner.post("/repo/create", { name: "private-notes", private: "on" }), privateRepo);
+    assert.match((await guest.get(repo)).body, /This repository is empty/);
+    assert.equal((await viewer.get(privateRepo)).status, 404);
+    assert.equal((await guest.get(infoRefs(privateRepo, "upload"))).status, 401);
+
+    const git = await gitClient(temporary);
+    const writeToken = await scopedToken(owner, "write");
+    const readToken = await scopedToken(owner, "read");
+    const remote = remoteUrl(base, repo);
+    const worktree = join(temporary, "source");
+    await git(null, "init", "--object-format=sha1", "--initial-branch=main", worktree);
+    const localGit = (...args) => git(null, "-C", worktree, ...args);
+    const readme = "# SQLite-backed Git\n";
+    await writeFile(join(worktree, "README.md"), readme);
+    await localGit("add", "README.md");
+    await localGit("commit", "-m", "Seed the repository");
+    const original = await localGit("rev-parse", "HEAD");
+    await assert.rejects(git(readToken, "-C", worktree, "push", remote, "main"), { code: 128 });
+    await git(writeToken, "-C", worktree, "push", remote, "main");
+    await git(writeToken, "-C", worktree, "push", remoteUrl(base, privateRepo), "main");
+    assert.equal(await git(readToken, "ls-remote", remoteUrl(base, privateRepo), "refs/heads/main"), `${original}\trefs/heads/main`);
+    assert.equal((await guest.get(`${repo}/raw/README.md`)).body, readme);
+
+    await localGit("switch", "-c", "topic/notes");
+    await writeFile(join(worktree, "notes.txt"), "Review the stored notes.\n");
+    await localGit("add", "notes.txt");
+    await localGit("commit", "-m", "Add notes");
+    await localGit("tag", "-a", "v0.1", "-m", "Notes fixture");
+    await git(writeToken, "-C", worktree, "push", remote, "topic/notes", "v0.1");
+    const head = await localGit("rev-parse", "HEAD");
+    const pull = await owner.post(`${repo}/pulls/new`, {
+      title: "Add notes", body: "Review this change.", base_branch: "main", head_branch: "topic/notes",
+    });
+    redirected(pull);
+    assert.match((await guest.get(`${pull.location}?file=notes.txt`)).body, /diff-table__added[\s\S]*Review the stored notes\./);
+    redirected(await owner.post(`${pull.location}/merge`, { action: "queue", comparison_version: "1" }));
+    await tick(base);
+    assert.match((await owner.get(pull.location)).body, /Merged by Shard/);
+    assert.equal(await git(null, "ls-remote", remote, "refs/heads/main"), `${head}\trefs/heads/main`);
+
+    redirected(await owner.post(`${repo}/refs`, { action: "create", kind: "heads", name: "web/notes", oid: original }));
+    redirected(await owner.post(`${repo}/settings`, { default_branch: "web/notes" }));
+    assert.equal(await git(null, "ls-remote", "--symref", remote, "HEAD"), `ref: refs/heads/web/notes\tHEAD\n${original}\tHEAD`);
+
+    const lfs = await request(`${remote}/info/lfs/objects/batch`, {
+      method: "POST", headers: { ...bearer(writeToken), "Content-Type": "application/vnd.git-lfs+json" },
+      body: JSON.stringify({ operation: "upload", objects: [{ oid: "a".repeat(64), size: 1 }] }),
+    });
+    assert.equal(lfs.status, 501);
+    assert.match(await lfs.text(), /Git LFS is disabled/);
+
+    const fork = "/freeviewer/notes-fork";
+    const expectedRefs = await git(null, "ls-remote", "--symref", remote);
+    await awaitFork(base, viewer, await viewer.post(`${repo}/fork`, { name: "notes-fork" }), fork);
+    redirected(await owner.post(`${repo}/settings/delete`, { confirm: "notes" }), "/");
+    await tick(base);
+    assert.equal((await guest.get(repo)).status, 404);
+
+    await worker.stop();
+    worker = undefined;
+    worker = await startWorker(temporary);
+    const forkRemote = remoteUrl(`http://127.0.0.1:${worker.port}`, fork);
+    assert.equal(await git(null, "ls-remote", "--symref", forkRemote), expectedRefs);
+    const clone = join(temporary, "fork-clone");
+    await git(null, "clone", "--branch", "main", forkRemote, clone);
+    assert.equal(await readFile(join(clone, "README.md"), "utf8"), readme);
+    assert.equal(await readFile(join(clone, "notes.txt"), "utf8"), "Review the stored notes.\n");
+  } finally {
+    try {
+      await worker?.stop();
+    } finally {
+      await rm(temporary, { recursive: true, force: true, maxRetries: 5 });
     }
   }
 });

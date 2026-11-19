@@ -17,21 +17,23 @@ Use the pinned Wrangler simulator and real Git over loopback for validation. App
 
 | Area | Verified capability and boundary | Delivery condition |
 |---|---|---|
-| Git storage | The [Artifacts Worker binding](https://developers.cloudflare.com/artifacts/api/workers-binding/) reads commits, trees and blobs by SHA and supports import and fork. [Git HTTPS](https://developers.cloudflare.com/artifacts/api/git-protocol/) supports upload-pack and v1 receive-pack. | Shard validates receive-pack commands at the proxy. The native origin and Artifacts fast-forward path advance the target using an expected old ref. Divergent Artifacts merges use the configured native bridge. |
+| Git storage | The default uses SQLite Durable Objects for Git objects and refs. The [Artifacts Worker binding](https://developers.cloudflare.com/artifacts/api/workers-binding/) supports immutable reads, imports and forks. [Artifacts Git HTTPS](https://developers.cloudflare.com/artifacts/api/git-protocol/) supports upload-pack and v1 receive-pack. | Shard validates receive-pack commands at the proxy and checks the expected target for ref writes. Divergent Artifacts merges run through the configured native bridge. |
 | Push events | [Artifacts event subscriptions](https://developers.cloudflare.com/artifacts/guides/event-subscriptions/) expose push events with a ref and before/after SHA. The local simulator omits these events. | Shard records pending push ref transitions in D1 and commits Webhook delivery and PR refresh together when an accepted transition is observed. The minute cron reconciles unfinished pushes against Git refs. Provider-side updates outside Shard need their own event ingestion. |
-| Import | The binding imports [public HTTPS remotes](https://developers.cloudflare.com/artifacts/guides/import-repositories/). | The native origin performs credentialed imports from allowed HTTPS hosts. The minute cron advances pending publication. D1 transactions apply portable metadata bundles. |
+| Import | The Free and Artifacts backends support public HTTPS sources. The native origin also supports credentialed imports from allowed hosts. | The minute cron advances pending publication. D1 transactions apply portable metadata bundles. |
 | Search and metadata | D1 supports transactional [batches](https://developers.cloudflare.com/d1/worker-api/d1-database/#batch). | Repository and global discussion lists filter visible issues. Code and commit search scans one Git snapshot within explicit object, byte and history limits. |
-| Limits | [Workers](https://developers.cloudflare.com/workers/platform/limits/#memory) have 128 MB per isolate. [Artifacts](https://developers.cloudflare.com/artifacts/platform/limits/) caps pushes at 64 MiB and new repositories at 1 GB. [Streams](https://developers.cloudflare.com/workers/runtime-apis/streams/) reduce buffering within both ceilings. | Show limits to users. Git protocol v2 receive-pack is unavailable upstream. Test the supported clone and push paths locally. |
+| Limits | [Workers](https://developers.cloudflare.com/workers/platform/limits/#memory) have 128 MB per isolate. The default Free Git configuration uses an 8 MiB compressed push cap. [Artifacts](https://developers.cloudflare.com/artifacts/platform/limits/) caps pushes at 64 MiB and new repositories at 1 GB. | Verify Git sizes and CPU usage under the target plan. Stream Worker requests and bound operations that buffer objects. |
 | Public operations | [Rate Limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/) is approximate per Cloudflare location. [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) indexes structured events. [D1 Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/) restores metadata in place. | Use `workers.dev` or an owned custom domain and keep paired backups of D1, Git objects, and refs. |
 | Email | [Email Service](https://developers.cloudflare.com/email-service/get-started/send-emails/) requires Cloudflare DNS and an onboarded sending domain. | Real account verification, password reset and notification delivery require the configured sender and access to a test mailbox. |
 
 ## Optional Git backends
 
-Artifacts is the default. The `native` Wrangler environment runs Shard with
-an authenticated native Git origin and no Artifacts binding. D1 stores
-repository visibility, the backend and opaque storage ID, and forge metadata.
-The Shard URLs and permission checks apply in both modes.
-[Native Git deployment](README.md#deploy-with-a-native-git-origin)
+By default, new repositories use a SQLite Durable Object named by the opaque
+repository storage ID. D1 keeps visibility, access grants, the selected
+backend and the same storage ID. `env.artifacts` retains the original Artifacts
+deployment. `managed` and `managed-staging` add the Git bridge and background
+execution services on Workers Paid. `native` uses an authenticated origin and
+persistent disk. Shard applies the same Git URLs and permission checks to each.
+[Deployment guide](README.md#deploy-to-cloudflare)
 
 | Service | Role in an alternative deployment | Limits that affect this design |
 |---|---|---|
@@ -40,21 +42,14 @@ The Shard URLs and permission checks apply in both modes.
 | SQLite Durable Objects | Use one per repository to serialize conflicting pushes and atomically publish refs and the pack index. | The storage-full FAQ lists 1 GB per object on Free and 10 GB on Paid. Budget against the lower Free limit because the limits table lists 10 GB without that distinction. Free also has 5 GB total. SQL rows and BLOBs are capped at 8 MB. [Limits and storage-full FAQ](https://developers.cloudflare.com/durable-objects/platform/limits/#what-happens-when-a-durable-object-exceeds-its-storage-limit) |
 | Workers | Route and authorize, stream Git bodies, and run or delegate pack processing. | 128 MB per isolate. HTTP CPU is 10 ms on Free or up to 5 min on Paid. Free has 50 outbound subrequests per invocation, which can constrain native Git reads in large PR comparisons. Inbound body size follows the zone plan, with 100 MB on Free/Pro and 200 MB on Business. [Limits](https://developers.cloudflare.com/workers/platform/limits/) |
 
-For **Cloudflare-only** hosting, pair R2 with per-repository Durable Objects
-and a Git engine. Stage the pack, validate objects and deltas, then commit the
-new refs and the pack index together. A failed push leaves old refs readable.
-Clean up unreferenced packs only after publication or a verified abandoned
-upload. Evaluate [durable-git](https://github.com/littledivy/durable-git) and
-[git-on-cloudflare](https://github.com/zllovesuki/git-on-cloudflare) for protocol
-handling. Shard requires reads by tree and blob SHA, asynchronous import and
-fork handling, and access to immutable PR comparison objects after ref changes.
-The documented durable-git content API resolves reachable objects by commit
-and path, so it needs additional integration for those contracts.
-
-An isolated Wrangler run of `durable-git@0.0.8` stored a pack containing an
-18 MiB fixture in R2 without an Artifacts binding. After restart, a clone
-matched the commit, annotated tag and file bytes. This exercised the Git
-engine on its own. [durable-git content API](https://github.com/littledivy/durable-git/blob/main/docs/api.md)
+The Free path uses `durable-git@0.0.8` for Git Smart HTTP and pack ingestion.
+Shard's adapter exposes commit, tree and blob reads by SHA, plus controlled
+ref and HEAD updates, repo lifecycle, and forks. Keep objects required by saved
+PR reviews after their branches move. Account for SQLite writes, memory and
+object expansion as well as the compressed request cap. Web merge writes on
+this backend use same-repository fast-forwards. Shard compares other PRs with
+its bounded snapshot readers and can verify integration pushed from Git.
+[durable-git](https://github.com/littledivy/durable-git)
 
 Native mode uses `git http-backend` and a persistent volume for Git Smart
 HTTP, pack handling and ref locking. The origin also serves repository
@@ -64,17 +59,17 @@ and queries Git snapshots on demand. D1 stores no per-file or per-commit search
 index from pushes.
 [Git HTTP backend](https://git-scm.com/docs/git-http-backend)
 
-Evaluate the same Git and Web workflows before adding a Cloudflare-only
-backend. To move an existing repository, pause writes, copy and verify all
-refs and any retained PR objects, then change its recorded backend. Retain the
-source until the destination and rollback have been verified. Migrate Git LFS
-objects separately from Git refs.
+To move an existing repository between backends, pause writes, copy and
+verify the refs and retained PR objects, then change its recorded backend.
+Keep the source for rollback until the destination is verified. R2 LFS keys
+follow the D1 repository or fork identity and require their own backup.
 
-Both Git backends use the Shard LFS Batch route. The Worker authorizes each
-operation with existing Git token roles, then streams a verified SHA-256
-object to or from a private, repository-scoped R2 key. Forks copy LFS pages
-before publication. Repository cleanup and copy progress live in D1. Back up
-the R2 bucket with D1 and Git storage. [Git LFS Batch API](https://github.com/git-lfs/git-lfs/blob/main/docs/api/batch.md)
+All Git backends can use the Shard LFS Batch route with `LFS_OBJECTS` bound.
+The Worker checks Git token roles and verifies SHA-256 before publication.
+Forks copy LFS pages before publication. The default Free deployment can run
+with D1 and Git storage alone. Repository cleanup and copy progress live in D1.
+Back up any R2 bucket with D1 and Git storage.
+[Git LFS Batch API](https://github.com/git-lfs/git-lfs/blob/main/docs/api/batch.md)
 
 ## Optional Cloudflare execution services
 
@@ -148,11 +143,45 @@ It runs each environment's D1 migrations, deploys the checkout SHA, and waits
 for that SHA to pass the release Workflow. A staging failure blocks the
 production step. [Managed deployment](README.md#deploy-with-managed-cloudflare-services)
 
+## Migrate GitHub Actions jobs to Cloudflare
+
+| GitHub Actions responsibility | Cloudflare implementation | Acceptance check |
+| --- | --- | --- |
+| Push and PR build and test in `ci.yml` | Workers Builds checks out the revision and runs the pinned setup, Wasm checks and isolated regressions. Use a distinct non-production build command for PRs. | Compare results and required checks for passing and failing commits, including fork PRs. Preview jobs get no production bindings or credentials. |
+| Docker build and smoke | Build and exercise `containers/git-merge.Dockerfile` in the release build. Wrangler publishes the image to Workers Containers, where the Durable Object starts it. | Verify runner Docker support, image identity, authenticated Git merge, ref leases and cold-start readiness on staging. |
+| Deploy and verify each release | Workers Builds runs `npm run cd` on the protected branch. Wrangler applies D1 migrations and deploys the checkout SHA. Workflows check the deployed revision, D1, R2, Static Assets and bridge before and after promotion. | A failed or stale staging result blocks promotion. A production verification failure records the affected deployment and Workflow instance. |
+| Build a prebuilt package and publish a release on `v*` tags | A release build packages the same tested checkout and records its checksum. A release Workflow can publish through the GitHub Releases API with a scoped GitHub App token after it receives a verified tag and artifact. | Check tag/SHA equality, prerelease handling, checksum, duplicate delivery, and draft-to-published behavior. Keep the tag workflow until the event source, builder and publisher pass these checks. |
+
+1. Run Workers Builds checks alongside GitHub CI. Compare success, failure and
+   logs on the same SHA. Make the new check required only after it covers
+   protected branches and the PRs the repository accepts.
+2. Rehearse managed releases on a separate `managed-staging` Worker with its
+   own D1, R2, Artifacts namespace and Workflows. Confirm Docker runs in the
+   build environment, scoped credentials work, the image matches the checkout,
+   and the Workflow observes the correct deployed SHA and live bindings.
+3. Enable Workers Builds promotion on the protected production branch. Use the
+   same immutable revision for staging and production. Serialize release runs
+   and keep one deployment trigger for each target. Exercise a failed staging
+   check and a production verification failure before cutover.
+4. Replace GitHub tag packaging and publishing last. Add a trusted tag event
+   source and a Linux build job for the pinned toolchain. Persist the package
+   and checksum before starting the publisher Workflow. Rehearse a prerelease
+   and a repeated trigger while the GitHub release workflow still owns
+   public publication. Switch ownership after both produce equivalent output.
+
+Repository Copy Workflows remain application jobs. D1 persists their state
+and Cron reconciles pending copies when the Workflow cannot complete them.
+During CI/CD cutover, restore the prior check or deploy trigger if its
+replacement fails. Code rollback uses the existing bindings. Recover data
+from a paired backup or a compatible forward migration.
+[Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) · [Workflows](https://developers.cloudflare.com/workflows/) · [Containers](https://developers.cloudflare.com/containers/) · [GitHub Releases API](https://docs.github.com/en/rest/releases/releases)
+
 ## Deployment prerequisites
 
-- Use `workers.dev` or an owned HTTPS name for staging. Artifacts staging
-  needs Workers Paid and its own namespace. Native staging needs an HTTPS
-  Git origin and a persistent volume. Use separate D1 state for each stage.
+- Use `workers.dev` or an owned HTTPS origin for staging. A Free instance needs
+  its own D1 database and SQLite Durable Object namespace. Paid staging needs
+  Artifacts access, Containers and separate R2 storage. Native staging needs
+  an HTTPS Git origin and persistent volume.
 - Email delivery requires the configured `EMAIL` binding, a verified sending
   domain and a mailbox available for end-to-end verification.
 - Divergent or cross-repository Artifacts Web merges require the exact Artifacts

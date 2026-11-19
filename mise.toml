@@ -18,7 +18,7 @@ run = [
 ]
 
 [tasks.dev]
-description = "Run shard locally with the Artifacts simulator and a local D1"
+description = "Run Shard with local D1 and SQLite Durable Objects"
 depends = ["db:migrate"]
 run = "node node_modules/wrangler/bin/wrangler.js dev --local"
 

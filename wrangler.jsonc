@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "shard",
+  "name": "shard-free",
   "main": "worker/index.mjs",
   "compatibility_date": "2026-11-17",
   // Preserve dashboard variables that are managed outside this file.
@@ -14,28 +14,28 @@
     "binding": "ASSETS"
   },
   "vars": {
-    "SHARD_LIMIT_PROFILE": "paid"
-    // Add optional text variables here or in Workers Settings > Variables and Secrets.
-    // See the README for Git LFS, email, webhooks and the optional native Git bridge.
+    "GIT_BACKEND": "durable",
+    "SHARD_LIMIT_PROFILE": "free",
+    "MAX_PUSH_MB": "8",
+    "SHA1DC": "1"
   },
   // "send_email": [{ "name": "EMAIL", "allowed_sender_addresses": ["shard@example.com"] }],
   // "secrets": { "required": ["WEBHOOK_ENCRYPTION_KEY"] },
-  // Default Git storage for the Cloudflare deploy button and local simulator.
-  "artifacts": [
-    { "binding": "ARTIFACTS", "namespace": "shard" }
-  ],
+  "durable_objects": {
+    "bindings": [{ "name": "GIT_REPOS", "class_name": "GitRepository" }]
+  },
+  "migrations": [{ "tag": "free-git-v1", "new_sqlite_classes": ["GitRepository"] }],
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "shard",
+      "database_name": "shard-free",
       // The deploy script resolves this placeholder by name. It also identifies the local database.
       "database_id": "00000000-0000-0000-0000-000000000000",
       "migrations_dir": "migrations"
     }
   ],
-  "r2_buckets": [{ "binding": "LFS_OBJECTS", "bucket_name": "shard-lfs" }],
   "ratelimits": [
-    { "name": "REQUEST_LIMITER", "namespace_id": "2001", "simple": { "limit": 300, "period": 60 } }
+    { "name": "REQUEST_LIMITER", "namespace_id": "2005", "simple": { "limit": 300, "period": 60 } }
   ],
   "triggers": {
     "crons": ["0 3 * * *", "* * * * *"]
@@ -45,7 +45,25 @@
     "logs": { "invocation_logs": false }
   },
   "env": {
+    // Upgrade path for the original Artifacts deployment.
+    "artifacts": {
+      "name": "shard",
+      "vars": { "GIT_BACKEND": "artifacts", "SHARD_LIMIT_PROFILE": "paid" },
+      "durable_objects": { "bindings": [] },
+      "migrations": [],
+      "artifacts": [{ "binding": "ARTIFACTS", "namespace": "shard" }],
+      "d1_databases": [{
+        "binding": "DB",
+        "database_name": "shard",
+        "database_id": "00000000-0000-0000-0000-000000000000",
+        "migrations_dir": "migrations"
+      }],
+      "r2_buckets": [{ "binding": "LFS_OBJECTS", "bucket_name": "shard-lfs" }],
+      "ratelimits": [{ "name": "REQUEST_LIMITER", "namespace_id": "2001", "simple": { "limit": 300, "period": 60 } }],
+      "triggers": { "crons": ["0 3 * * *", "* * * * *"] }
+    },
     "native": {
+      "name": "shard-native",
       "vars": {
         "GIT_BACKEND": "native",
         "SHARD_LIMIT_PROFILE": "free",
@@ -55,6 +73,8 @@
       "secrets": { "required": ["NATIVE_GIT_TOKEN"] },
       "triggers": { "crons": ["0 3 * * *", "* * * * *"] },
       "artifacts": [],
+      "durable_objects": { "bindings": [] },
+      "migrations": [],
       "d1_databases": [
         {
           "binding": "DB",
@@ -69,7 +89,9 @@
       ]
     },
     "managed": {
-      "vars": { "SHARD_LIMIT_PROFILE": "paid" },
+      "name": "shard-managed",
+      "vars": { "GIT_BACKEND": "artifacts", "SHARD_LIMIT_PROFILE": "paid" },
+      "limits": { "cpu_ms": 300000, "subrequests": 20000 },
       "artifacts": [{ "binding": "ARTIFACTS", "namespace": "shard-managed" }],
       "d1_databases": [{ "binding": "DB", "database_name": "shard-managed", "migrations_dir": "migrations" }],
       "r2_buckets": [{ "binding": "LFS_OBJECTS", "bucket_name": "shard-managed-lfs" }],
@@ -92,7 +114,9 @@
       }]
     },
     "managed-staging": {
-      "vars": { "SHARD_LIMIT_PROFILE": "paid" },
+      "name": "shard-managed-staging",
+      "vars": { "GIT_BACKEND": "artifacts", "SHARD_LIMIT_PROFILE": "paid" },
+      "limits": { "cpu_ms": 300000, "subrequests": 20000 },
       "artifacts": [{ "binding": "ARTIFACTS", "namespace": "shard-managed-staging" }],
       "d1_databases": [{ "binding": "DB", "database_name": "shard-managed-staging", "migrations_dir": "migrations" }],
       "r2_buckets": [{ "binding": "LFS_OBJECTS", "bucket_name": "shard-managed-staging-lfs" }],

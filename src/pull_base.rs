@@ -1,7 +1,7 @@
 use crate::git_storage::{is_object_id, RepoHandle};
 use crate::models::Repo;
 use crate::i18n::DiscussionText;
-use crate::native_git::{NativeRepo, SnapshotRead};
+use crate::native_git::{GitServiceRepo, SnapshotRead};
 use crate::refs::{self, RefsError};
 use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
@@ -100,7 +100,7 @@ pub(crate) async fn find(repos: &Repositories, base: &str, head: &str) -> Result
     if !is_object_id(base) || !is_object_id(head) {
         return Err(BaseError::Missing);
     }
-    if let Some((target, source)) = NativeRepo::comparison_pair(&repos.target, repos.source()) {
+    if let Some((target, source)) = GitServiceRepo::comparison_pair(&repos.target, repos.source()) {
         return match target.merge_bases(source, base, head).await.map_err(BaseError::Storage)? {
             SnapshotRead::Missing => Err(BaseError::Missing),
             SnapshotRead::Limited => Err(BaseError::Limited),

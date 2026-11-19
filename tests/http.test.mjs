@@ -52,15 +52,16 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
   try {
     receiver.listen({ host: "127.0.0.1", port: 0 });
     await once(receiver, "listening");
-    const config = JSON.parse((await readFile(join(root, "wrangler.jsonc"), "utf8"))
+    const { env, ...baseConfig } = JSON.parse((await readFile(join(root, "wrangler.jsonc"), "utf8"))
       .replace(/^\s*\/\/.*$/gm, ""));
+    const config = { ...baseConfig, ...env.artifacts };
     delete config.$schema;
     delete config.build;
     config.name = "shard-http-tests";
     config.main = resolve(root, config.main);
     config.assets.directory = resolve(root, config.assets.directory);
     config.artifacts = config.artifacts.map((binding) => ({ ...binding, remote: false }));
-    const managed = config.env.managed;
+    const managed = env.managed;
     config.durable_objects = { bindings: managed.durable_objects.bindings.filter(({ name }) => name === "MERGE_COORDINATOR") };
     config.migrations = [{ tag: "managed-test-v1", new_sqlite_classes: ["MergeQueueCoordinator"] }];
     config.workflows = managed.workflows.filter(({ binding }) => binding === "REPOSITORY_COPY_WORKFLOW");

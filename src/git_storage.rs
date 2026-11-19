@@ -2,7 +2,7 @@ use crate::artifacts::{self, Artifacts};
 use crate::git_wire;
 use crate::i18n::RepoText;
 use crate::models::Repo;
-use crate::native_git::{ArtifactsMergeTransport, NativeGit, NativeRepo, RemoteRepo, WriteError};
+use crate::native_git::{ArtifactsMergeTransport, GitService, GitServiceRepo, RemoteRepo, WriteError};
 use js_sys::Uint8Array;
 use serde::Deserialize;
 use wasm_bindgen_futures::JsFuture;
@@ -14,6 +14,7 @@ use worker::{Env, Error, Fetch, Request, RequestInit, RequestRedirect, Response,
 pub(crate) enum GitBackend {
     Artifacts,
     Native,
+    Durable,
 }
 
 impl GitBackend {
@@ -21,7 +22,8 @@ impl GitBackend {
         match env.var("GIT_BACKEND").ok().map(|value| value.to_string()).as_deref() {
             None | Some("artifacts") => Ok(Self::Artifacts),
             Some("native") => Ok(Self::Native),
-            Some(_) => Err(Error::RustError("GIT_BACKEND must be artifacts or native".into())),
+            Some("durable") => Ok(Self::Durable),
+            Some(_) => Err(Error::RustError("GIT_BACKEND must be artifacts, native or durable".into())),
         }
     }
 
@@ -29,6 +31,7 @@ impl GitBackend {
         match self {
             Self::Artifacts => "artifacts",
             Self::Native => "native",
+            Self::Durable => "durable",
         }
     }
 
@@ -36,13 +39,14 @@ impl GitBackend {
         match self {
             Self::Artifacts => RepoText::ArtifactsStorage,
             Self::Native => RepoText::NativeGitStorage,
+            Self::Durable => RepoText::DurableGitStorage,
         }
     }
 }
 
 pub(crate) enum GitStorage {
     Artifacts(Artifacts),
-    Native(NativeGit),
+    Service(GitService),
 }
 
 #[derive(Debug, Deserialize)]
@@ -101,14 +105,14 @@ pub(crate) enum BlobRead {
 
 pub(crate) enum GitFile {
     Artifacts(Blob),
-    Native { response: Response, size: u64 },
+    Stream { response: Response, size: u64 },
 }
 
 impl GitFile {
     pub(crate) fn size(&self) -> u64 {
         match self {
             Self::Artifacts(blob) => blob.size() as u64,
-            Self::Native { size, .. } => *size,
+            Self::Stream { size, .. } => *size,
         }
     }
 
@@ -123,14 +127,14 @@ impl GitFile {
                 let buffer = JsFuture::from(blob.array_buffer()).await.map_err(Error::from)?;
                 Ok(Uint8Array::new(&buffer).to_vec())
             }
-            Self::Native { response, size } => {
+            Self::Stream { response, size } => {
                 crate::native_git::file_bytes(response, size.min(limit as u64)).await
             }
         }
     }
 
     pub(crate) fn discard(self) {
-        if let Self::Native { response, .. } = self {
+        if let Self::Stream { response, .. } = self {
             crate::native_git::discard(response);
         }
     }
@@ -138,7 +142,7 @@ impl GitFile {
     pub(crate) fn into_response(self) -> Result<Response> {
         match self {
             Self::Artifacts(blob) => Response::from_body(ResponseBody::Stream(blob.stream())),
-            Self::Native { response, .. } => Ok(response),
+            Self::Stream { response, .. } => Ok(response),
         }
     }
 }
@@ -156,28 +160,29 @@ impl GitStorage {
     pub(crate) fn from_env(env: &Env, backend: GitBackend) -> Result<Self> {
         match backend {
             GitBackend::Artifacts => Artifacts::from_env(env).map(Self::Artifacts),
-            GitBackend::Native => NativeGit::from_env(env).map(Self::Native),
+            GitBackend::Native => GitService::from_env(env).map(Self::Service),
+            GitBackend::Durable => GitService::durable(env).map(Self::Service),
         }
     }
 
     pub(crate) async fn create(&self, id: &str, description: &str) -> Result<CreatedRepo> {
         match self {
             Self::Artifacts(storage) => storage.create(id, description).await,
-            Self::Native(storage) => storage.create(id).await,
+            Self::Service(storage) => storage.create(id).await,
         }
     }
 
     pub(crate) async fn get(self, id: &str) -> Result<RepoHandle> {
         match self {
             Self::Artifacts(storage) => storage.get(id).await.map(RepoHandle::Artifacts),
-            Self::Native(storage) => storage.repo(id).map(RepoHandle::Native),
+            Self::Service(storage) => storage.repo(id).map(RepoHandle::Service),
         }
     }
 
     pub(crate) async fn delete(&self, id: &str) -> std::result::Result<(), CopyError> {
         let result = match self {
             Self::Artifacts(storage) => storage.delete(id).await,
-            Self::Native(storage) => storage.delete(id).await,
+            Self::Service(storage) => storage.delete(id).await,
         };
         match result {
             Err(CopyError::Missing) => Ok(()),
@@ -190,21 +195,21 @@ impl GitStorage {
     ) -> std::result::Result<(), CopyError> {
         match self {
             Self::Artifacts(storage) => storage.start_copy(id, description, source, url).await,
-            Self::Native(storage) => storage.start_copy(id, source, url).await,
+            Self::Service(storage) => storage.start_copy(id, source, url).await,
         }
     }
 
     pub(crate) async fn copy_info(&self, id: &str) -> std::result::Result<CreatedRepo, CopyError> {
         match self {
             Self::Artifacts(storage) => storage.copy_info(id).await,
-            Self::Native(storage) => storage.copy_info(id).await,
+            Self::Service(storage) => storage.copy_info(id).await,
         }
     }
 }
 
 pub(crate) enum RepoHandle {
     Artifacts(artifacts::RepoHandle),
-    Native(NativeRepo),
+    Service(GitServiceRepo),
 }
 
 impl RepoHandle {
@@ -215,7 +220,7 @@ impl RepoHandle {
     pub(crate) async fn log(&self, git_ref: &str, limit: u32) -> Result<Vec<Commit>> {
         match self {
             Self::Artifacts(repo) => repo.log(git_ref, limit).await,
-            Self::Native(repo) => repo.log(git_ref, limit).await,
+            Self::Service(repo) => repo.log(git_ref, limit).await,
         }
     }
 
@@ -226,14 +231,14 @@ impl RepoHandle {
     pub(crate) async fn read_commit(&self, hash: &str) -> Result<Option<Commit>> {
         match self {
             Self::Artifacts(repo) => repo.read_commit(hash).await,
-            Self::Native(repo) => Ok(repo.read_commit(hash).await?.map(|value| value.commit)),
+            Self::Service(repo) => Ok(repo.read_commit(hash).await?.map(|value| value.commit)),
         }
     }
 
     pub(crate) async fn commit_parents(&self, hash: &str) -> Result<Option<Vec<String>>> {
         match self {
             Self::Artifacts(repo) => repo.commit_parents(hash).await,
-            Self::Native(repo) => Ok(repo.read_commit(hash).await?.map(|value| value.parents)),
+            Self::Service(repo) => Ok(repo.read_commit(hash).await?.map(|value| value.parents)),
         }
     }
 
@@ -246,26 +251,26 @@ impl RepoHandle {
     pub(crate) async fn read_tree_bounded(&self, hash: &str, limit: u32) -> Result<Option<Vec<TreeEntry>>> {
         match self {
             Self::Artifacts(repo) => repo.read_tree_bounded(hash, limit).await,
-            Self::Native(repo) => repo.read_tree_bounded(hash, limit).await,
+            Self::Service(repo) => repo.read_tree_bounded(hash, limit).await,
         }
     }
 
     pub(crate) async fn read_blob_bounded(&self, hash: &str, limit: usize) -> Result<BlobRead> {
         match self {
             Self::Artifacts(repo) => repo.read_blob_bounded(hash, limit).await,
-            Self::Native(repo) => repo.read_blob_bounded(hash, limit).await,
+            Self::Service(repo) => repo.read_blob_bounded(hash, limit).await,
         }
     }
 
     pub(crate) async fn read_file(&self, git_ref: &str, path: &str, limit: Option<usize>) -> Result<Option<GitFile>> {
         match self {
             Self::Artifacts(repo) => Ok(repo.read_file(git_ref, path).await?.map(GitFile::Artifacts)),
-            Self::Native(repo) => repo.read_file(git_ref, path, limit).await,
+            Self::Service(repo) => repo.read_file(git_ref, path, limit).await,
         }
     }
 
     pub(crate) async fn write_ref(&self, reference: &str, before: &str, after: &str) -> std::result::Result<(), WriteError> {
-        if let Self::Native(repo) = self {
+        if let Self::Service(repo) = self {
             return repo.write_ref(reference, after, before).await;
         }
         let body = git_wire::update_request(reference, before, after).await.map_err(|_| WriteError::Unavailable)?;
@@ -282,7 +287,7 @@ impl RepoHandle {
 
     pub(crate) async fn set_default_branch(&self, branch: &str) -> std::result::Result<bool, WriteError> {
         match self {
-            Self::Native(repo) => {
+            Self::Service(repo) => {
                 repo.set_head(&format!("refs/heads/{branch}")).await?;
                 Ok(false)
             }
@@ -295,9 +300,11 @@ impl RepoHandle {
         source: Option<(&Self, &str)>,
     ) -> std::result::Result<String, WriteError> {
         match (self, source) {
-            (Self::Native(repo), None) => repo.merge(reference, base, head, None).await,
-            (Self::Native(repo), Some((Self::Native(_), id))) => repo.merge(reference, base, head, Some(id)).await,
-            (Self::Artifacts(_), None) if fast_forward => {
+            (Self::Service(repo), None) if !repo.is_durable() => repo.merge(reference, base, head, None).await,
+            (Self::Service(repo), Some((Self::Service(source), id))) if !repo.is_durable() && !source.is_durable() => {
+                repo.merge(reference, base, head, Some(id)).await
+            }
+            (_, None) if fast_forward => {
                 self.write_ref(reference, base, head).await?;
                 Ok(head.to_owned())
             }
@@ -332,7 +339,7 @@ impl RepoHandle {
                 };
                 (remote, format!("Bearer {token}"))
             }
-            Self::Native(repo) => return repo.git_request(endpoint, query, init).await,
+            Self::Service(repo) => return repo.git_request(endpoint, query, init).await,
         };
         let mut url = format!("{}/{endpoint}", remote.trim_end_matches('/'));
         if !query.is_empty() {
