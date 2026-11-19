@@ -66,7 +66,8 @@ Rust Worker (src/, worker/index.mjs)
 |---|---|---|
 | Rust Worker | 路由、会话、权限、Web 页面、Git 认证、协议代理、搜索与比较入口 | Git 对象正文（R2/DO/Artifacts 保存） |
 | D1 | 用户、token 哈希、仓库元数据、权限、议题、PR、审查、通知、Webhook、任务状态 | Git pack 和 blob |
-| 仓库 Durable Object | Git 对象的元数据与引用事务；R2 pack 清单和发布事务；推送串行化 | 账户级权限的唯一副本 |
+| 默认 Free 仓库 DO（`GitRepository`） | 保存 Git 对象、refs 和推送串行化；每个仓库一个 SQLite Durable Object | 账户级权限的唯一副本 |
+| R2 仓库 DO（`R2GitRepository`） | 保存已发布 pack 清单、refs、上传任务和发布事务；对象正文在 R2 | Git pack 正文（在 R2） |
 | R2 `GIT_PACKS` | 不可变 pack 与 v2 index；接收中的分片对象 | refs 的权威状态 |
 | R2 `LFS_OBJECTS` | Git LFS 对象，按仓库/分叉命名空间隔离 | Git 对象 |
 | 容器 | 原生 Git 的回退执行：大推送、合并、比较、导入、pack compaction；CI 镜像构建 | 长期权威数据；工作区是临时盘 |
