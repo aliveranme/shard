@@ -87,7 +87,8 @@ function configurePaid(rawConfig, target, lfsBinding, dryRun) {
     vars.SHARD_LFS_MAX_BYTES = String(maxBytes);
   }
   vars.SHARD_LIMIT_PROFILE = "paid";
-  vars.SHARD_LFS_UPLOAD_MODE = "r2-multipart";
+  // The preset defaults to multipart, but an explicit mode keeps stock Git LFS clients working.
+  vars.SHARD_LFS_UPLOAD_MODE ??= "r2-multipart";
   vars.SHARD_LFS_R2_BUCKET = bucket;
   rawConfig.keep_vars = true;
   // Whole-object hashing consumes CPU, and one LFS page can copy 8 × 1,024 R2 ranges.

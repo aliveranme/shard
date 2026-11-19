@@ -193,7 +193,9 @@ pinned toolchain as in [Local development](#local-development).
 
 The command derives the R2 S3 endpoint from the account and bucket jurisdiction,
 configures the Artifacts origin, applies D1 migrations and deploys with
-`SHARD_LIMIT_PROFILE=paid` and `SHARD_LFS_UPLOAD_MODE=r2-multipart`. Run
+`SHARD_LIMIT_PROFILE=paid`. It defaults `SHARD_LFS_UPLOAD_MODE` to
+`r2-multipart`; set that variable in the environment's `vars` (for example to
+`r2-direct` for stock Git LFS clients) to keep the explicit mode. Run
 `npm run deploy:paid -- --dry-run` to bundle locally without Cloudflare credentials.
 The preset gives the Worker up to 300,000 ms of CPU and 20,000 subrequests
 per invocation by default. Configure the [Git LFS transfer adapter](#git-lfs-upload-modes)

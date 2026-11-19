@@ -19,7 +19,7 @@
 
 | 范围 | 所选环境的 `vars` | 在对应 Worker 添加的 Secret |
 | --- | --- | --- |
-| 两种 Paid 分片环境 | `SHARD_LIMIT_PROFILE=paid`、`SHARD_LFS_UPLOAD_MODE=r2-multipart`。`SHARD_LFS_R2_BUCKET` 和 `SHARD_LFS_R2_ENDPOINT` 指向 `LFS_OBJECTS` 对应的桶和 S3 endpoint | `SHARD_LFS_R2_ACCESS_KEY_ID`、`SHARD_LFS_R2_SECRET_ACCESS_KEY` |
+| 两种 Paid 分片环境 | 默认 `SHARD_LIMIT_PROFILE=paid`、`SHARD_LFS_UPLOAD_MODE=r2-multipart`；在 `vars` 显式设置上传模式可覆盖默认值。`SHARD_LFS_R2_BUCKET` 和 `SHARD_LFS_R2_ENDPOINT` 指向 `LFS_OBJECTS` 对应的桶和 S3 endpoint | `SHARD_LFS_R2_ACCESS_KEY_ID`、`SHARD_LFS_R2_SECRET_ACCESS_KEY` |
 | `r2` | 另设 `SHARD_GIT_R2_BUCKET` 和 `SHARD_GIT_R2_ENDPOINT`，对应独立的 `GIT_PACKS` 桶 | `SHARD_GIT_R2_ACCESS_KEY_ID`、`SHARD_GIT_R2_SECRET_ACCESS_KEY` |
 | `managed` | 另设 `SHARD_GIT_ARTIFACTS_ORIGINS=https://<ACCOUNT_ID>.artifacts.cloudflare.net`，使用该账号的 Artifacts HTTPS 源站 | 使用本表的 LFS 凭据 |
 

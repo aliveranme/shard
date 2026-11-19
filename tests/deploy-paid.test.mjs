@@ -249,6 +249,27 @@ test("the R2 Git preset derives independent Git and LFS bucket endpoints", (t) =
   assert.equal(vars.SHARD_LFS_UPLOAD_MODE, "r2-multipart");
 });
 
+test("the Paid preset preserves an explicit LFS upload mode", (t) => {
+  const result = exercise(t, {
+    args: ["--paid", "--env", "r2"],
+    secrets: JSON.stringify({ ...credentials, SHARD_GIT_R2_ACCESS_KEY_ID: "git-fixture-access", SHARD_GIT_R2_SECRET_ACCESS_KEY: "git-fixture-secret" }),
+    configure(raw) {
+      const config = managed("r2");
+      delete config.artifacts;
+      config.vars.GIT_BACKEND = "r2";
+      config.vars.SHARD_LFS_UPLOAD_MODE = "r2-direct";
+      config.vars.SHARD_LFS_MAX_BYTES = "1073741824";
+      config.r2_buckets.push({ binding: "GIT_PACKS", bucket_name: "r2-packs" });
+      raw.env.r2 = config;
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.commands, ["d1 migrations", "deploy"]);
+  const { vars } = result.calls.at(-1).config.env.r2;
+  assert.equal(vars.SHARD_LFS_UPLOAD_MODE, "r2-direct");
+  assert.equal(vars.SHARD_LFS_MAX_BYTES, "1073741824");
+});
+
 test("the native Paid preset enables R2 multipart without Artifacts", (t) => {
   const result = exercise(t, {
     args: ["--paid", "--env", "native"],

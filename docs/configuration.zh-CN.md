@@ -183,7 +183,7 @@ npm run deploy -- --env artifacts
 
 用 Dashboard 配置时，在生产和 staging 各自的 **变量和密钥** 页添加 Text `SHARD_GIT_ARTIFACTS_ORIGINS`，值取账号的 Artifacts Git HTTPS origin，例如 `https://<ACCOUNT_ID>.artifacts.cloudflare.net`。使用分片 LFS 时，两个 Worker 分别添加下方两个 LFS Secret，值取对应环境的私有桶凭据，再按 [LFS 配置](#git-lfs-的配置与使用) 添加 S3 endpoint、桶名和上传模式。
 
-使用命令行 `deploy:paid` 时，每个环境的密钥文件包含这两个键。脚本会配置 R2 S3 endpoint、桶名、`r2-multipart` 和账号的 Artifacts HTTPS origin。
+使用命令行 `deploy:paid` 时，每个环境的密钥文件包含这两个键。脚本会配置 R2 S3 endpoint、桶名和账号的 Artifacts HTTPS origin，并把 `SHARD_LFS_UPLOAD_MODE` 默认为 `r2-multipart`。若所选环境的 `vars` 已显式设置该变量，脚本保留显式值。
 
 ```dotenv
 SHARD_LFS_R2_ACCESS_KEY_ID=替换为目标桶的访问密钥ID

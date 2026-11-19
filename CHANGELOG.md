@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `npm run deploy:paid` preserves an explicitly configured `SHARD_LFS_UPLOAD_MODE`; the Paid preset still defaults to `r2-multipart`.
 - Added a Chinese Cloudflare Dashboard manual covering private deployment repositories, Workers Builds, resource bindings and credentials, every deployment environment, and upgrade verification.
 
 ## 0.3.1

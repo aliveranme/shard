@@ -177,6 +177,7 @@ The [Chinese Cloudflare Dashboard manual](docs/configuration.zh-CN.md) documents
 | 2026-11-19 | R2 Git compaction and recovery in Docker/FUSE | The integration passed with real Git and Miniflare. A concurrent push invalidated the first compaction, and a later compaction reduced the manifest while retaining a deleted branch's saved review. Restored D1 and R2 state into fresh Durable Objects. A missing index and invalid ref were rejected. The private repository and fork cloned, passed `git fsck --full`, and returned byte-identical LFS data. The recovery Worker configuration bundled in Wrangler dry-run. |
 | 2026-11-19 | Free private-repository deployment | The Cloudflare setup panel displayed the private repository option, the D1 selector, `npm run build` and `npm run deploy`. All 84 local deployment checks passed. The Workers Builds fixture used the same Worker and D1 UUID for the initial deployment and a production push, with a different commit tag for each. |
 | 2026-11-19 | Chinese Dashboard manual | Checked the live setup form and its root directory, commands and token selector. Verified 30 relative links and heading anchors, parsed three dotenv examples and bundled the Free and native configuration examples with Wrangler dry-run. |
+| 2026-11-19 | Paid LFS upload mode override | `node --test tests/deploy-paid.test.mjs` passed 37 checks. An explicit `SHARD_LFS_UPLOAD_MODE=r2-direct` survived the Paid preset, while a configuration without the variable still deployed `r2-multipart`. |
 
 ## How to update
 
