@@ -1,4 +1,4 @@
-<h1><img src="assets/readme/shard.svg" width="100%" alt="Shard, a self-hosted Git forge on Cloudflare Workers"></h1>
+<img src="assets/readme/shard.svg" width="100%" alt="Shard, a self-hosted Git forge on Cloudflare Workers">
 
 Shard brings public and private repositories, issues, and pull request review
 together for personal projects and small teams. Standard Git clients clone,
@@ -8,7 +8,7 @@ fetch, and push over HTTPS. The web interface supports English and Simplified Ch
 
 [Run locally](#local-development) · [First push](#first-repository) · [Deploy guide](#deploy-to-cloudflare) · [简体中文](#简体中文)
 
-<a href="assets/readme/pull-request.webp"><img src="assets/readme/pull-request.webp" width="100%" alt="Shard pull request with a versioned comparison, changed files, and a review comment linked to an added line"></a>
+[![Shard pull request with a versioned comparison, changed files, and a review comment linked to an added line](assets/readme/pull-request.webp)](assets/readme/pull-request.webp)
 
 A line review in `demo/field-notes` on a local Shard instance.
 
@@ -62,8 +62,7 @@ first. Administrators pass repository administration checks across the
 instance, so grant only trusted accounts. Revoke with
 `npm run admin -- revoke <username> --env r2`.
 
-<details>
-<summary>Build, tests, and editor setup</summary>
+### Build, tests, and editor setup
 
 `mise run check` type-checks the Worker and `mise run lint` runs Clippy.
 `mise run build` produces `build/index.js`. `mise run test` builds and tests
@@ -75,7 +74,6 @@ For rust-analyzer, set the Cargo target to `wasm32-unknown-unknown`.
 
 Native merge regressions require Git 2.38 or later. When Git LFS is installed,
 the LFS regressions also exercise uploads and clones with the real client.
-</details>
 
 ## Features
 
