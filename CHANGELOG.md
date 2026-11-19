@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.0
+
 ### Added
 
 - Account settings accept GPG public keys. Commit details verify OpenPGP signatures, show the signing certificate fingerprint, and separately indicate verified committer email.
@@ -14,6 +16,23 @@
 - The Paid profile expands search, pull request comparison and scheduled maintenance budgets. Legacy Artifacts and explicitly opted-in Paid native deployments use up to 300 seconds of Worker CPU by default.
 - Managed Artifacts merges start a `standard-1` Cloudflare Container by default. The instance size is configurable.
 - Large LFS uploads have separate wall-time budgets for checksum verification and R2 publication. Scheduled recovery caps S3 multipart copy work per invocation.
+- Creating a Git access token requires the current password. Password recovery revokes all Git access tokens and browser sessions.
+- Accepting a repository transfer disables its repository-managed webhooks and cancels outstanding deliveries. Past delivery history remains visible to the recipient.
+
+### Fixed
+
+- Access token settings load 20 tokens at a time in creation order. Revoking a token keeps the current page, and navigation links carry only the page number.
+- Fresh R2 pushes have distinct retry receipts. The helper resumes expired multipart sessions, retries preparation when refs change, and cleans up rejected payloads.
+- Account settings and login bind writes to the verified password. Repository settings, collaborator grants and branch rules verify current ownership when they change.
+- Branch-rule edits wait for writes already admitted on that branch. Direct Git accepts valid UTF-8 ref names containing non-ASCII spaces.
+- Issue assignments follow effective repository access. Removing the final eligible grant clears the assignment and updates filtered lists and counts.
+- GitHub CI and release validation exercise both container images. Release packaging checks version consistency and dry-runs all supported deployment presets from the extracted archive.
+
+### Upgrade
+
+- Keep the bindings of an existing instance and deploy using its named environment. The deploy command applies pending D1 migrations.
+- After a password reset, create replacement Git tokens for clients and automation. After a repository transfer, recreate the repository-managed webhooks you want to receive.
+- For new R2 Git repositories, configure the `r2` environment with separate private Git and LFS buckets. See the [R2 Git deployment and resume instructions](https://github.com/aliveranme/shard/blob/v0.3.0/README.md#large-repositories-on-cloudflare-r2).
 
 ## 0.2.0
 

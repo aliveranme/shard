@@ -496,8 +496,9 @@ Set `PUBLIC_ORIGIN` to the HTTPS origin of your instance and `EMAIL_FROM` to an
 address on your onboarded sending domain. Add `send_email` to the selected
 Wrangler environment with `[{ "name": "EMAIL", "allowed_sender_addresses":
 ["shard@example.com"] }]`, using your own sender address. Verification links
-expire after 24 hours. Password-reset links expire after 30 minutes and a
-successful reset revokes all browser sessions for the account.
+expire after 24 hours. Password-reset links expire after 30 minutes. A
+successful reset revokes every browser session and Git access token for the
+account, including legacy tokens. Issue new tokens for Git clients and automation.
 [Email Sending and domain onboarding](https://developers.cloudflare.com/email-service/get-started/send-emails/) · [`send_email` binding](https://developers.cloudflare.com/email-service/configuration/send-bindings/)
 
 ### Cloudflare services used by Shard
@@ -630,14 +631,15 @@ Paid 环境可运行 `npm run deploy:paid -- --secrets-file .env.deploy.paid`，
 
 Add an exact `## <version>` section to [CHANGELOG.md](CHANGELOG.md) in the
 tagged commit. Pushing `v0.2.0` publishes that version's notes. A prerelease
-such as `v0.2.0-rc.1` requires its own `## 0.2.0-rc.1` section and is marked
+such as `v0.3.1-rc.1` requires its own `## 0.3.1-rc.1` section and is marked
 as a prerelease on GitHub. Check the selected notes locally with
-`mise exec -- node scripts/release-notes.mjs v0.2.0`.
+`mise exec -- node scripts/release-notes.mjs v0.3.0`.
 
-The workflow type-checks and builds the Worker, runs the isolated regressions,
-and dry-runs the Free, Artifacts, native and Paid configurations from the
-prebuilt package. It checks the archive's SHA-256 and uploads the archive
-and checksum to a draft before publishing the GitHub Release.
+The workflow checks the tag against the npm, Cargo, and built Worker versions.
+It builds and tests both Git container images, dry-runs the extracted archive
+with Free, Artifacts, native, managed, staging, and Paid presets including R2,
+and invokes the installed Git helper. It verifies the archive's SHA-256 before
+publishing the GitHub Release.
 
 To deploy the prebuilt archive, verify its checksum, extract it, and use the
 Node version in the included `.node-version`. Set the resource names in the
@@ -651,6 +653,9 @@ npm run deploy
 
 For native mode, use the packaged `scripts/git-origin.mjs` and the same
 `--env native` and `--secrets-file` options as a source deployment.
+For R2 Git, use `npm run deploy:paid -- --env r2 --secrets-file .env.deploy.r2`
+with the [R2 Git bindings and credentials](#large-repositories-on-cloudflare-r2).
+The archive includes the Git container build inputs and `git-remote-shard`.
 
 [Release workflow](.github/workflows/release.yml) · [GitHub Releases](https://github.com/aliveranme/shard/releases)
 
@@ -684,13 +689,13 @@ use the instance's shared secret. The Free Git backend is reached through a
 private Durable Object binding. Native repositories can advertise a
 [direct Git hostname](#large-repositories-on-workers-paid) for pack transfers.
 
-Create tokens under `/user/settings/tokens`, choosing read/write scope and a
-7/30/90/365-day lifetime (30 days by default). In a private repo, owners and
-collaborators with either role can clone using either token scope. Pushing
-requires both a write-scoped token and repository write permission. Expired or
-revoked tokens are rejected. Legacy tokens without an expiry remain valid until
-revoked. The secret is shown only at creation. Use it as the password when Git
-prompts. Anonymous clone works for public repositories.
+Create tokens under `/user/settings/tokens` with your current password. Choose
+read/write scope and a 7/30/90/365-day lifetime (30 days by default). In a
+private repo, owners and collaborators with either role can clone using either
+token scope. Pushing requires both a write-scoped token and repository write
+permission. Expired or revoked tokens are rejected. Legacy tokens without an
+expiry remain valid until revoked. The secret is shown only at creation. Use
+it as the password when Git prompts. Anonymous clone works for public repositories.
 
 The default branch must exist in Git. Changing it also changes the branch
 new clones select through Shard. Use **Save and sync Git HEAD** to synchronize
@@ -854,6 +859,10 @@ protection** adds rules for exact branch names. Protected refs accept changes
 through the PR merge queue. Required check results belong to the reviewed head
 commit and the target repository. Once a comparison changes, review its new
 version before queuing again.
+Changing a branch rule during an admitted write or a running merge returns a
+conflict. Retry after the write completes. If a branch write loses its Git
+response, its admission expires after one hour. External Git backends can
+finish an ambiguous write outside that window.
 
 In the managed environments, an alarm wakes the branch queue on enqueue or
 CI updates. A Workflow advances each repository copy through Git and LFS
@@ -862,6 +871,15 @@ publication. The minute cron recovers work when a wake or start is missed.
 **Settings → Organizations** lets a repository owner offer the repository to an
 organization. The organization owner accepts it and grants teams read or write
 access. Repository ownership and its URL stay with the account that offered it.
+
+Accepting a repository transfer disables repository-managed Webhooks, clears
+their signing keys, and cancels outstanding deliveries. The recipient can see
+delivery history and configure new subscriptions. A delivery already handed
+to the network can still arrive. The instance-configured integration continues
+to follow the repository. An active Git HEAD update blocks acceptance for
+up to five minutes. If storage returned an ambiguous result, use **Save and
+sync Git HEAD** to reconcile it after the update has finished.
+Historical URLs remain usable while the former owner's account exists.
 
 **Settings → Import metadata** accepts a version 1 JSON bundle for issues,
 pull requests, and releases. The form includes the schema and size limits.

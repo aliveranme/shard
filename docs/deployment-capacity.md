@@ -125,7 +125,7 @@ HTTP Worker 可以在客户端连接存续时流式运行，运行时更新可�
 
 启用 R2 后，`r2-direct` 可扩大单个 LFS 文件的上传容量。按仓库划分的 Durable Objects 分散仓库之间的并发。限制 delta 缓存可留出解析内存，对元数据查询做索引、分页和合批可节省 D1 的日读写额度。[Free Git 实现](../worker/git-repository.mjs) · [D1 索引](https://developers.cloudflare.com/d1/best-practices/use-indexes/)
 
-`MAX_PUSH_MB=32` 已到当前实现的最高值。历史可以分段时，分多次推送可装入更小的 pack，累计数据仍占单仓库 SQLite 配额。将不可变 pack 放进 R2，让 DO 管理引用与索引，可把主要 Git 字节移出 SQLite。采用这条路线需要实现跨存储提交顺序、崩溃恢复和 fork，并验证索引容量、解压 CPU 和免费日额度。[DO 限制](https://developers.cloudflare.com/durable-objects/platform/limits/) · [Workers 限制](https://developers.cloudflare.com/workers/platform/limits/)
+`MAX_PUSH_MB=32` 已到 Free 后端当前的实现上限。历史可以分段时，分多次推送可装入更小的 pack，累计数据仍占单仓库 SQLite 配额。需要更大的单次推送或仓库容量时，可按实际负载评估 [R2 Git](#r2-git-全托管大仓) 或原生直连。[DO 限制](https://developers.cloudflare.com/durable-objects/platform/limits/) · [Workers 限制](https://developers.cloudflare.com/workers/platform/limits/)
 
 ### 托管 Paid
 
@@ -154,5 +154,7 @@ Workers Paid 可增加 Web 搜索和后台任务预算。原生同源比较使�
 ## 已有验收与发布前验证
 
 本地使用标准 Git 在直连的私库一次推送了 128 MiB 不可压缩数据，落盘 pack 超过 128 MiB，经克隆校验提交 ID、对象大小和 `git fsck --full`。保护分支和推送中撤销写权限均阻止了引用更新。Free 用例推送并复制了含 12 MiB 不可压缩数据的快照，fork 在删除源仓库并重启后仍可完整克隆。R2 模拟器验证了私有暂存、签名 PUT 和分片续传。原生 Paid 已通过 Wrangler dry-run。以上为本地验证，生产 HTTPS 源站、Cloudflare 托管资源和接近 R2 协议上限的传输还需要按目标负载测量。[验证记录](../STATUS.md#verification-log)
+
+R2 Git 已在本地 Docker 和 Miniflare 验证 129 MiB 不可压缩文件的分片推送。Worker 重启后只补传缺失分片，发布时重新检查分支保护，重复完成请求返回同一份 Git 回执。冷克隆通过 `git fsck --full`。本地中转补齐模拟器的 `ListParts` 并适配 ETag 解析，Cloudflare 云端仍按目标负载验证。 [R2 Git 端到端测试](../tests/r2-git.test.mjs)
 
 部署前，用对应环境执行 `--dry-run` 核对绑定及变量，Paid 预设的 dry-run 可省略密钥文件。上线前在独立实例使用正常的 HTTPS 域名验证一次 push、clone 和 `git fsck --full`，并验证私库、只读令牌与受保护分支。准备使用大 LFS 时测上传、断点恢复、完整校验、下载和 fork 复制，分别记录对象大小、各阶段耗时与账单计量。选择初始 `SHARD_LFS_MAX_BYTES` 时同时考虑校验和 fork 的完成率。[部署命令](../README.md#deploy-from-a-local-checkout) · [R2 监控](https://developers.cloudflare.com/r2/platform/metrics-analytics/)

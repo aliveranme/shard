@@ -17,12 +17,14 @@ env:
 
 jobs:
   package:
+    if: ${{ !github.event.deleted }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
       WRANGLER_SEND_METRICS: "false"
     outputs:
       prerelease: ${{ steps.notes.outputs.prerelease }}
+      commit: ${{ steps.notes.outputs.commit }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -34,15 +36,31 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/release"
           mise exec -- node scripts/release-notes.mjs "$RELEASE_TAG" > "$RUNNER_TEMP/release/release-notes.md"
+          commit=$(git rev-parse --verify 'HEAD^{commit}')
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
           version_without_build=${RELEASE_TAG%%+*}
           if [[ "$version_without_build" == *-* ]]; then
             echo 'prerelease=true' >> "$GITHUB_OUTPUT"
           else
             echo 'prerelease=false' >> "$GITHUB_OUTPUT"
           fi
+      - name: Verify manifest versions
+        shell: bash
+        run: |
+          version=${RELEASE_TAG#v}
+          if ! jq -e --arg version "$version" '.version == $version' package.json > /dev/null ||
+             ! jq -e --arg version "$version" '.version == $version and .packages[""].version == $version' package-lock.json > /dev/null; then
+            echo "Set both npm manifests to version $version before tagging."
+            exit 1
+          fi
+          rust_version=$(mise exec -- cargo metadata --locked --no-deps --format-version 1 | jq -er '.packages[] | select(.name == "shard") | .version')
+          if [[ "$rust_version" != "$version" ]]; then
+            echo "Set the Cargo package to version $version before tagging (found $rust_version)."
+            exit 1
+          fi
       - run: mise run setup
       - run: mise run check
-      - run: mise run test
+      - run: mise exec -- npm run ci -- --container
       - name: Package prebuilt Worker
         shell: bash
         run: |
@@ -51,29 +69,57 @@ jobs:
           mkdir -p "$PACKAGE_DIR/scripts" "$PACKAGE_DIR/src"
           cp -R build static migrations worker containers "$PACKAGE_DIR/"
           cp src/git_wire.js src/lfs_s3.js "$PACKAGE_DIR/src/"
-          cp .node-version .dockerignore package.json package-lock.json CHANGELOG.md "$PACKAGE_DIR/"
+          cp .node-version .dockerignore package-lock.json CHANGELOG.md "$PACKAGE_DIR/"
           cp node_modules/openpgp/LICENSE "$PACKAGE_DIR/OPENPGP-LICENSE"
-          cp scripts/deploy.mjs scripts/git-origin.mjs scripts/git-r2-origin.mjs scripts/git-remote-shard.mjs scripts/git-lfs-r2-multipart.mjs "$PACKAGE_DIR/scripts/"
+          cp scripts/deploy.mjs scripts/git-origin.mjs scripts/git-r2-origin.mjs scripts/git-lfs-r2-multipart.mjs "$PACKAGE_DIR/scripts/"
+          install -m 755 scripts/git-remote-shard.mjs "$PACKAGE_DIR/scripts/git-remote-shard.mjs"
           mise exec -- node <<'JS'
           const { writeFileSync } = require('node:fs');
           const { join } = require('node:path');
+          const manifest = require('./package.json');
+          for (const task of ['build', 'ci', 'cd', 'test']) delete manifest.scripts[task];
+          writeFileSync(join(process.env.PACKAGE_DIR, 'package.json'), JSON.stringify(manifest, null, 2) + '\n');
           const { rawConfig } = require('wrangler').experimental_readRawConfig({ config: 'wrangler.jsonc' });
           delete rawConfig.$schema;
           delete rawConfig.build;
           writeFileSync(join(process.env.PACKAGE_DIR, 'wrangler.json'), JSON.stringify(rawConfig, null, 2) + '\n');
           JS
-          ln -s "$PWD/node_modules" "$PACKAGE_DIR/node_modules"
-          mise exec -- node "$PACKAGE_DIR/scripts/deploy.mjs" --config "$PACKAGE_DIR/wrangler.json" --dry-run --outdir "$RUNNER_TEMP/bundled"
-          mise exec -- node "$PACKAGE_DIR/scripts/deploy.mjs" --config "$PACKAGE_DIR/wrangler.json" --env native --dry-run --outdir "$RUNNER_TEMP/bundled-native"
-          mise exec -- node "$PACKAGE_DIR/scripts/deploy.mjs" --config "$PACKAGE_DIR/wrangler.json" --env artifacts --dry-run --outdir "$RUNNER_TEMP/bundled-artifacts"
-          mise exec -- node "$PACKAGE_DIR/scripts/deploy.mjs" --config "$PACKAGE_DIR/wrangler.json" --paid --dry-run --outdir "$RUNNER_TEMP/bundled-paid"
-          mise exec -- node "$PACKAGE_DIR/scripts/deploy.mjs" --config "$PACKAGE_DIR/wrangler.json" --paid --env managed-staging --dry-run --outdir "$RUNNER_TEMP/bundled-paid-staging"
-          mise exec -- node "$PACKAGE_DIR/scripts/deploy.mjs" --config "$PACKAGE_DIR/wrangler.json" --paid --env native --dry-run --outdir "$RUNNER_TEMP/bundled-paid-native"
-          mise exec -- node "$PACKAGE_DIR/scripts/deploy.mjs" --config "$PACKAGE_DIR/wrangler.json" --paid --env r2 --dry-run --outdir "$RUNNER_TEMP/bundled-paid-r2"
-          unlink "$PACKAGE_DIR/node_modules"
+          if ! jq -e --arg version "${RELEASE_TAG#v}" '.version == $version' build/package.json > /dev/null; then
+            echo "The built Worker version must match $RELEASE_TAG."
+            exit 1
+          fi
           cd "$RUNNER_TEMP/release"
           tar -C "$RUNNER_TEMP" -czf "$package_name.tar.gz" "$package_name"
           sha256sum "$package_name.tar.gz" > "$package_name.tar.gz.sha256"
+      - name: Verify the extracted Worker package
+        shell: bash
+        run: |
+          mise exec -- bash -euo pipefail <<'BASH'
+          package_name="shard-${RELEASE_TAG}-worker"
+          extracted="$RUNNER_TEMP/extracted"
+          mkdir "$extracted"
+          tar -xzf "$RUNNER_TEMP/release/$package_name.tar.gz" -C "$extracted"
+          cd "$extracted/$package_name"
+          if [[ "$(node --version)" != "v$(cat .node-version)" ]]; then
+            echo "The archived Node version must match the release runner."
+            exit 1
+          fi
+          npm ci --offline --no-audit --no-fund
+          npm run deploy -- --dry-run --outdir "$RUNNER_TEMP/bundle-free"
+          npm run deploy -- --env artifacts --dry-run --outdir "$RUNNER_TEMP/bundle-artifacts"
+          npm run deploy -- --env native --dry-run --outdir "$RUNNER_TEMP/bundle-native"
+          npm run deploy -- --env managed --dry-run --outdir "$RUNNER_TEMP/bundle-managed"
+          npm run deploy -- --env managed-staging --dry-run --outdir "$RUNNER_TEMP/bundle-managed-staging"
+          npm run deploy:paid -- --dry-run --outdir "$RUNNER_TEMP/bundle-paid"
+          npm run deploy:paid -- --env managed-staging --dry-run --outdir "$RUNNER_TEMP/bundle-paid-staging"
+          npm run deploy:paid -- --env native --dry-run --outdir "$RUNNER_TEMP/bundle-paid-native"
+          npm run deploy:paid -- --env r2 --dry-run --outdir "$RUNNER_TEMP/bundle-paid-r2"
+          prefix="$RUNNER_TEMP/shard-helper"
+          checkout="$RUNNER_TEMP/helper-checkout"
+          npm install --global --offline --prefix "$prefix" --no-audit --no-fund .
+          git init --quiet "$checkout"
+          PATH="$prefix/bin:$PATH" git -C "$checkout" remote-shard --list https://example.invalid/owner/repo.git
+          BASH
       - uses: actions/upload-artifact@v7
         with:
           name: shard-worker-release
@@ -100,11 +146,31 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_PRERELEASE: ${{ needs.package.outputs.prerelease }}
+          RELEASE_COMMIT: ${{ needs.package.outputs.commit }}
         run: |
           package_name="shard-${RELEASE_TAG}-worker.tar.gz"
           sha256sum --check "$package_name.sha256"
-          draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null || true)
+          check_tag() {
+            local commit
+            commit=$(gh api "repos/$GH_REPO/commits/refs%2Ftags%2F${RELEASE_TAG//+/%2B}" --jq .sha)
+            if [[ "$commit" != "$RELEASE_COMMIT" ]]; then
+              echo "$RELEASE_TAG points to $commit and the package was built from $RELEASE_COMMIT."
+              exit 1
+            fi
+          }
+          check_tag
+          release=$(gh api --paginate --slurp "repos/$GH_REPO/releases?per_page=100" |
+            jq -c --arg tag "$RELEASE_TAG" '[.[][] | select(.tag_name == $tag)] |
+              if length <= 1 then .[0] else error("Multiple releases for " + $tag) end')
+          draft=$(jq -r '.draft' <<< "$release")
           if [[ "$draft" == false ]]; then
+            if ! jq -e --arg file "$package_name" --argjson prerelease "$RELEASE_PRERELEASE" '
+              .prerelease == $prerelease and
+              ([.assets[] | select(.state == "uploaded") | .name] | index($file) != null and index($file + ".sha256") != null)
+            ' <<< "$release" > /dev/null; then
+              echo "The published $RELEASE_TAG release has missing assets or an incorrect prerelease flag."
+              exit 1
+            fi
             exit 0
           fi
           flags=(--prerelease=false)
@@ -116,4 +182,5 @@ jobs:
             gh release create "$RELEASE_TAG" --draft --verify-tag "${notes[@]}"
           fi
           gh release upload "$RELEASE_TAG" "$package_name" "$package_name.sha256" --clobber
-          gh release edit "$RELEASE_TAG" --draft=false "${notes[@]}" "${flags[@]}"
+          check_tag
+          gh release edit "$RELEASE_TAG" --verify-tag --draft=false "${notes[@]}" "${flags[@]}"

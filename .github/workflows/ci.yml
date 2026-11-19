@@ -21,4 +21,4 @@ jobs:
       - uses: jdx/mise-action@v5
       - run: mise run setup
       - run: mise run check
-      - run: mise run test
+      - run: mise exec -- npm run ci -- --container

@@ -3,7 +3,7 @@
 Living record of what works, what is missing, and how it was verified.
 Update this file whenever a milestone lands or a limitation changes.
 
-**Snapshot:** 2026-11-19 · Shard 0.2.0 · local verification
+**Snapshot:** 2026-11-19 · Shard 0.3.0 · local verification
 
 | Item | Value |
 |---|---|
@@ -18,24 +18,24 @@ Update this file whenever a milestone lands or a limitation changes.
 
 | Area | Behavior |
 |---|---|
-| Accounts | Registration, login throttling, password-confirmed settings changes, account deletion with an ownership guard, and single-use verification and reset links through the email simulator. Password reset revokes all browser sessions. |
+| Accounts | Registration, login throttling, password-confirmed settings changes, account deletion with an ownership guard, and single-use verification and reset links through the email simulator. Password reset revokes browser sessions and all Git access tokens. |
 | Avatars | Account settings accept PNG, JPEG and WebP and store one metadata-free PNG thumbnail per user in D1. Uploaded avatars appear in profiles, discussions, branch summaries, commit history and commit details. Git author emails match account emails and fall back to initials. Removal and account deletion remove the stored image. |
 | Browser security | Session-bound CSRF, same-origin checks, CSP, safe redirects, and origin-only referrers on recovery pages. |
 | Internationalization | Typed English and Simplified Chinese catalogs. Guest language follows the browser cookie or header. Account settings persist across sessions. |
-| Access tokens | Read/write scopes, expiry and revocation, one-time secret display, and legacy credential compatibility. Git requests update the last-use timestamp at most once per minute per token. |
+| Access tokens | Read/write scopes, expiry and revocation, password confirmation at issuance, one-time secret display, and legacy credential compatibility. The settings page shows 20 tokens at a time. Git requests update the last-use timestamp at most once per minute per token. |
 | GPG signatures | Account settings add and remove public OpenPGP signing certificates with password confirmation. Commit details verify the signed bytes and show the certificate fingerprint and the independent Shard email-verification state. |
 | Repository access | Owners and organization teams grant read or write access. Web, Git, search, downloads and notification reads enforce current grants. Revocation removes access on subsequent requests. |
-| Repository lifecycle | Rename and accepted transfers preserve Web and Git routes. Forks preserve Git refs. The native origin imports private sources over Basic or Bearer HTTPS and publishes them privately. The minute cron reconciles pending copies. Portable metadata import applies each bundle atomically. |
+| Repository lifecycle | Rename and accepted transfers preserve Web and Git routes while the former owner's account exists. Transfer revokes repository-managed webhooks and preserves delivery history. Forks preserve Git refs. The native origin imports private sources over Basic or Bearer HTTPS and publishes them privately. The minute cron reconciles pending copies. Portable metadata import applies each bundle atomically. |
 | Default branch and refs | Settings update the branch selected by new clones through Shard. Owners can create branches and lightweight tags from commit IDs, and delete individual refs after confirming their names. |
 | Git transport | The Worker forwards Smart HTTP bodies as streams. The Free Git engine stores the incoming pack in chunks with a 32 MiB transfer budget. Private clone requires a credential, and push requires write scope and repository write access. |
 | Default Free Git | On fresh local state, real Git pushes, private repository access, raw reads, ref and HEAD changes, and Web fast-forward merges work with D1 and a SQLite Durable Object per repository. A fork retained its refs and cloned after source deletion and Worker restart. |
 | Git LFS | All Git backends use repository and token permissions. The Free config leaves R2 optional. With R2 bound, proxy uploads default to 100 MB. Standard Git LFS can use a presigned R2 PUT. The packaged multipart adapter resumes from recorded parts and verifies the whole object before publication. Forks use independent R2 keys. |
 | Native Git origin | The native environment supports Git push, clone, fetch, ref browsing, raw downloads, pull request diffs and access revocation. Forked refs and files stay readable after source deletion. Same-origin PRs use commit-pinned merge-base, file comparison and ancestry requests. Authenticated origin controls set HEAD, update refs against an expected tip, merge reviewed commits and import private HTTPS repositories. |
 | Direct native Git | The Worker resolves the repository and rechecks write access and branch rules before Git updates refs. A local private push stored a pack over 128 MiB on the origin volume. A clone preserved the commit and blob and passed `git fsck --full`. |
-| Cloudflare R2 Git | Private repositories support stock Git over HTTPS and signed multipart pushes through `git-remote-shard`. Native Git validates staged input. The Durable Object publishes pack references, branch refs and the retry receipt in one transaction. |
+| Cloudflare R2 Git | Private repositories support stock Git over HTTPS and signed multipart pushes through `git-remote-shard`. Native Git validates staged input. The Durable Object publishes pack references, branch refs and the retry receipt in one transaction. Retrying after expiry reuses the local spool with a fresh multipart upload. |
 | Code browsing | Branch and tag inventory, branch-scoped trees and files, cursor-paginated first-parent history, parent links, and commit-pinned source TAR downloads. Text previews read at most 256 KiB. README links and images use the displayed commit, and raw downloads stream full files. |
 | Pull requests | Common-ancestor diffs support source and target branches in distinct repositories. Accepted branch pushes schedule refreshes. Reviews retain the saved comparison and line. Protected branches require the configured approvals and checks. The queue advanced an Artifacts branch by fast-forward and created a two-parent merge from a fork on the native origin. |
-| Issues and search | Issue lists filter by state, label, assignee, milestone and discussion text. Repository search finds paths, text and commit messages on a saved snapshot and reports scan limits. |
+| Issues and search | Issue lists filter by state, label, assignee, milestone and discussion text. Indirect team access keeps an assignee eligible. Removing the final grant clears the assignment and filtered counts. Repository search finds paths, text and commit messages on a saved snapshot and reports scan limits. |
 | Markdown | READMEs, Markdown files and discussions render repository-relative and HTTPS images, including filtered HTML image tags. Git media inherits repository permissions. Issue and pull numbers are linked with `#12`, `GH-12` and `owner/repo#12` syntax. |
 | Forge workflows | Writers draft and publish commit-pinned releases from Git tags. Owners manage issue templates. Users can add issue reactions, watch repositories and list their stars. |
 | Notifications and integrations | The inbox enforces repository access. A CI context has one current result per commit, shown on commit details and reviewed pull requests. Owners manage signed webhooks with stable event IDs, delivery IDs, bodies and signatures across retries. Push observation records ref changes, PR refresh and Webhook delivery in one D1 transaction. The minute cron checks live refs for unfinished pushes. |
@@ -57,10 +57,10 @@ Update this file whenever a milestone lands or a limitation changes.
 | Web merges | The Free Git UI advances same-repository fast-forwards. For other Free and mixed-backend merges, integrate through Git. Verify the managed Git container against hosted Artifacts for divergent and cross-repository merges. |
 | Repository search | Scans one selected snapshot with explicit limits. A persistent index and whole-history search remain outside the current search scope. |
 | Git protocol | Artifacts switches through Shard to the classic advertisement when HEAD is overridden. Production partial clone and fetch compatibility require verification. Provider-side updates that bypass Shard need separate event ingestion. |
-| Operations | Live metrics, token-list pagination, and further CSP tightening after moving inline styles. |
+| Operations | Live metrics and further CSP tightening after moving inline styles. |
 
 Architecture, service boundaries, and operational constraints are recorded in [PLAN.md](PLAN.md#optional-cloudflare-execution-services). Managed CI/CD settings are in the [deployment guide](README.md#deploy-with-managed-cloudflare-services).
-The [deployment capacity guide](docs/deployment-capacity.md) records the four configurations, their limits and the conditions for raising them.
+The [deployment capacity guide](docs/deployment-capacity.md) records the deployment configurations, their limits and the conditions for raising them.
 
 ## Cloudflare Artifacts constraints (verified 2026-11-17)
 
@@ -75,9 +75,10 @@ The [deployment capacity guide](docs/deployment-capacity.md) records the four co
 - `Router` is rebuilt per request; routes allocate strings. Move to a cached router with request-scoped state.
 - Repository creation spans D1 and Git storage. Creation attempts to remove storage after a failed metadata insert. Deletion removes the repository record and queues Git and R2 cleanup in D1, and completing the cleanup depends on continued cron runs.
 - PR comparisons bound ancestry reads, tree depth, entry count and tree reads. Historical diffs require the original Git objects to remain available.
-- Token lists remain unpaginated; accounts with many tokens can produce large settings pages.
 - Request IDs link client responses to handler errors. Production latency, Git transfer size and throttling metrics still need live measurements.
 - The Worker mediates repository access. Git clients receive neither the Artifacts repository token nor the native origin's shared secret.
+- Shard serializes branch-rule changes against known admitted writes. A lost Git response can hold the admission for an hour. Externally managed Git backends can still complete a write after the admission expires.
+- The RustSec audit reported `basic-toml` and `chrono` as unmaintained transitive dependencies of the current locked graph.
 
 ## Verification log
 
@@ -161,6 +162,11 @@ The [deployment capacity guide](docs/deployment-capacity.md) records the four co
 | 2026-11-19 | Native direct Git and Paid deploy preflight | A 128 MiB incompressible file pushed in one private Git request and cloned with matching object IDs and a clean `git fsck`. Protected branches and revoked access prevented ref updates. LFS upload and download worked through the native URL. Wrangler resolved native Paid bindings and multipart LFS in a dry run. |
 | 2026-11-19 | R2 Git in Docker with Miniflare | Stock Git pushed to a private repo. A 129 MiB incompressible file push resumed after a lost part response and a Worker restart, uploading each part once. Branch protection enabled during pack capture blocked publication. A retry reused the staged data. The final Git report replayed byte for byte, and a cold clone preserved commit and blob IDs and passed `git fsck --full`. The relay supplies Miniflare's missing `ListParts` and normalizes quoted ETags for its completion parser. |
 | 2026-11-19 | R2 Git deployment preflight | `mise run check` passed. The Paid preset derived Git and LFS S3 endpoints for separate buckets. A populated D1 migration preserved existing Artifacts and native repository records and their cleanup paths. |
+| 2026-11-19 | Populated SQLite upgrade from 0029 to 0032 | Preserved a team-backed assignment, old Git intent and sent webhook history. Cleared an ineligible assignment, rejected a transfer while a HEAD lease was active, and canceled outstanding deliveries on transfer. Foreign key validation passed. |
+| 2026-11-19 | R2 Git release regression in Docker | Resumed a 129 MiB push across Worker restarts, recovered expired uploads, replayed the final report, rejected a wrong digest and deleted a recreated tag in a separate session. Cold clone and object identity checks passed. |
+| 2026-11-19 | Release dependency and workflow audit | npm and RustSec reported zero known vulnerabilities in the locked dependency graph. `actionlint` accepted both GitHub Actions workflows. |
+| 2026-11-19 | v0.3.0 release candidate | Wasm type check and build passed. The regular suite passed 93 checks. Its opt-in R2 test passed separately through Docker/FUSE. The native Git relay held a pre-receive acknowledgement and confirmed the conflicting rule could only be saved after Git finished. The saved rule then blocked both direct Git and a Web ref deletion. |
+| 2026-11-19 | Release browser review | Chromium rendered repository, issues, pull requests, refs, and account settings at 320px without horizontal overflow. The new token form displayed the password label and revealed the secret only on creation. Keyboard focus, skip-to-content, dark mode, reduced-motion preference, and the mobile navigation menu were exercised. |
 
 ## How to update
 
