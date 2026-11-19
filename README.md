@@ -77,6 +77,8 @@ the LFS regressions also exercise uploads and clones with the real client.
 - **Customize your profile** with an uploaded avatar. Commit lists, branch
   summaries, and commit details use it when the Git author email matches
   your account email. Other authors use their initials.
+- **Verify GPG-signed commits** against the committer's registered public key.
+  Commit details show the result and the key fingerprint.
 
 ## Architecture
 
@@ -516,6 +518,32 @@ token secrets are stored as hashes. Browser forms require session-bound CSRF
 tokens and same-origin requests. Failed logins are limited to eight per
 source/account pair within 15 minutes. Recovery pages send only the site origin
 as referrer. Git smart HTTP returns an empty HTTP 404 for a missing `.git` repository.
+
+### GPG commit signatures
+
+In **Settings → GPG keys**, add the public certificate for your signing key
+and confirm with your current password. Use your Shard account email as your
+Git committer email and include it in the key's user IDs.
+
+```sh
+gpg --armor --export YOUR_FINGERPRINT
+git config user.email YOUR_SHARD_EMAIL
+git config user.signingkey YOUR_FINGERPRINT
+git commit -S -m "Describe the change"
+```
+
+Shard verifies OpenPGP signatures over the original Git commit bytes. A valid
+signature displays the primary key fingerprint. The page separately reports
+whether the committer's email has been verified on Shard. Update an existing
+key by uploading the refreshed certificate with the same fingerprint. Removing
+it stops verification with that key. Each account can store up to eight
+public keys, each up to 32 KiB.
+
+The SQLite and native backends read the commit directly. Artifacts reads it
+through a bounded Git fetch. Commit details show verification as unavailable
+when the raw object cannot be read within the request budget, including
+commits above 256 KiB. The verifier uses OpenPGP.js 6.3.2 under LGPL-3.0-or-later.
+[OpenPGP.js source](https://github.com/openpgpjs/openpgpjs/tree/v6.3.2)
 
 ### Git LFS
 

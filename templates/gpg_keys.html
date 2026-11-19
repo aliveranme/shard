@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page">
+  <div class="page-head">
+    <h1 class="page-title">{{ chrome.locale.t(crate::i18n::GpgText::Keys) }}</h1>
+  </div>
+  <div class="settings-layout">
+    {% let settings_section = "gpg" %}
+    {% include "account_nav.html" %}
+    <div class="settings-main">
+      {% if let Some(message) = success %}<div class="alert alert--success" role="status">{{ message }}</div>{% endif %}
+      {% if let Some(message) = error %}<div class="alert alert--error" role="alert">{{ message }}</div>{% endif %}
+      <form class="form card card--narrow" method="post" action="/user/settings/gpg" enctype="multipart/form-data">
+        {% include "csrf.html" %}
+        <h2 class="card__title">{{ chrome.locale.t(crate::i18n::GpgText::AddKey) }}</h2>
+        <div class="field">
+          <label for="key-name">{{ chrome.locale.t(crate::i18n::GpgText::Name) }}</label>
+          <input class="input" id="key-name" name="name" value="{{ name }}" maxlength="100" required>
+        </div>
+        <div class="field">
+          <label for="public-key">{{ chrome.locale.t(crate::i18n::GpgText::PublicKey) }}</label>
+          <textarea class="textarea mono" id="public-key" name="public_key" rows="7" maxlength="32768" dir="ltr" spellcheck="false" required aria-describedby="public-key-help"></textarea>
+          <p class="card__sub" id="public-key-help">{{ chrome.locale.t(crate::i18n::GpgText::PublicKeyHelp) }}</p>
+        </div>
+        <div class="field">
+          <label for="key-password">{{ chrome.locale.t(crate::i18n::AccountText::CurrentPassword) }}</label>
+          <input class="input" id="key-password" name="current_password" type="password" autocomplete="current-password" required>
+        </div>
+        <div class="form__actions">
+          <button class="btn btn--primary" name="action" value="save" type="submit">{{ chrome.locale.t(crate::i18n::GpgText::AddKey) }}</button>
+        </div>
+      </form>
+      <section class="section" aria-labelledby="gpg-key-list">
+        <div class="section__head">
+          <h2 class="section__title" id="gpg-key-list">{{ chrome.locale.t(crate::i18n::GpgText::SavedKeys) }}</h2>
+        </div>
+        {% if keys.is_empty() %}
+          <div class="card empty"><p>{{ chrome.locale.t(crate::i18n::GpgText::Empty) }}</p></div>
+        {% else %}
+          <div class="list">
+            {% for key in keys %}
+              <div class="list__row">
+                <span class="list__icon" aria-hidden="true"><svg class="icon"><use href="/img/icons.svg#key"></use></svg></span>
+                <div class="list__main">
+                  <div class="list__title" dir="auto">{{ key.name }}</div>
+                  <div class="list__meta"><code dir="ltr">{{ key.fingerprint }}</code> · {{ key.email }}</div>
+                  <details class="rule-remove">
+                    <summary>{{ chrome.locale.t(crate::i18n::GpgText::Remove) }}</summary>
+                    <form class="form" method="post" action="/user/settings/gpg" enctype="multipart/form-data">
+                      {% include "csrf.html" %}
+                      <input type="hidden" name="fingerprint" value="{{ key.fingerprint }}">
+                      <p class="card__sub">{{ chrome.locale.t(crate::i18n::GpgText::RemoveHelp) }}</p>
+                      <label class="field">
+                        <span>{{ chrome.locale.t(crate::i18n::AccountText::CurrentPassword) }}</span>
+                        <input class="input" name="current_password" type="password" autocomplete="current-password" required>
+                      </label>
+                      <div class="form__actions">
+                        <button class="btn btn--danger" name="action" value="remove" type="submit">{{ chrome.locale.t(crate::i18n::GpgText::Remove) }}</button>
+                      </div>
+                    </form>
+                  </details>
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+        {% endif %}
+      </section>
+    </div>
+  </div>
+</div>
+{% endblock %}

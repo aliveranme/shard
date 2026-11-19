@@ -14,6 +14,7 @@ const OID = /^[0-9a-f]{40}$/;
 const ZERO_OID = "0".repeat(40);
 const DEFAULT_IMPORT_HOSTS = ["github.com", "gitlab.com", "codeberg.org"];
 const MAX_BODY_BYTES = 8 * 1024;
+const MAX_COMMIT_BYTES = 256 * 1024;
 const MAX_METADATA_BYTES = 4 * 1024 * 1024;
 const MAX_CGI_HEADER_BYTES = 8 * 1024;
 const MAX_GIT_DIAGNOSTIC_BYTES = 8 * 1024;
@@ -560,13 +561,13 @@ async function readTree(hash, limit, options, path) {
   }
 }
 
-async function blobSize(hash, options) {
+async function objectSize(hash, expectedType, options) {
   const output = await gitOutput("cat-file", ["--batch-check"], { ...options, input: `${hash}\n` });
   const [oid, type, size] = output.toString("ascii").trimEnd().split(" ");
   if (oid !== hash || !type) throw new Error("Invalid Git object output");
-  if (type !== "blob") throw new HttpError(404);
+  if (type !== expectedType) throw new HttpError(404);
   const sizeInBytes = Number(size);
-  if (!/^\d+$/.test(size) || !Number.isSafeInteger(sizeInBytes)) throw new Error("Invalid Git blob size");
+  if (!/^\d+$/.test(size) || !Number.isSafeInteger(sizeInBytes)) throw new Error("Invalid Git object size");
   return sizeInBytes;
 }
 
@@ -613,6 +614,18 @@ async function readObject(res, action, query, options) {
     const hash = await exactObject(queryOid(query), "commit", options);
     const [commit] = await readCommits(hash, 1, true, options);
     sendJson(res, 200, commit);
+  } else if (action === "commit-raw") {
+    if (query.size !== 1) throw new HttpError(422);
+    const hash = queryOid(query);
+    const size = await objectSize(hash, "commit", options);
+    if (size > MAX_COMMIT_BYTES) throw new HttpError(413);
+    const bytes = await gitOutput("cat-file", ["commit", hash], { ...options, maxBytes: MAX_COMMIT_BYTES });
+    if (bytes.length !== size || createHash("sha1").update(`commit ${size}\0`).update(bytes).digest("hex") !== hash) {
+      throw new Error("Invalid Git commit bytes");
+    }
+    res.setHeader("Content-Type", "application/octet-stream");
+    res.setHeader("Content-Length", size);
+    res.end(bytes);
   } else if (action === "tree") {
     const limit = queryLimit(query);
     const hash = await exactObject(queryOid(query), "tree", options);
@@ -620,7 +633,7 @@ async function readObject(res, action, query, options) {
   } else if (action === "blob") {
     const hash = queryOid(query);
     const limit = queryLimit(query);
-    const size = await blobSize(hash, options);
+    const size = await objectSize(hash, "blob", options);
     if (size > limit) throw new HttpError(413);
     await streamBlob(res, hash, size, null, false, options);
   } else {
@@ -1048,7 +1061,7 @@ export async function createGitOrigin({ directory, token, importHosts = DEFAULT_
     if (path === "/v1/artifacts/merge" && req.method === "POST" && query.size === 0) {
       return mergeArtifacts(req, res, signal);
     }
-    const control = /^\/v1\/repos\/([^/]+)(?:\/(log|commit|tree|blob|file|ref|head|merge|merge-base|compare|integrated))?$/.exec(path);
+    const control = /^\/v1\/repos\/([^/]+)(?:\/(log|commit|commit-raw|tree|blob|file|ref|head|merge|merge-base|compare|integrated))?$/.exec(path);
     if (control && ID.test(control[1])) {
       const [, id, action] = control;
       if (action === "ref" || action === "head" || action === "merge") {

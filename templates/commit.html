@@ -13,6 +13,11 @@
     {% include "avatar.html" %}
     <span>{{ chrome.locale.t(crate::i18n::RepoObjectText::Author) }}: {{ commit.author }}{% if let Some(date) = date %} · {{ date.relative(chrome.locale) }}{% endif %}</span>
   </div>
+  <div class="pull-banner" id="commit-signature">
+    <span class="{{ signature.class() }}">{{ signature.label(chrome.locale) }}</span>
+    {% if let Some(fingerprint) = signature.fingerprint() %}<code dir="ltr">{{ fingerprint }}</code>{% endif %}
+    {% if signature.email_verified() %}<span>{{ chrome.locale.t(crate::i18n::GpgText::VerifiedEmail) }}</span>{% endif %}
+  </div>
   <div class="pull-banner">
     {% if parents.is_empty() %}
       <span>{{ chrome.locale.t(crate::i18n::RepoObjectText::RootCommit) }}</span>

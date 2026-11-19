@@ -22,13 +22,16 @@ const STAGING = "shard-staging";
 const SYMBOLIC_HEAD = "shard-head";
 const IMPORT_HOSTS = new Set(["github.com", "gitlab.com", "codeberg.org"]);
 const MIB = 1024 * 1024;
+const MAX_PUSH_MIB = 32;
+const MAX_INGEST_CACHE_MIB = 16;
+const MAX_RAW_COMMIT = 256 * 1024;
 const MAX_CONTROL = 8 * 1024;
 const MAX_QUERY = 4 * 1024;
 const MAX_METADATA = 4 * MIB;
 const MAX_ADVERTISEMENT = 256 * 1024;
 const MAX_COPY_REFS = 512;
 const MAX_UPLOAD_REQUEST = 16 * MIB;
-const CONTROL = /^\/v1\/repos\/([^/]+)(?:\/(log|commit|tree|blob|file|ref|head|merge|fork))?$/;
+const CONTROL = /^\/v1\/repos\/([^/]+)(?:\/(log|commit|commit-raw|tree|blob|file|ref|head|merge|fork))?$/;
 const SMART = /^\/v1\/git\/([^/]+)\.git\/(info\/refs|git-upload-pack|git-receive-pack)$/;
 
 class HttpError extends Error {
@@ -404,6 +407,9 @@ export class GitRepository extends RepoCell {
     if (action === "fork" && request.method === "GET" && query.size === 0) {
       return this.#read(name, () => this.#forkSnapshot());
     }
+    if (action === "commit-raw" && request.method === "GET" && query.size === 1) {
+      return this.#read(name, () => this.#rawCommit(queryOid(query)));
+    }
     if (["log", "commit", "tree", "blob", "file"].includes(action) && request.method === "GET") {
       return this.#read(name, () => this.#object(action, query));
     }
@@ -597,6 +603,21 @@ export class GitRepository extends RepoCell {
     const object = await this.store.get(oid);
     if (object?.type !== type) throw new HttpError(404);
     return object.data;
+  }
+
+  async #rawCommit(oid) {
+    const meta = this.store.typeAndSize(oid);
+    if (meta?.type !== "commit") return empty(404);
+    if (meta.size > MAX_RAW_COMMIT) return empty(413);
+    const commit = await this.store.get(oid);
+    if (commit?.type !== "commit" || commit.data.length !== meta.size) throw new Error("Invalid Git commit");
+    return new Response(commit.data, {
+      headers: {
+        "Content-Type": "application/octet-stream",
+        "Content-Length": String(meta.size),
+        "Cache-Control": "no-store",
+      },
+    });
   }
 
   async #peel(oid) {

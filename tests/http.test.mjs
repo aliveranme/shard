@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { unstable_dev } from "wrangler";
+import { gpgForm, gpgSettings, signedCommit } from "./gpg.mjs";
 import { exerciseLfs, prepareLfsObject } from "./lfs.mjs";
 
 const exec = promisify(execFile);
@@ -450,6 +451,15 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
       await git("-C", worktree, "push", "origin", "main", "feature/readme");
       const rootCommit = (await git("-C", worktree, "rev-list", "--max-parents=0", "main")).stdout.trim();
       assert.match((await owner.get(`/suiteowner/history/commit/${rootCommit}`)).body, /Root commit \(no parents\)/);
+      const signature = await signedCommit(async (...args) => (await git("-C", worktree, ...args)).stdout.trim(),
+        worktree, "suiteowner@example.test");
+      await git("-C", worktree, "push", "origin", "gpg-fixture");
+      redirected(await owner.request(gpgSettings, {
+        method: "POST", headers: { Origin: base }, body: gpgForm(owner.csrf, {
+          action: "save", name: "Artifacts signing key", public_key: signature.publicKey, current_password: password,
+        }),
+      }));
+      assert.match((await owner.get(`/suiteowner/history/commit/${signature.signed}`)).body, /Valid GPG signature/);
       const featureCommit = (await git("-C", worktree, "rev-parse", "feature/readme")).stdout.trim();
       const download = await fetch(`${base}/suiteowner/history/archive/${featureCommit}`);
       assert.equal(download.status, 200);

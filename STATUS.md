@@ -23,6 +23,7 @@ Update this file whenever a milestone lands or a limitation changes.
 | Browser security | Session-bound CSRF, same-origin checks, CSP, safe redirects, and origin-only referrers on recovery pages. |
 | Internationalization | Typed English and Simplified Chinese catalogs. Guest language follows the browser cookie or header. Account settings persist across sessions. |
 | Access tokens | Read/write scopes, expiry and revocation, one-time secret display, and legacy credential compatibility. Git requests update the last-use timestamp at most once per minute per token. |
+| GPG signatures | Account settings add and remove public OpenPGP signing certificates with password confirmation. Commit details verify the signed bytes and show the certificate fingerprint and the independent Shard email-verification state. |
 | Repository access | Owners and organization teams grant read or write access. Web, Git, search, downloads and notification reads enforce current grants. Revocation removes access on subsequent requests. |
 | Repository lifecycle | Rename and accepted transfers preserve Web and Git routes. Forks preserve Git refs. The native origin imports private sources over Basic or Bearer HTTPS and publishes them privately. The minute cron reconciles pending copies. Portable metadata import applies each bundle atomically. |
 | Default branch and refs | Settings update the branch selected by new clones through Shard. Owners can create branches and lightweight tags from commit IDs, and delete individual refs after confirming their names. |

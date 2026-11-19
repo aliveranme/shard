@@ -2,13 +2,21 @@
 //!
 //! The binding is a JS RPC capability (JSRPC), so methods are reached through
 //! reflection and awaited through `JsFuture`.
-use crate::git_storage::{is_object_id, BlobRead, Commit, CopyError, CreatedRepo, TreeEntry};
+use crate::git_storage::{is_object_id, BlobRead, Commit, CopyError, CreatedRepo, TreeEntry, MAX_COMMIT_BYTES};
 use js_sys::{Array, Function, Object, Promise, Reflect, Symbol, Uint8Array};
 use serde_json::Value;
-use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen::{prelude::wasm_bindgen, JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use worker::*;
 use worker::web_sys::Blob;
+
+#[wasm_bindgen(module = "/src/artifacts_commit.js")]
+extern "C" {
+    #[wasm_bindgen(catch, js_name = readArtifactsCommit)]
+    async fn read_artifacts_commit(
+        remote: &str, token: &str, hash: &str, limit: u32,
+    ) -> std::result::Result<JsValue, JsValue>;
+}
 
 pub struct Artifacts {
     obj: JsValue,
@@ -177,6 +185,19 @@ impl RepoHandle {
         let commit = parse_commit(&data, true).filter(|commit| commit.hash == hash)
             .ok_or_else(|| Error::RustError("Artifacts returned mismatched commit metadata".into()))?;
         Ok(Some(commit))
+    }
+
+    pub(crate) async fn read_commit_bytes(&self, hash: &str) -> Result<Option<Vec<u8>>> {
+        let remote = self.remote().await?;
+        let token = self.create_token("read", 300).await?;
+        let result = read_artifacts_commit(&remote, &token, hash, MAX_COMMIT_BYTES as u32).await
+            .map_err(|_| Error::RustError("Artifacts commit pack is unavailable".into()))?;
+        if result.is_null() {
+            return Ok(None);
+        }
+        let bytes = result.dyn_into::<Uint8Array>()
+            .map_err(|_| Error::RustError("Artifacts returned invalid commit bytes".into()))?;
+        Ok((bytes.length() as usize <= MAX_COMMIT_BYTES).then(|| bytes.to_vec()))
     }
 
     async fn read_commit_data(&self, hash: &str) -> Result<Option<Value>> {

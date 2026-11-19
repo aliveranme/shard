@@ -1,4 +1,4 @@
-use crate::git_storage::{is_object_id, BlobRead, Commit, CopyError, CreatedRepo, GitFile, RepoHandle, TreeEntry};
+use crate::git_storage::{is_object_id, BlobRead, Commit, CopyError, CreatedRepo, GitFile, RepoHandle, TreeEntry, MAX_COMMIT_BYTES};
 use js_sys::Reflect;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsValue;
@@ -390,6 +390,33 @@ impl GitServiceRepo {
             return Err(Error::RustError("Git service returned invalid commit metadata".into()));
         }
         Ok(Some(data))
+    }
+
+    pub(crate) async fn read_commit_bytes(&self, hash: &str) -> Result<Option<Vec<u8>>> {
+        let response = self.read("commit-raw", &[("oid", hash)]).await?;
+        match response.status_code() {
+            404 | 413 => {
+                discard(response);
+                Ok(None)
+            }
+            200 => {
+                let length = response_length(&response, "Content-Length");
+                match length {
+                    Ok(length) if length <= MAX_COMMIT_BYTES as u64 => {
+                        file_bytes(response, length).await.map(Some)
+                    }
+                    Ok(_) => {
+                        discard(response);
+                        Ok(None)
+                    }
+                    Err(error) => {
+                        discard(response);
+                        Err(error)
+                    }
+                }
+            }
+            _ => Err(unexpected(response)),
+        }
     }
 
     pub(crate) async fn read_tree_bounded(&self, hash: &str, limit: u32) -> Result<Option<Vec<TreeEntry>>> {

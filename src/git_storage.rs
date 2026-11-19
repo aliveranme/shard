@@ -9,6 +9,8 @@ use wasm_bindgen_futures::JsFuture;
 use worker::web_sys::Blob;
 use worker::{Env, Error, Fetch, Request, RequestInit, RequestRedirect, Response, ResponseBody, Result};
 
+pub(crate) const MAX_COMMIT_BYTES: usize = 256 * 1024;
+
 #[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum GitBackend {
@@ -232,6 +234,17 @@ impl RepoHandle {
         match self {
             Self::Artifacts(repo) => repo.read_commit(hash).await,
             Self::Service(repo) => Ok(repo.read_commit(hash).await?.map(|value| value.commit)),
+        }
+    }
+
+    /// Read the complete Git commit payload, including its original headers and message bytes.
+    pub(crate) async fn read_commit_bytes(&self, hash: &str) -> Result<Option<Vec<u8>>> {
+        if !is_object_id(hash) {
+            return Ok(None);
+        }
+        match self {
+            Self::Artifacts(repo) => repo.read_commit_bytes(hash).await,
+            Self::Service(repo) => repo.read_commit_bytes(hash).await,
         }
     }
 

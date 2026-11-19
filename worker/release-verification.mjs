@@ -14,6 +14,7 @@ export class ReleaseVerification extends WorkflowEntrypoint {
       await this.env.DB.prepare("SELECT git_backend, lfs_copy_id FROM repos LIMIT 0").run();
       await this.env.DB.prepare("SELECT lfs_lease_until FROM repo_copies LIMIT 0").run();
       await this.env.DB.prepare("SELECT comparison_version FROM merge_queue LIMIT 0").run();
+      await this.env.DB.prepare("SELECT fingerprint FROM gpg_keys LIMIT 0").run();
       await this.env.LFS_OBJECTS.head("__shard_release_probe__");
       const asset = await this.env.ASSETS.fetch("https://internal/css/shard.css");
       await asset.body?.cancel();

@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { experimental_readRawConfig, unstable_dev } from "wrangler";
 import { createGitOrigin } from "../scripts/git-origin.mjs";
+import { gpgForm, gpgSettings, signedCommit } from "./gpg.mjs";
 import { exerciseLfs } from "./lfs.mjs";
 
 const exec = promisify(execFile);
@@ -279,6 +280,16 @@ test("forge native Git over loopback", { timeout: 240_000 }, async (t) => {
       const clone = join(temporary, "public-clone");
       await git(null, "clone", projectRemote, clone);
       assert.equal(await readFile(join(clone, "README.md"), "utf8"), mainContent);
+
+      const signature = await signedCommit(localGit, worktree, "nativeowner@example.test");
+      await git(writeToken, "-C", worktree, "push", projectRemote, "gpg-fixture");
+      redirected(await owner.send(gpgSettings, {
+        method: "POST", headers: { Origin: base }, body: gpgForm(owner.csrf, {
+          action: "save", name: "Native signing key", public_key: signature.publicKey,
+          current_password: "local-native-git-password",
+        }),
+      }));
+      assert.match((await guest.get(`${project}/commit/${signature.signed}`)).body, /Valid GPG signature/);
 
       const branch = "feature/notes";
       const branchQuery = `?branch=${encodeURIComponent(branch)}`;
@@ -639,6 +650,29 @@ test("default Free deployment serves and persists repositories without paid bind
     redirected(await owner.post(`${repo}/refs`, { action: "create", kind: "heads", name: "web/notes", oid: original }));
     redirected(await owner.post(`${repo}/settings`, { default_branch: "web/notes" }));
     assert.equal(await git(null, "ls-remote", "--symref", remote, "HEAD"), `ref: refs/heads/web/notes\tHEAD\n${original}\tHEAD`);
+
+    const signature = await signedCommit(localGit, worktree, "freeowner@example.test", { tamper: true });
+    await git(writeToken, "-C", worktree, "push", remote, "gpg-fixture", "gpg-tampered");
+    const signedPath = `${repo}/commit/${signature.signed}`;
+    assert.match((await guest.get(signedPath)).body, /No registered GPG key/);
+    assert.match((await guest.get(`${repo}/commit/${original}`)).body, /Unsigned commit/);
+    const updateKey = (client, fields) => client.send(gpgSettings, {
+      method: "POST", headers: { Origin: base }, body: gpgForm(client.csrf, fields),
+    });
+    const save = { action: "save", name: "Free signing key", public_key: signature.publicKey,
+      current_password: "local-native-git-password" };
+    assert.equal((await updateKey(owner, { ...save, current_password: "incorrect password" })).status, 403);
+    assert.equal((await updateKey(owner, { ...save, public_key: signature.privateKey })).status, 422);
+    assert.equal((await updateKey(viewer, save)).status, 422);
+    redirected(await updateKey(owner, save), `${gpgSettings}?updated=saved`);
+    assert.match((await owner.get(gpgSettings)).body, new RegExp(signature.fingerprint));
+    const verified = (await guest.get(signedPath)).body;
+    assert.match(verified, new RegExp(`Valid GPG signature[\\s\\S]*${signature.fingerprint}`));
+    assert.doesNotMatch(verified, /Committer email verified on Shard/);
+    assert.match((await guest.get(`${repo}/commit/${signature.altered}`)).body, /GPG verification failed/);
+    redirected(await updateKey(owner, { action: "remove", fingerprint: signature.fingerprint,
+      current_password: save.current_password }), `${gpgSettings}?updated=removed`);
+    assert.match((await guest.get(signedPath)).body, /No registered GPG key/);
 
     const lfs = await request(`${remote}/info/lfs/objects/batch`, {
       method: "POST", headers: { ...bearer(writeToken), "Content-Type": "application/vnd.git-lfs+json" },

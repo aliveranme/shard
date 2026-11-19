@@ -15,6 +15,7 @@ mod db;
 mod git_activity;
 mod git_wire;
 mod git_storage;
+mod gpg;
 mod handlers;
 mod i18n;
 mod issue_filters;
@@ -83,6 +84,8 @@ fn routes(router: Router<AppState>) -> Router<AppState> {
         .post_async("/user/settings/email", handlers::auth_handlers::update_email)
         .post_async("/user/settings/email/verify", recovery::request_verification)
         .post_async("/user/settings/password", handlers::auth_handlers::update_password)
+        .get_async("/user/settings/gpg", gpg::settings)
+        .post_async("/user/settings/gpg", gpg::update)
         .get_async("/user/settings/language", handlers::auth_handlers::language_page)
         .post_async("/user/settings/language", handlers::auth_handlers::update_language)
         .get_async("/user/settings/transfers", repo_lifecycle::transfers)
@@ -288,6 +291,11 @@ async fn serve(mut req: Request, env: Env, worker_ctx: Context, request_id: &str
                 avatar::read_form(&mut req).await.map_err(|error| match error {
                     avatar::FormError::Invalid => (400, locale.t(AccountText::AvatarInvalidForm)),
                     avatar::FormError::TooLarge => (413, locale.t(AccountText::AvatarTooLarge)),
+                })
+            } else if req.path().trim_end_matches('/') == "/user/settings/gpg" {
+                avatar::read_form(&mut req).await.map_err(|error| match error {
+                    avatar::FormError::Invalid => (400, locale.t(i18n::GpgText::InvalidForm)),
+                    avatar::FormError::TooLarge => (413, locale.t(i18n::GpgText::KeyTooLarge)),
                 })
             } else if metadata_import::is_form_path(&req.path()) {
                 avatar::read_form(&mut req).await.map_err(|error| match error {

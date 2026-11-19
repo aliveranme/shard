@@ -300,7 +300,7 @@ button, input, select, textarea { font: inherit; font-variant-numeric: inherit; 
 .badge--closed { background: var(--inset); color: var(--muted); }
 .badge--merged { background: var(--highlight-surface); color: var(--highlight-ink); }
 .badge--count { background: transparent; color: var(--muted); padding-inline: 0; }
-.badge--added { background: var(--positive-surface); color: var(--positive-ink); }
+.badge--added, .badge--verified { background: var(--positive-surface); color: var(--positive-ink); }
 .badge--deleted { background: var(--negative-surface); color: var(--negative-ink); }
 
 /* ── Hero ───────────────────────────────────────────────────── */

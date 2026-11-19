@@ -22,6 +22,7 @@ struct CommitPage {
     date: Option<Ts>,
     parents: Vec<String>,
     checks: crate::handlers::checks::CommitChecks,
+    signature: crate::gpg::CommitSignature,
 }
 
 enum ObjectError {
@@ -83,6 +84,7 @@ pub async fn commit(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
     let checks = crate::handlers::checks::load(state, repo.id, &commit.hash).await?;
     let avatars = crate::avatar::git_author_ids(state, commit.author_email.iter().map(String::as_str)).await?;
     let author_avatar = Avatar::new(&commit.author, commit.author_email.as_ref().and_then(|email| avatars.get(email)).copied());
+    let signature = crate::gpg::verify_commit(state, &handle, &commit.hash).await;
     let page = CommitPage {
         chrome: Chrome::new(state),
         title: page_title(&[&repo.full_name(), state.locale.t(RepoObjectText::Commit), &commit.hash[..12]]),
@@ -95,6 +97,7 @@ pub async fn commit(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
         author_avatar,
         parents,
         checks,
+        signature,
     };
     let mut response = render(&page)?;
     response.headers_mut().set("Cache-Control", "private, no-store")?;
