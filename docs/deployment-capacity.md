@@ -2,9 +2,58 @@
 
 选择部署时先确认需要扩大的是单次 Git push、整个仓库、单个 LFS 对象，还是搜索、合并和后台作业的吞吐。Workers 套餐决定计算和服务额度，域名套餐决定经 Cloudflare 入口的单请求体积，Git 存储后端决定 pack 和仓库容量。下文使用 Cloudflare 原文的 MB、GB 与 MiB、GiB，两个单位体系分别按十进制和二进制计量。[Workers 限制](https://developers.cloudflare.com/workers/platform/limits/) · [Artifacts 限制](https://developers.cloudflare.com/artifacts/platform/limits/)
 
+## 三种部署入口
+
+新建小型实例可用 Free 按钮。已有 GitHub 或 GitLab 仓库、希望提交后自动发布时，用 Dashboard 连接 Git。希望部署固定版本并跳过 Rust 构建时，用 Release 预构建包。需要 Cloudflare 托管的大 Git push 时选择 `r2`。已有带持久盘的 Git 主机，可用 `native` 直连，让标准 Git 直接传大 pack。
+
+### Cloudflare Dashboard 从 Git 部署
+
+1. 把 Shard fork 到自己的 GitHub 或 GitLab 账号。部署 Free 时，保留顶层的 `GIT_REPOS`、`free-git-v1` 迁移与 `DB` 绑定。按需修改顶层 `name` 和 D1 的 `database_name`。[配置样例](../wrangler.jsonc)
+2. 在 [Cloudflare Dashboard](https://dash.cloudflare.com/?to=/:account/workers-and-pages) 打开 **Workers & Pages → Create application**，选择导入已有 Git 仓库，授权并选中 fork。已有 Worker 可在 **Settings → Builds** 连接仓库。[Git 接入说明](https://developers.cloudflare.com/workers/ci-cd/builds/git-integration/)
+3. 选择发布分支（通常为 `main`）。构建根目录用仓库根目录，**Build command** 填 `npm run build`，**Deploy command** 填 `npm run deploy`。为构建选择目标账号下具有 **Workers Scripts Edit**、**D1 Edit** 的 API 令牌。发布 zone 路由时还需 **Workers Routes Edit**。部署脚本先应用 D1 迁移，再上传 Worker。部署完成后打开 `workers.dev` 地址。[Workers Builds 设置](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/)
+4. 运行时密钥从 Worker 的 **Settings → Variables and Secrets** 添加为 **Secret**。在 Wrangler 的对应 `vars` 中管理文本配置。若改由 Dashboard 管理某个文本值，移除文件中同名的 `vars` 项，让 `keep_vars` 保留线上值。[变量和密钥](../README.md#worker-variables-and-secrets)
+
+**在 Dashboard 配置 Paid 分片。** 开通 Workers Paid 和 Containers。创建目标环境的私有 R2 桶、桶级 **Object Read & Write** 凭据及下文的暂存生命周期规则。选择 `managed` 时还需启用 Artifacts 并配置命名空间。先创建同名 Worker，在第一次 Shard 构建前添加运行时 Secret，再连接 Git 和发布分支。对应 `env.<环境>.name` 必须与 Dashboard 的 Worker 名一致。带 R2 的构建令牌还需 **Workers R2 Storage Edit**。[R2 凭据](https://developers.cloudflare.com/r2/api/tokens/) · [容器构建](https://developers.cloudflare.com/containers/guides/deploy/#deploy-with-workers-builds)
+
+| 范围 | 所选环境的 `vars` | 在对应 Worker 添加的 Secret |
+| --- | --- | --- |
+| 两种 Paid 分片环境 | `SHARD_LIMIT_PROFILE=paid`、`SHARD_LFS_UPLOAD_MODE=r2-multipart`。`SHARD_LFS_R2_BUCKET` 和 `SHARD_LFS_R2_ENDPOINT` 指向 `LFS_OBJECTS` 对应的桶和 S3 endpoint | `SHARD_LFS_R2_ACCESS_KEY_ID`、`SHARD_LFS_R2_SECRET_ACCESS_KEY` |
+| `r2` | 另设 `SHARD_GIT_R2_BUCKET` 和 `SHARD_GIT_R2_ENDPOINT`，对应独立的 `GIT_PACKS` 桶 | `SHARD_GIT_R2_ACCESS_KEY_ID`、`SHARD_GIT_R2_SECRET_ACCESS_KEY` |
+| `managed` | 另设 `SHARD_GIT_ARTIFACTS_ORIGINS=https://<ACCOUNT_ID>.artifacts.cloudflare.net`，使用该账号的 Artifacts HTTPS 源站 | 使用本表的 LFS 凭据 |
+
+在 R2 桶详情查看 **S3 API** 地址，将其 origin 填入 endpoint，例如 `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`，桶名单独填写。**Build command** 仍用 `npm run build`。**Deploy command** 按环境用 `npm run deploy -- --env r2` 或 `npm run deploy -- --env managed`，读取已配置的变量和 Secret。Workers Builds 可从版本库的 Dockerfile 构建镜像。本地的 `deploy:paid` 会从 `--secrets-file` 读取凭据并推导同样的分片配置。需要 `managed-staging → managed` 的门禁时，用独立资源按托管 CI/CD 步骤配置两套环境。[容器发布](https://developers.cloudflare.com/containers/guides/deploy/) · [托管 CI/CD](../README.md#deploy-with-managed-cloudflare-services)
+
+### 从 Release 包直接发布
+
+1. 在 GitHub Releases 下载 `shard-v<版本>-worker.tar.gz` 和同名 `.sha256`。以下以 `v0.3.0` 为例。校验通过后解包，进入解出的目录。Windows PowerShell 可用 `Get-FileHash -Algorithm SHA256` 计算归档摘要，与 `.sha256` 文件中的值比对。[公开发布包](https://github.com/aliveranme/shard/releases/tag/v0.3.0)
+
+   ```sh
+   sha256sum --check shard-v0.3.0-worker.tar.gz.sha256
+   tar -xzf shard-v0.3.0-worker.tar.gz
+   cd shard-v0.3.0-worker
+   ```
+
+2. 按包内 `.node-version` 安装 Node，执行 `npm ci`。修改包内 `wrangler.json` 的目标 Worker 和资源名称。升级时填入原 D1 UUID、Git 绑定、R2 桶和路由。`managed` 与 `r2` 还需运行 Docker 或兼容引擎以构建容器镜像。包内已有 Worker Wasm 和静态资源，由 Wrangler 直接上传。Dashboard 的 **Upload your static files** 入口用于静态站点。[发布包内容](../README.md#project-releases)
+3. 在包目录执行 `npx --no-install wrangler login`，用 `npx --no-install wrangler whoami` 确认账号。选择下表的一组命令。Paid 命令需在进程环境设置 `CLOUDFLARE_ACCOUNT_ID`，密钥文件按下方各环境的要求填写。
+
+   | 目标 | 本地预检 | 发布 |
+   | --- | --- | --- |
+   | Free | `npm run deploy -- --dry-run` | `npm run deploy` |
+   | 托管 Paid（Artifacts） | `npm run deploy:paid -- --dry-run` | `npm run deploy:paid -- --secrets-file .env.deploy.paid` |
+   | 托管 Paid（R2 Git） | `npm run deploy:paid -- --env r2 --dry-run` | `npm run deploy:paid -- --env r2 --secrets-file .env.deploy.r2` |
+   | Paid 原生 Git | `npm run deploy:paid -- --env native --dry-run` | `npm run deploy:paid -- --env native --secrets-file .env.deploy.paid` |
+
+   旧 Artifacts 实例用 `npm run deploy -- --env artifacts`。预检检查打包和绑定解析。迁移、镜像发布和实际服务访问由正式部署执行。[旧实例升级](#旧-artifacts) · [Wrangler 部署](https://developers.cloudflare.com/workers/wrangler/commands/workers/#deploy)
+
+### Free 一键部署按钮
+
+1. 点击 [Deploy to Cloudflare Free](https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Faliveranme%2Fshard)，登录并选择 Cloudflare 账号，授权 GitHub 或 GitLab。Cloudflare 将仓库复制到所选 Git 账号。[按钮流程](https://developers.cloudflare.com/workers/platform/deploy-buttons/)
+2. 确认目标仓库、Worker 名和 `DB` 数据库名。构建根目录使用仓库根目录，保留 `npm run build` 和 `npm run deploy`。点击 **Deploy**，等待发布后打开分配的 `workers.dev` 地址。顶层配置使用 D1 和 SQLite Durable Objects，默认启用普通 Git HTTPS。
+3. 注册测试账号、建私库、创建写入令牌，用 Git HTTPS 推一个提交并克隆校验。需要 LFS 时，创建私有桶，在自己的仓库顶层 Wrangler 配置添加 `LFS_OBJECTS`，再发布一次。需要自定义域名时，在 Worker 的 **Settings → Domains & Routes** 添加 **Custom Domain**。[首次推送](../README.md#first-repository) · [域名配置](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)
+
 ## 部署配置
 
-从仓库根目录运行命令。源码部署使用 `mise install`、`mise run setup` 和 `mise exec -- npx wrangler login`。预构建包使用包内 `wrangler.json` 和指定的 Node 版本，在 `npm ci` 后运行对应命令，省略 `mise exec --`。部署脚本解析目标环境的 `DB`，应用迁移后发布 Worker。首次部署为各实例选独立的 Worker、D1、Git 存储和 R2 名称。升级既有实例时使用它原来的资源标识。[本地部署步骤](../README.md#deploy-from-a-local-checkout) · [预构建发布包](../README.md#project-releases)
+源码部署从仓库根目录运行 `mise install`、`mise run setup` 和 `mise exec -- npx wrangler login`。使用预构建包时，用包内 `wrangler.json` 和指定的 Node 版本，省略下文的 `mise exec --`。首次部署为各实例选独立的 Worker、D1、Git 存储和 R2 名称。升级时使用原资源标识。[本地部署步骤](../README.md#deploy-from-a-local-checkout)
 
 | 方案 | Wrangler 环境 | Git 存储 | Cloudflare 资源与外部依赖 |
 | --- | --- | --- | --- |
@@ -101,10 +150,10 @@ HTTP Worker 可以在客户端连接存续时流式运行，运行时更新可�
 | --- | --- |
 | Free Git | `MAX_PUSH_MB` 可设 1–32 MiB，默认 32 MiB。push 计入 receive 命令及 pack。fork、公开 HTTPS import 需要把快照装进一个同样大小的 pack，复制最多 2,048 refs 和 1 MiB 引用元数据，导入期限 60 s。`INGEST_CACHE_MB` 默认 16 MiB，调小缓存可给其他解析留内存。展开的对象、delta 解析与 SQLite 索引仍占资源。[SQLite Git 实现](../worker/git-repository.mjs) |
 | Artifacts Git | 每次 push 64 MiB、50,000 个对象、1 MiB 的引用更新，单文件 32 MiB。创建于 2026-09-29 起的仓库为 1 GB，此前仓库为 10 GB。账号总存储默认 1 TB，可申请提高。每命名空间的控制面和每仓库的 Git 请求各限 2,000 次/10 s。[Artifacts 限制](https://developers.cloudflare.com/artifacts/platform/limits/) |
-| R2 Git | 普通 Git 数据保存为不可变 pack 和索引，仓库累计字节由 R2 容量和运行负载决定。分片 push 默认 `2 GiB`，可按字节调整 `SHARD_GIT_R2_MAX_PUSH_BYTES`。标准 push 同时受域名请求体限制。分片至少 32 MiB，最多 10,000 片，容器工作区元数据限 4 MiB。[R2 Git 实现](../worker/git-r2-repository.mjs) · [R2 限制](https://developers.cloudflare.com/r2/platform/limits/) |
+| R2 Git | 普通 Git 数据保存为不可变 pack 和索引。`SHARD_GIT_R2_MAX_PUSH_BYTES` 默认 `2 GiB`，配置上限为 `5,492,189,429,760` 字节。标准 HTTPS push 还受域名请求体限制。分片至少 32 MiB，最多 10,000 片。refs 与 pack 清单共用 4 MiB 工作区元数据预算，仓库吞吐还受容器工作盘和 R2 读取影响。[R2 Git 实现](../worker/git-r2-repository.mjs) · [R2 限制](https://developers.cloudflare.com/r2/platform/limits/) |
 | 原生 Git | 经 Worker 代理的 URL 仍遵守入口限制。直连 pack 使用源站的 Git、文件系统、磁盘、网络和反代资源。保留引用与鉴权控制请求的独立预算。同一仓库的写操作串行。[原生源站](../scripts/git-origin.mjs) · [Git receive 配置](https://git-scm.com/docs/git-config#Documentation/git-config.txt-receivemaxInputSize) |
 | Git 控制请求 | 经 Worker 代理的 receive 命令前缀上限为 256 KiB。直连 Git 的引用钩子输入上限为 256 KiB，发往 Worker 的控制 JSON 上限为 512 KiB。Shard 的限流配置默认按请求类别与来源 IP 使用 300 次/60 s，由 Cloudflare 各位置近似计数。[Git 协议解析](../src/git_wire.js) · [直连授权](../src/handlers/git.rs) · [Rate Limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/) |
-| Paid 执行配置 | 托管和 `deploy:paid -- --env native` 默认 300 s CPU、20,000 子请求。旧 Artifacts 配置为 300 s CPU，子请求继承 Workers Paid 默认值。普通 `native` 使用 `free` 预设，将其显式切到 `paid` 时部署脚本会设置 300 s CPU，支持 `limits` 覆盖。[Wrangler 配置](../wrangler.jsonc) · [部署脚本](../scripts/deploy.mjs) |
+| Paid 执行配置 | `managed`、`managed-staging`、`r2` 和 `deploy:paid -- --env native` 默认 300 s CPU、20,000 子请求。旧 Artifacts 配置为 300 s CPU，子请求继承 Workers Paid 默认值。普通 `native` 使用 `free` 预设，将其显式切到 `paid` 时部署脚本会设置 300 s CPU，支持 `limits` 覆盖。[Wrangler 配置](../wrangler.jsonc) · [部署脚本](../scripts/deploy.mjs) |
 | 搜索和 PR | `free`/`paid` 的代码搜索各扫描最多 2,048/4,096 条树项及 512 KiB/2 MiB 文件内容，提交搜索读取 24/64 个首父提交。Paid 快照 PR 比较最多读取 160 棵树及检查 8,192 条树项。原生同源比较限 5 s 和 256 个变更文件。大仓传输与单页搜索、diff 是两种独立预算。[搜索](../src/repo_search.rs) · [差异比较](../src/pull_diff.rs) · [原生 Git 比较](../scripts/git-origin.mjs) |
 | Cron 与 Workflow | 分钟 Cron 的 `free`/`paid` 预算各为 1/24 个未完成推送、1/12 个合并队列条目、每类 1/32 个 webhook。Paid 配置启用 S3 时将每轮复制检查从 12 降到 3，每轮 PR 刷新从 32 降到 28。托管复制 Workflow 每步最多拷贝一页 LFS，每页 8 个对象。实例最多推进 120 个复制步骤，剩余任务由 Cron 恢复。分钟 Cron 的平台墙钟上限 15 分钟，实际处理量还受 D1/R2 与 CPU 约束。[后台预算](../src/limits.rs) · [复制 Workflow](../worker/repository-copy.mjs) · [Workflows 限制](https://developers.cloudflare.com/workflows/reference/limits/) |
 | 托管 Git 合并容器 | Shard 默认 `standard-1`，0.5 vCPU、4 GiB RAM、8 GB 盘。`SHARD_GIT_MERGE_INSTANCE` 可选具名规格，`standard-4` 为 4 vCPU、12 GiB RAM、20 GB 盘。容器存储是临时工作区，备份快照有镜像版本绑定、20 GB 上限和 30 天保留约束。[容器实例规格](https://developers.cloudflare.com/containers/platform/limits/#instance-types) · [快照](https://developers.cloudflare.com/containers/guides/snapshots/) |
@@ -115,9 +164,35 @@ HTTP Worker 可以在客户端连接存续时流式运行，运行时更新可�
 | --- | --- | --- | --- |
 | `proxy` | 默认及最高 100,000,000 字节，可调低 | 默认 100,000,000 字节，可提高到域名请求上限与 5,363,466,240 字节中的较低值 | Worker 流式转发到 R2 |
 | `r2-direct` | 5,363,466,240 字节 | 5,363,466,240 字节 | 客户端用预签名 URL 单次 PUT 到 R2，之后完成校验和发布 |
-| `r2-multipart` | 5,363,466,240 字节 | 5,492,189,429,760 字节，约 4.995 TiB | 客户端分片直传 R2，可在 6 天内从已登记分片续传。单对象最多 10,000 片 |
+| `r2-multipart` | 默认及最高 5,363,466,240 字节 | 默认及最高 5,492,189,429,760 字节，约 4.995 TiB | 客户端分片直传 R2，可在 6 天内从已登记分片续传。单对象最多 10,000 片 |
 
 用 `SHARD_LFS_MAX_BYTES` 按字节设置上表范围内的实例上限。LFS Batch 单次最多 100 个对象。对象超过单 PUT 上限时，Worker 会读取 R2 暂存对象做完整 SHA-256，然后通过 S3 multipart copy 发布。完整校验与发布各有 15 分钟的当前实现窗口，且共享一次调用的 CPU 额度。4.995 TiB 在 15 分钟内读完，仅 I/O 就需要约 6.10 GB/s 的持续吞吐。实际上线值按校验与 fork 复制测得的能力设定。[Shard LFS 配置](../src/limits.rs) · [R2 分片与完整校验](../src/lfs_remote.rs) · [R2 对象限制](https://developers.cloudflare.com/r2/platform/limits/)
+
+## 分片容量、耗时与并发
+
+R2 Git 和 LFS 使用相同的分片尺寸算法。设上传字节数为 `B`，每片为 `max(32, ceil(B / (10,000 × 1 MiB))) MiB`，片数为 `ceil(B / 每片字节数)`。末片可更小。对普通 Git，`B` 是整个 receive-pack 请求体，包含打包压缩后的对象与 Git 命令。对 LFS，`B` 是文件的原始字节数。[Git 分片计划](../worker/git-r2-repository.mjs) · [LFS 分片计划](../src/lfs_remote.rs) · [R2 Multipart 规则](https://developers.cloudflare.com/r2/objects/upload-objects/)
+
+| 上传体积 | 每片 | 片数 | 持续 100 Mb/s | 持续 500 Mb/s |
+| --- | ---: | ---: | ---: | ---: |
+| 129 MiB | 32 MiB | 5 | 11 秒 | 3 秒 |
+| 1 GiB | 32 MiB | 32 | 86 秒 | 18 秒 |
+| 2 GiB | 32 MiB | 64 | 172 秒 | 35 秒 |
+| 4 GiB | 32 MiB | 128 | 344 秒 | 69 秒 |
+| 8 GiB | 32 MiB | 256 | 688 秒 | 138 秒 |
+| 16 GiB | 32 MiB | 512 | 1,375 秒 | 275 秒 |
+| R2 上限 5,115 GiB | 524 MiB | 9,996 | 约 122.0 小时 | 约 24.4 小时 |
+
+时间按 `B × 8 / 链路比特率` 向上取整，是只传字节的下界。Git 还要在客户端生成并暂存 pack、在容器验证并写入 pack 和索引、随后发布 refs。LFS 还要校验并发布完整对象。设置 `SHARD_GIT_R2_MAX_PUSH_BYTES` 时，从 2 GiB 默认值和 `SHARD_GIT_R2_INSTANCE=standard-4` 的 20 GB 临时盘出发，按峰值工作盘和完成耗时逐级验证。设置 `SHARD_LFS_MAX_BYTES` 时，对超过单 PUT 上限的样本还要测 Worker 全量哈希、发布和 fork。两者的 R2 字节上限描述协议和配置可接受的范围。[R2 Git 工作区](../scripts/git-r2-origin.mjs) · [LFS 校验与发布](../src/lfs_remote.rs) · [容器规格](https://developers.cloudflare.com/containers/platform/limits/#instance-types)
+
+### 单次 PUT 和 multipart 的选择
+
+两种 R2 上传都绕过 Worker 的请求体入口。LFS `r2-direct` 对稳定链路上的中小文件有更少的控制请求，失败时重传整个文件。multipart 多了初始化、逐片签名与最终提交，大文件中断时可以只补缺失片。比如 8 GiB 的上传有 256 片，已经确认 200 片时，续传只需 56 片，即 1.75 GiB。R2 支持同时上传不同编号的分片。当前两个 Shard 客户端对同一个对象均按顺序上传。[R2 上传方式](https://developers.cloudflare.com/r2/objects/upload-objects/) · [Git helper](../scripts/git-remote-shard.mjs) · [LFS 适配器](../scripts/git-lfs-r2-multipart.mjs)
+
+### 并发能加速哪些阶段
+
+- **多个 LFS 对象**已经可以并行。Git LFS 默认可启动多个适配器进程，可用 `git config --local lfs.concurrenttransfers 4` 显式设为四个并发传输。为共享公网出口的客户端预留容量，复查整体吞吐、限流响应和校验耗时。[Git LFS 配置](https://github.com/git-lfs/git-lfs/blob/main/docs/man/git-lfs-config.adoc#upload-and-download-transfer-settings) · [自定义传输](https://github.com/git-lfs/git-lfs/blob/main/docs/custom-transfers.md#defining-a-custom-transfer-type)
+- **单个 Git 或 LFS 对象**可以在客户端增加有界的异步 PUT 队列。用同一文件的独立字节范围试测并发 1、2、4、8。每片独立重试和刷新签名，进度按片聚合，收到全部分片后进入完成步骤。Git 每片需要向 Worker 签名，LFS 还需登记 ETag。并发总量受上行带宽和按来源 IP 的 Git 请求限流约束。Git 仍需按仓库顺序发布引用，LFS 仍需校验整个对象。[Git 上传计划](../worker/git-r2-repository.mjs) · [LFS 分片登记](../src/lfs_remote.rs) · [限流配置](../wrangler.jsonc)
+- **Git 计算**是独立阶段。`pack.threads` 影响 pack 的 delta 搜索与内存用量。R2 Git 容器工作区设为 1 线程，容器将新 pack 写入 R2 时 rclone 已设 2 路分片并发。分开测客户端打包、上传、容器收包和对象发布，才能定位值得加并发的阶段。[Git pack 配置](https://git-scm.com/docs/git-config#Documentation/git-config.txt-packthreads) · [容器 Git 配置](../scripts/git-origin.mjs) · [容器 R2 上传](../scripts/git-r2-origin.mjs)
 
 ## 各方案可以继续提高哪些上限
 

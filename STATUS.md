@@ -60,7 +60,7 @@ Update this file whenever a milestone lands or a limitation changes.
 | Operations | Live metrics and further CSP tightening after moving inline styles. |
 
 Architecture, service boundaries, and operational constraints are recorded in [PLAN.md](PLAN.md#optional-cloudflare-execution-services). Managed CI/CD settings are in the [deployment guide](README.md#deploy-with-managed-cloudflare-services).
-The [deployment capacity guide](docs/deployment-capacity.md) records the deployment configurations, their limits and the conditions for raising them.
+The [deployment capacity guide](docs/deployment-capacity.md) covers Dashboard setup, prebuilt releases, the Free button, and the multipart sizing and concurrency model for Git and LFS.
 
 ## Cloudflare Artifacts constraints (verified 2026-11-17)
 
@@ -79,6 +79,9 @@ The [deployment capacity guide](docs/deployment-capacity.md) records the deploym
 - The Worker mediates repository access. Git clients receive neither the Artifacts repository token nor the native origin's shared secret.
 - Shard serializes branch-rule changes against known admitted writes. A lost Git response can hold the admission for an hour. Externally managed Git backends can still complete a write after the admission expires.
 - The RustSec audit reported `basic-toml` and `chrono` as unmaintained transitive dependencies of the current locked graph.
+- R2 Git appends durable pack entries on ref publication. The list of keys shares a 4 MiB workspace metadata budget with refs. Workspaces link each pack and index, so pack count affects read cost and can reach the metadata cap independently of repository byte size. [Pack manifest](worker/git-r2-repository.mjs#L173) · [Workspace hydration](scripts/git-r2-origin.mjs#L62)
+- The R2 Git recovery path needs a consistent D1 export, Durable Object revision with refs and pack keys, and the corresponding R2 Git and LFS objects. A Git mirror covers objects reachable from its exported refs. Saved PR revisions can also require older objects. [Current restore guide](README.md#backup-and-restore)
+- Managed CD verifies production after activation. A failed publish or production probe can leave the Worker active on the new version while container rollout is incomplete. D1 migrations also precede Worker upload. [Release script](scripts/cd.mjs#L121) · [Container rollouts](https://developers.cloudflare.com/containers/guides/deploy/)
 
 ## Verification log
 
@@ -167,6 +170,7 @@ The [deployment capacity guide](docs/deployment-capacity.md) records the deploym
 | 2026-11-19 | Release dependency and workflow audit | npm and RustSec reported zero known vulnerabilities in the locked dependency graph. `actionlint` accepted both GitHub Actions workflows. |
 | 2026-11-19 | v0.3.0 release candidate | Wasm type check and build passed. The regular suite passed 93 checks. Its opt-in R2 test passed separately through Docker/FUSE. The native Git relay held a pre-receive acknowledgement and confirmed the conflicting rule could only be saved after Git finished. The saved rule then blocked both direct Git and a Web ref deletion. |
 | 2026-11-19 | Release browser review | Chromium rendered repository, issues, pull requests, refs, and account settings at 320px without horizontal overflow. The new token form displayed the password label and revealed the secret only on creation. Keyboard focus, skip-to-content, dark mode, reduced-motion preference, and the mobile navigation menu were exercised. |
+| 2026-11-19 | Public v0.3.0 Release package | Verified the downloaded archive against the published SHA-256. Installed the archived Node dependencies and passed Wrangler dry runs for Free and Paid R2 Git. The Paid dry run built the R2 Git Docker image. |
 
 ## How to update
 
