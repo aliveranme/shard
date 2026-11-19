@@ -23,6 +23,8 @@
     </form>
   {% else %}
     <a class="btn btn--quiet btn--sm" href="/user/login">{{ chrome.locale.t(crate::i18n::CommonText::SignIn) }}</a>
-    <a class="btn btn--ghost btn--sm" href="/user/sign_up">{{ chrome.locale.t(crate::i18n::CommonText::CreateAccount) }}</a>
+    {% if chrome.registration_open %}
+      <a class="btn btn--ghost btn--sm" href="/user/sign_up">{{ chrome.locale.t(crate::i18n::CommonText::CreateAccount) }}</a>
+    {% endif %}
   {% endif %}
 </div>

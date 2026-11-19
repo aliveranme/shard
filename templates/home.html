@@ -48,7 +48,11 @@
             <a class="btn btn--primary" href="/new">{{ chrome.locale.t(crate::i18n::CommonText::NewRepository) }}</a>
             <a class="btn btn--ghost" href="/user/settings/tokens">{{ chrome.locale.t(crate::i18n::CommonText::AccessTokens) }}</a>
           {% else %}
-            <a class="btn btn--primary" href="/user/sign_up">{{ chrome.locale.t(crate::i18n::CommonText::CreateAccount) }}</a>
+            {% if chrome.registration_open %}
+              <a class="btn btn--primary" href="/user/sign_up">{{ chrome.locale.t(crate::i18n::CommonText::CreateAccount) }}</a>
+            {% else %}
+              <a class="btn btn--primary" href="/user/login">{{ chrome.locale.t(crate::i18n::CommonText::SignIn) }}</a>
+            {% endif %}
             <a class="btn btn--ghost" href="/explore/repos">{{ chrome.locale.t(crate::i18n::WebText::ExploreRepositories) }}</a>
           {% endif %}
         </div>

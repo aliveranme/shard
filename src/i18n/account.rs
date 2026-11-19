@@ -48,6 +48,7 @@ catalog! {
         PasswordResetRevocation => "Resetting your password signs you out everywhere and revokes all Git access tokens. Create new tokens for Git clients and automation after signing in.", "重置密码会退出所有浏览器会话并撤销全部 Git 访问令牌。重新登录后，请为 Git 客户端和自动化任务生成新令牌。";
         PasswordReset => "Password reset. All sessions and Git access tokens have been revoked. Sign in with your new password.", "密码已重置。所有会话和 Git 访问令牌均已撤销。请使用新密码登录。";
         Register => "Register", "注册";
+        RegistrationClosed => "Registration is closed on this instance. Sign in instead.", "此实例已关闭注册，请直接登录。";
         CreateYourAccount => "Create your account", "创建账号";
         SignInIntro => "Welcome back. Your repositories are waiting.", "欢迎回来，登录后即可访问你的仓库。";
         SignupIntro => "One account for every repository on this shard.", "使用一个账号访问此 Shard 站点的所有仓库。";

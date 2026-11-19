@@ -11,6 +11,7 @@ pub struct AppState {
     pub locale: Locale,
     pub language_preference: LanguagePreference,
     pub csrf_token: String,
+    pub registration_open: bool,
     pub form: Option<Rc<FormData>>,
 }
 

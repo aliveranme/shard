@@ -90,6 +90,9 @@ pub async fn signup_form(req: Request, ctx: RouteContext<AppState>) -> Result<Re
 
 pub async fn signup_submit(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = ctx.data.clone();
+    if !state.registration_open {
+        return error_response(&Chrome::new(&state), 403, state.locale.t(AccountText::RegistrationClosed));
+    }
     let form = state.form()?;
     let username = util::form_value(form, "username").unwrap_or_default();
     let email = util::form_value(form, "email").unwrap_or_default();

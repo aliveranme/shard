@@ -259,7 +259,7 @@ async fn serve(mut req: Request, env: Env, worker_ctx: Context, request_id: &str
             let token = security::csrf_token(&req, false).await?;
             let locale = guest_preference.and_then(LanguagePreference::locale).unwrap_or_else(browser_locale);
             let response = templates::error_response(
-                &templates::Chrome { locale, ..Default::default() },
+                &templates::Chrome { locale, registration_open: auth::registration_open(&env), ..Default::default() },
                 503,
                 locale.t(CommonText::AccountUnavailable),
             )?;
@@ -282,6 +282,7 @@ async fn serve(mut req: Request, env: Env, worker_ctx: Context, request_id: &str
         locale,
         language_preference,
         csrf_token,
+        registration_open: auth::registration_open(&env),
         form: None,
     };
     let chrome = templates::Chrome::new(&state);

@@ -117,6 +117,7 @@
 | Cron | 保留每分钟的 `* * * * *` 和每日 03:00 UTC 的 `0 3 * * *`，用于处理待办工作和清理过期记录 |
 | `GIT_BACKEND` | `durable`、`artifacts`、`r2` 或 `native`。按部署模板保留对应值。它选择新仓库的后端，已有仓库继续使用 D1 记录的后端，fork 沿用源仓库后端 |
 | `SHARD_LIMIT_PROFILE` | `free` 或 `paid`。它控制 Shard 的搜索、后台任务和上传预算。Workers 套餐须在 Cloudflare 账号中管理 |
+| `SHARD_REGISTRATION` | `open` 或 `closed`，默认 `open`。设为 `closed` 后注册页和访客入口隐藏注册，提交注册返回 403；已有账号仍可登录 |
 | `MAX_PUSH_MB`、`INGEST_CACHE_MB`、`SHA1DC` | SQLite DO 后端的 push 与解析设置。`MAX_PUSH_MB` 可设 1–32 MiB，默认 32 MiB。`INGEST_CACHE_MB` 可设 1–16 MiB，默认 16 MiB。保留 `SHA1DC = "1"` 以启用 SHA-1 碰撞检测 |
 
 按名称自动复用 D1 时，脚本只接受空库或能识别为 Shard 的数据库。已有实例使用显式 UUID 可以让升级始终指向原库。升级迁移追加执行，保留已经执行的迁移文件和 Durable Object 迁移标签。[D1 迁移](https://developers.cloudflare.com/d1/reference/migrations/) · [现有模板](../wrangler.jsonc)
@@ -313,6 +314,7 @@ git config --local lfs.customtransfer.shard-r2-multipart.direction upload
 
 ## 邮件、Webhook 和访问令牌
 
+- **注册与管理员**。注册默认开放。把 Text 变量 `SHARD_REGISTRATION` 设为 `closed` 后，注册页和访客导航不再显示注册入口，`POST /user/sign_up` 返回 403，已有账号仍可登录。管理员通过 D1 设置，不依赖环境变量：先用 `npm run admin -- list --env r2` 查看，再用 `npm run admin -- grant <用户名> --env r2` 授予；`--replace` 会先撤销其他管理员，`revoke` 撤销。使用其他配置文件时加 `--config`，本地库加 `--local`。管理员可越过仓库管理权限检查，只应授予可信账号。
 - **验证邮箱与重置密码**。打开账号的 **Email Service → Email Sending → Onboard Domain**，选择使用 Cloudflare DNS 的发信域名，完成页面给出的 DNS 配置。回到 Worker 的 **变量和密钥** 添加 Text `PUBLIC_ORIGIN`（例如 `https://forge.example.com`）和 `EMAIL_FROM`（例如 `shard@example.com`）。将 `send_email: [{ "name": "EMAIL", "allowed_sender_addresses": ["shard@example.com"] }]` 加入所选 Wrangler 环境，使用与你实际 `EMAIL_FROM` 一致的地址。生产分支推送后检查 **绑定** 中的 `EMAIL`，用测试邮箱跑一次邮箱验证和密码重置。[接入发信域名](https://developers.cloudflare.com/email-service/get-started/send-emails/) · [邮件绑定](https://developers.cloudflare.com/email-service/configuration/send-bindings/)
 - **仓库 Webhook**。在 Worker 的 **变量和密钥** 添加 Secret `WEBHOOK_ENCRYPTION_KEY`，值为 32 个随机字节的十六进制字符串，可用 `openssl rand -hex 32` 生成。部署后在 Shard 仓库「设置 → Webhook」录入接收端公网 HTTPS 地址和该订阅的签名密钥。备份时保留加密密钥。旧的实例级集成可继续用文本 `WEBHOOK_REPO`、`WEBHOOK_ENDPOINT` 和 Secret `WEBHOOK_SECRET`。[事件、签名与重试](../README.md#integrations)
 - **仓库权限与 Git**。实例注册入口默认开放。创建业务仓库时选择可见性。在「账户设置 → 访问令牌」使用当前密码签发令牌。clone 可以使用具备仓库读取权限的令牌，push 需要写作用域和仓库写权限。Git 提示认证时用 Shard 用户名与令牌，令牌放在凭据管理器中。[Git 认证与作用域](../README.md#git-access)

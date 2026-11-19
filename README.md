@@ -42,6 +42,26 @@ git commit -m "Initial commit"
 git push -u origin HEAD:main
 ```
 
+### Registration and administrators
+
+Registration is open by default. Set the text variable
+`SHARD_REGISTRATION=closed` to disable it; the signup page and guest
+navigation then show a closed-registration message and `POST /user/sign_up`
+returns 403. Existing accounts can still sign in.
+
+Grant the first administrator from an existing account:
+
+```sh
+npm run admin -- list --env r2
+npm run admin -- grant <username> --env r2
+```
+
+Use `--config PATH` for a non-default Wrangler configuration and `--local` for
+the local D1 database. `grant --replace` demotes every other administrator
+first. Administrators pass repository administration checks across the
+instance, so grant only trusted accounts. Revoke with
+`npm run admin -- revoke <username> --env r2`.
+
 <details>
 <summary>Build, tests, and editor setup</summary>
 
@@ -299,7 +319,7 @@ configure the build process separately.
 
 | Type | Settings |
 | --- | --- |
-| Text | `PUBLIC_ORIGIN`, `EMAIL_FROM`, `NATIVE_GIT_ORIGIN`, `NATIVE_GIT_DIRECT_ORIGIN`, `SHARD_LIMIT_PROFILE`, `SHARD_LFS_UPLOAD_MODE`, `SHARD_LFS_MAX_BYTES`, `SHARD_LFS_R2_ENDPOINT`, `SHARD_LFS_R2_BUCKET`, `WEBHOOK_ENDPOINT` and `WEBHOOK_REPO` for the legacy integration |
+| Text | `PUBLIC_ORIGIN`, `EMAIL_FROM`, `NATIVE_GIT_ORIGIN`, `NATIVE_GIT_DIRECT_ORIGIN`, `SHARD_REGISTRATION`, `SHARD_LIMIT_PROFILE`, `SHARD_LFS_UPLOAD_MODE`, `SHARD_LFS_MAX_BYTES`, `SHARD_LFS_R2_ENDPOINT`, `SHARD_LFS_R2_BUCKET`, `WEBHOOK_ENDPOINT` and `WEBHOOK_REPO` for the legacy integration |
 | Secret | `NATIVE_GIT_TOKEN`, `SHARD_LFS_R2_ACCESS_KEY_ID`, `SHARD_LFS_R2_SECRET_ACCESS_KEY`, `WEBHOOK_ENCRYPTION_KEY`, `WEBHOOK_SECRET` for the legacy integration |
 
 The shipped `keep_vars: true` preserves dashboard variables across Wrangler

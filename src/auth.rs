@@ -10,6 +10,18 @@ use worker::*;
 const SESSION_TTL: i64 = 30 * 24 * 3600;
 const TOKEN_USAGE_INTERVAL: i64 = 60;
 
+/// `SHARD_REGISTRATION=open|closed`; a missing or invalid value closes registration safely.
+pub fn registration_open(env: &Env) -> bool {
+    match env.var("SHARD_REGISTRATION").ok().map(|value| value.to_string()).as_deref() {
+        None | Some("open") => true,
+        Some("closed") => false,
+        Some(value) => {
+            console_log!("event=registration_config_invalid value={value}");
+            false
+        }
+    }
+}
+
 pub async fn current_user(env: &Env, req: &Request) -> Result<Option<User>> {
     let Some(token) = util::cookie(req, "shard_session") else {
         return Ok(None);

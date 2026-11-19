@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `SHARD_REGISTRATION=closed` disables signup while existing accounts keep signing in. Guest navigation and the signup page follow the setting.
+- Added `npm run admin -- grant|revoke|list` for administrator bootstrap and review through D1, with `--replace`, `--config`, `--env` and `--local`.
 - `npm run deploy:paid` preserves an explicitly configured `SHARD_LFS_UPLOAD_MODE`; the Paid preset still defaults to `r2-multipart`.
 - Added a Chinese Cloudflare Dashboard manual covering private deployment repositories, Workers Builds, resource bindings and credentials, every deployment environment, and upgrade verification.
 

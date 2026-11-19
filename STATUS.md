@@ -20,7 +20,8 @@ Update this file whenever a milestone lands or a limitation changes.
 |---|---|
 | Accounts | Registration, login throttling, password-confirmed settings changes, account deletion with an ownership guard, and single-use verification and reset links through the email simulator. Password reset revokes browser sessions and all Git access tokens. |
 | Avatars | Account settings accept PNG, JPEG and WebP and store one metadata-free PNG thumbnail per user in D1. Uploaded avatars appear in profiles, discussions, branch summaries, commit history and commit details. Git author emails match account emails and fall back to initials. Removal and account deletion remove the stored image. |
-| Browser security | Session-bound CSRF, same-origin checks, CSP, safe redirects, and origin-only referrers on recovery pages. |
+| Browser security | Session-bound CSRF, same-origin checks, CSP, safe redirects, and origin-only referrers on recovery pages. `SHARD_REGISTRATION=closed` hides signup and rejects new registrations; existing accounts keep signing in. |
+| Administrators | `npm run admin` grants, revokes or lists `users.is_admin` in the selected D1 database. Administrator checks cover repository administration across the instance. |
 | Internationalization | Typed English and Simplified Chinese catalogs. Guest language follows the browser cookie or header. Account settings persist across sessions. |
 | Access tokens | Read/write scopes, expiry and revocation, password confirmation at issuance, one-time secret display, and legacy credential compatibility. The settings page shows 20 tokens at a time. Git requests update the last-use timestamp at most once per minute per token. |
 | GPG signatures | Account settings add and remove public OpenPGP signing certificates with password confirmation. Commit details verify the signed bytes and show the certificate fingerprint and the independent Shard email-verification state. |
@@ -178,6 +179,7 @@ The [Chinese Cloudflare Dashboard manual](docs/configuration.zh-CN.md) documents
 | 2026-11-19 | Free private-repository deployment | The Cloudflare setup panel displayed the private repository option, the D1 selector, `npm run build` and `npm run deploy`. All 84 local deployment checks passed. The Workers Builds fixture used the same Worker and D1 UUID for the initial deployment and a production push, with a different commit tag for each. |
 | 2026-11-19 | Chinese Dashboard manual | Checked the live setup form and its root directory, commands and token selector. Verified 30 relative links and heading anchors, parsed three dotenv examples and bundled the Free and native configuration examples with Wrangler dry-run. |
 | 2026-11-19 | Paid LFS upload mode override | `node --test tests/deploy-paid.test.mjs` passed 37 checks. An explicit `SHARD_LFS_UPLOAD_MODE=r2-direct` survived the Paid preset, while a configuration without the variable still deployed `r2-multipart`. |
+| 2026-11-19 | Registration policy and administrator bootstrap | Deployed `shard-max` with `SHARD_REGISTRATION=closed`: the signup page showed the closed message without a form, guest navigation omitted signup, and `POST /user/sign_up` returned 403. `npm run admin -- grant aliveranme` set `is_admin=1` and `list` showed the account. `mise run check` and `mise run lint` passed. |
 
 ## How to update
 

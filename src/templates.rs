@@ -19,13 +19,27 @@ impl Avatar {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct Chrome {
     pub signed_in: bool,
     pub user_name: String,
     pub avatar: Avatar,
     pub csrf_token: String,
     pub locale: Locale,
+    pub registration_open: bool,
+}
+
+impl Default for Chrome {
+    fn default() -> Self {
+        Self {
+            signed_in: false,
+            user_name: String::new(),
+            avatar: Avatar::default(),
+            csrf_token: String::new(),
+            locale: Locale::default(),
+            registration_open: true,
+        }
+    }
 }
 
 impl Chrome {
@@ -37,10 +51,12 @@ impl Chrome {
                 avatar: Avatar::new(&u.username, u.avatar_id),
                 csrf_token: state.csrf_token.clone(),
                 locale: state.locale,
+                registration_open: state.registration_open,
             },
             None => Self {
                 csrf_token: state.csrf_token.clone(),
                 locale: state.locale,
+                registration_open: state.registration_open,
                 ..Self::default()
             },
         }
