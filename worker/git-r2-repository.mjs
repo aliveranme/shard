@@ -1,7 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
 import { PackIndex, parseCommit, parseTagTarget, parseTree, readPackedObject } from "./git-r2-pack.mjs";
 import { buildR2PackStore } from "./git-r2-packstore.mjs";
-import { uploadPack } from "../node_modules/durable-git/src/git/protocol.ts";
+import { parseReceiveBytes, parseReceivedPack, PackTooLargeError, ThinPackError } from "./git-r2-receive.mjs";
+import { renderStatus, uploadPack } from "../node_modules/durable-git/src/git/protocol.ts";
 import { gitR2S3 } from "../src/lfs_s3.js";
 import { shard_receive_report, shard_receive_request } from "../src/git_wire.js";
 
@@ -41,6 +42,7 @@ const MAX_DIRECT_COMMIT = 256 * 1024;
 const MAX_DIRECT_CACHE = MiB;
 const MAX_DIRECT_UPLOAD = MiB;
 const MAX_DIRECT_OBJECTS = 200_000;
+const MAX_DIRECT_PUSH = 16 * MiB;
 const OBJECT_TYPES = [null, "commit", "tree", "blob", "tag"];
 const REPORT_TYPE = "application/x-git-receive-pack-result";
 const INGEST_TYPE = "application/x-git-receive-pack-request";
@@ -1011,6 +1013,32 @@ export class R2GitRepository extends DurableObject {
     } });
   }
 
+  async #directReceiveAdvertisement(repository) {
+    const encoder = new TextEncoder();
+    const packet = (text) => {
+      const length = encoder.encode(text).byteLength + 4;
+      if (length > 0xffff) throw new GitHttpError(413, "Git advertisement is too large");
+      return length.toString(16).padStart(4, "0") + text;
+    };
+    const capabilities = "report-status delete-refs side-band-64k ofs-delta agent=shard/0.3.1 object-format=sha1";
+    const head = repository.refs.find((ref) => ref.name === repository.head);
+    const ordered = head
+      ? [{ name: "HEAD", oid: head.oid }, ...repository.refs.filter((ref) => ref.name !== "HEAD")]
+      : repository.refs;
+    let body = packet("# service=git-receive-pack\n") + "0000";
+    if (ordered.length === 0) {
+      body += packet(`${ZERO} capabilities^{}\0${capabilities}\n`);
+    } else {
+      body += packet(`${ordered[0].oid} ${ordered[0].name}\0${capabilities}\n`);
+      for (const ref of ordered.slice(1)) body += packet(`${ref.oid} ${ref.name}\n`);
+    }
+    body += "0000";
+    return new Response(body, { headers: {
+      "Cache-Control": "no-store",
+      "Content-Type": "application/x-git-receive-pack-advertisement",
+    } });
+  }
+
   async #read(repository, url, request, includeSource) {
     const repositories = [repository];
     const source = includeSource ? url.searchParams.get("source") : null;
@@ -1117,6 +1145,139 @@ export class R2GitRepository extends DurableObject {
     } finally {
       await workspace.close();
     }
+  }
+
+  async #directReceive(repository, request) {
+    if (request.headers.get("Content-Type") !== INGEST_TYPE) return null;
+    const actor = request.headers.get("x-shard-git-actor");
+    if (!ACTOR.test(actor ?? "")) return null;
+    const encoding = (request.headers.get("content-encoding") ?? "").trim().toLowerCase();
+    if (encoding && encoding !== "identity") return null;
+    const declared = Number(request.headers.get("content-length") ?? "0");
+    if (Number.isFinite(declared) && declared > MAX_DIRECT_PUSH) return null;
+    const bytes = new Uint8Array(await request.arrayBuffer());
+    if (bytes.length > MAX_DIRECT_PUSH) return null;
+    let push;
+    try {
+      push = parseReceiveBytes(bytes);
+    } catch {
+      return null;
+    }
+    if (!push.updates.length) return null;
+    if (push.updates.some((update) => update.name === repository.head && update.after === ZERO)) {
+      return json({ message: "The default Git branch cannot be deleted" }, 422);
+    }
+    return await this.#lock(async () => {
+      let pack = null;
+      if (push.pack.length) {
+        try {
+          pack = await parseReceivedPack(push.pack, MAX_DIRECT_OBJECTS, async (oid) => {
+            const object = await this.#readObject(oid, 0, repository.packs);
+            return object ? { type: OBJECT_TYPES[object.type], data: object.data } : null;
+          });
+          if (pack.packBytes.length > MAX_DIRECT_PUSH) return null;
+        } catch (error) {
+          if (error instanceof ThinPackError || error instanceof PackTooLargeError) return null;
+          console.error("R2 direct receive parse failed", error?.message);
+          return null;
+        }
+      }
+      if (!pack && push.updates.some((update) => update.after !== ZERO)) return null;
+      const lookup = async (oid) => {
+        const local = pack?.objects.get(oid);
+        if (local) return local;
+        const object = await this.#readObject(oid, 0, repository.packs);
+        return object ? { oid, type: object.type, data: object.data } : null;
+      };
+      let inspected = 0;
+      const checkTree = async (oid) => {
+        if (++inspected > MAX_DIRECT_OBJECTS) throw new PackTooLargeError("Git push object graph is too large");
+        const object = await lookup(oid);
+        if (!object || object.type !== 2) return false;
+        let entries;
+        try {
+          entries = parseTree(object.data);
+        } catch {
+          return false;
+        }
+        for (const entry of entries) {
+          if (entry.mode === "040000") {
+            if (!await checkTree(entry.hash)) return false;
+          } else if (entry.mode !== "160000") {
+            const blob = await lookup(entry.hash);
+            if (!blob || blob.type !== 3) return false;
+          }
+        }
+        return true;
+      };
+      const checkCommit = async (oid) => {
+        const object = await lookup(oid);
+        if (!object || object.type !== 1) return false;
+        let commit;
+        try {
+          commit = parseCommit(oid, object.data);
+        } catch {
+          return false;
+        }
+        for (const parent of commit.parents) {
+          const value = await lookup(parent);
+          if (!value || value.type !== 1) return false;
+        }
+        return await checkTree(commit.tree);
+      };
+      const refs = new Map(repository.refs.map((ref) => [ref.name, ref.oid]));
+      for (const update of push.updates) {
+        if (update.before !== (refs.get(update.name) ?? ZERO)) throw new GitHttpError(409, "Git refs changed during push");
+        if (update.after === ZERO) {
+          refs.delete(update.name);
+          continue;
+        }
+        const object = await lookup(update.after);
+        if (!object) return null;
+        if (object.type === 1) {
+          if (!await checkCommit(update.after)) return null;
+        } else if (object.type === 4 && update.name.startsWith("refs/tags/")) {
+          let target;
+          try {
+            target = parseTagTarget(object.data);
+          } catch {
+            return null;
+          }
+          const peeled = await lookup(target);
+          if (!peeled || peeled.type !== 1) return null;
+        } else {
+          return null;
+        }
+        refs.set(update.name, update.after);
+      }
+      const job = await this.#reserve(repository.id, repository.revision, actor);
+      let key = null;
+      try {
+        if (pack) {
+          key = `${packPrefix(repository.id, job)}pack-${pack.packHash}`;
+          await this.#bucket.put(`${key}.pack`, pack.packBytes);
+          await this.#bucket.put(`${key}.idx`, pack.idx);
+        }
+        const candidate = {
+          id: repository.id,
+          revision: repository.revision,
+          head: repository.head,
+          refs: [...refs].map(([name, oid]) => ({ name, oid })),
+          packs: key ? [key] : [],
+          packSizes: key ? [pack.packBytes.length + pack.idx.length] : [],
+        };
+        const accepted = changedRefs(repository, candidate, push.updates, push.updates.map((update) => update.name));
+        const report = renderStatus(push.updates.map((update) => ({ ref: update.name, ok: true })), null, push.sideband);
+        const saved = this.#one("UPDATE work SET candidate = ?, updates = ?, accepted = ?, report = ? WHERE id = ? "
+          + "RETURNING id, updates, accepted", JSON.stringify(candidate), JSON.stringify(push.updates),
+          JSON.stringify(accepted), report.buffer, job);
+        if (!saved) throw new Error("Git push preparation was lost");
+        return this.#prepared(saved);
+      } catch (error) {
+        await this.#dropWork({ repo: repository.id, id: job });
+        throw error;
+      }
+    });
   }
 
   async #standard(repository, path, request) {
@@ -1356,8 +1517,27 @@ export class R2GitRepository extends DurableObject {
         // Start the container now so its cold start overlaps that work.
         this.ctx.waitUntil(this.#warmContainer().catch(() => {}));
       }
+      if (smart && action === "info/refs" && request.method === "GET" &&
+          url.searchParams.get("service") === "git-receive-pack" && this.#directReads) {
+        try {
+          return await this.#directReceiveAdvertisement(repository);
+        } catch (error) {
+          if (error instanceof GitHttpError) throw error;
+          console.error("R2 direct receive advertisement failed", error?.message);
+        }
+      }
       if (smart && action === "git-receive-pack" && request.method === "POST" && !url.search) {
-        return await this.#standard(repository, url.pathname, request);
+        const fallback = request.clone();
+        if (this.#directReads) {
+          try {
+            const direct = await this.#directReceive(repository, request);
+            if (direct) return direct;
+          } catch (error) {
+            if (error instanceof GitHttpError) throw error;
+            console.error("R2 direct receive failed", error?.message);
+          }
+        }
+        return await this.#standard(repository, url.pathname, fallback);
       } else if (command && ["ref", "head", "merge"].includes(action) && request.method === "POST" && !url.search) {
         return await this.#mutate(repository, url.pathname, request);
       } else if (smart && action === "info/refs" && request.method === "GET" &&

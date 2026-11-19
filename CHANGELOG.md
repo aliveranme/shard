@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- R2 Git web reads resolve commits, trees, blobs, files and first-parent history directly from R2 pack indexes. Clone and fetch generate the transfer pack in the Worker; stored full entries and offset deltas are copied from the existing packs instead of being recompressed. The container remains for pushes, merges, comparisons, imports and compaction, and starts while the client reads the receive-pack advertisement.
+- R2 Git web reads resolve commits, trees, blobs, files and first-parent history directly from R2 pack indexes. Clone and fetch generate the transfer pack in the Worker; stored full entries and offset deltas are copied from the existing packs instead of being recompressed. Small pushes, including thin packs completed against existing R2 objects, are validated and published by the Worker. Large pushes, merges, comparisons, imports and compaction still use the container; the container starts while the client reads the receive-pack advertisement.
 - The R2 Durable Object persists its container token across restarts and keeps an idle container for 10 minutes by default (`SHARD_GIT_R2_IDLE_MS`).
 - README images are cached by visibility, and `static/_headers` gives fonts, images and CSS browser cache lifetimes.
 - `SHARD_REGISTRATION=closed` disables signup while existing accounts keep signing in. Guest navigation and the signup page follow the setting.

@@ -32,8 +32,9 @@ repository storage ID. D1 keeps visibility, access grants, the selected
 backend and the same storage ID. The project's deployment target is Git
 hosting entirely on Cloudflare; `native` remains a compatibility backend for
 existing deployments, not a recommended direction. Containers are reserved for
-operations that genuinely need native Git, such as receive-pack, merges and
-imports, rather than routine browsing or clone traffic.
+operations that genuinely need native Git: small pushes and clone traffic are
+handled by the Worker from R2 packs; large pushes, merges, comparisons, imports
+and compaction use the container.
 `env.artifacts` retains the original Artifacts
 deployment. `managed` and `managed-staging` add the Git bridge and background
 execution services on Workers Paid. `native` uses an authenticated origin and

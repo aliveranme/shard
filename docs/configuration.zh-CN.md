@@ -204,7 +204,7 @@ CD 先发布 staging，待 Workflow 验证版本、D1、R2、静态资源和合�
 
 在 `env.r2` 配置 `DB` 和两个私有桶。`GIT_PACKS` 保存普通 Git pack 与索引，`LFS_OBJECTS` 保存 LFS 对象。保留 `GIT_R2_REPOS`、`MERGE_COORDINATOR`、`r2-git-v1`、复制 Workflow 和 `containers/git-r2.Dockerfile`。为两个桶分别生成限定到该桶的 **Object Read & Write** 凭据，配置 Git 与 LFS 的暂存生命周期。[R2 桶级凭据](https://developers.cloudflare.com/r2/api/tokens/)
 
-网页读取直接从 R2 的 pack 与 index 解析提交、树、文件内容和首父历史；clone 与 fetch 也由 Worker 从这些 pack 生成传输包。容器只处理 push、合并、比较、导入和 pack compaction。设置 `SHARD_R2_DIRECT_READS=0` 可强制读取回退到容器。Durable Object 会保存容器会话令牌，`SHARD_GIT_R2_IDLE_MS` 控制空闲容器保留时间，默认 10 分钟。
+网页读取直接从 R2 的 pack 与 index 解析提交、树、文件内容和首父历史；clone 与 fetch 也由 Worker 从这些 pack 生成传输包。小型 push（包括基于已有 R2 对象补全的 thin pack）由 Worker 校验并发布；大 push、合并、比较、导入和 pack compaction 仍使用容器。设置 `SHARD_R2_DIRECT_READS=0` 可强制读取回退到容器。Durable Object 会保存容器会话令牌，`SHARD_GIT_R2_IDLE_MS` 控制空闲容器保留时间，默认 10 分钟。
 
 Shard 的部署目标是完全在 Cloudflare 上托管 Git。`native` 源站保留为已有部署的兼容后端，但不是项目推荐方向，也不用于解决容器冷启动。
 

@@ -7,6 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { PackIndex, parseCommit, parseTagTarget, parseTree, readPackedObject } from "../worker/git-r2-pack.mjs";
 import { buildR2PackStore } from "../worker/git-r2-packstore.mjs";
+import { parseReceivedPack } from "../worker/git-r2-receive.mjs";
 
 function git(cwd, ...args) {
   return execFileSync("git", ["-c", "core.autocrlf=false", ...args], { cwd, encoding: "utf8" });
@@ -127,6 +128,12 @@ test("builds reusable raw pack metadata", async () => {
       checked++;
     }
     assert.ok(checked > 0);
+    const received = await parseReceivedPack(new Uint8Array(pack));
+    assert.equal(received.entries.length, index.count);
+    const rebuilt = new PackIndex(received.idx);
+    for (const oid of git(dir, "cat-file", "--batch-all-objects", "--batch-check=%(objectname)").trim().split("\n")) {
+      assert.notEqual(rebuilt.find(oid), null);
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
