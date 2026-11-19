@@ -13,7 +13,6 @@ use worker::*;
 
 const MAX_HISTORY_READS: usize = 80;
 const MAX_QUEUED_PARENTS: usize = 512;
-const REFRESH_BATCH: usize = 6;
 const REFRESH_RETRY_SECONDS: i64 = 60;
 
 const TARGET_READ: &str = "(t.visibility = 'public' OR t.owner_id = u.id OR u.is_admin = 1
@@ -294,30 +293,6 @@ async fn save_comparison(
         .ok_or_else(|| Error::RustError("D1 did not report comparison changes".into()))
 }
 
-/// Queue open comparisons affected by refs the Git backend accepted.
-pub(crate) async fn enqueue_refs(env: &Env, repo_id: i64, refs: &[String]) -> Result<()> {
-    let branches: Vec<_> = refs.iter().filter_map(|name| name.strip_prefix("refs/heads/")).collect();
-    if branches.is_empty() {
-        return Ok(());
-    }
-    let branches = serde_json::to_string(&branches).map_err(|error| Error::RustError(error.to_string()))?;
-    db::run(
-        &env.d1("DB")?,
-        "WITH changed(branch) AS (SELECT value FROM json_each(?2))
-         INSERT OR REPLACE INTO pull_comparison_updates (issue_id, due_at)
-         SELECT p.issue_id, ?3 FROM issues i JOIN pulls p ON p.issue_id = i.id
-          WHERE i.repo_id = ?1 AND i.state = 'open' AND p.merged = 0 AND (
-              p.base_branch IN (SELECT branch FROM changed)
-              OR (p.source_repo_id IS NULL AND p.head_branch IN (SELECT branch FROM changed))
-          )
-         UNION
-         SELECT p.issue_id, ?3 FROM pulls p JOIN issues i ON i.id = p.issue_id
-          WHERE p.source_repo_id = ?1 AND p.head_branch IN (SELECT branch FROM changed)
-            AND i.state = 'open' AND p.merged = 0",
-        &[util::js_int(repo_id), util::js_text(&branches), util::js_int(util::now())],
-    ).await
-}
-
 #[derive(serde::Deserialize)]
 struct PendingComparison {
     issue_id: i64,
@@ -332,7 +307,7 @@ struct ComparisonTarget {
 
 /// Re-sample refs on cron. A newly accepted push advances the queue generation
 /// so work based on an older observation cannot consume the new signal.
-pub(crate) async fn refresh_pending(env: &Env) -> Result<()> {
+pub(crate) async fn refresh_pending(env: &Env, limit: i64) -> Result<()> {
     let database = env.d1("DB")?;
     let pending: Vec<PendingComparison> = db::all(
         &database,
@@ -340,7 +315,7 @@ pub(crate) async fn refresh_pending(env: &Env) -> Result<()> {
          WHERE q.due_at <= ?1 AND NOT EXISTS (
              SELECT 1 FROM merge_queue mq WHERE mq.issue_id = q.issue_id AND mq.state = 'running'
          ) ORDER BY q.due_at ASC, q.issue_id ASC LIMIT ?2",
-        &[util::js_int(util::now()), util::js_int(REFRESH_BATCH as i64)],
+        &[util::js_int(util::now()), util::js_int(limit)],
     ).await?;
     for item in pending {
         let finished = match refresh_pending_comparison(env, &database, &item).await {
@@ -489,6 +464,15 @@ async fn check_integration(
 ) -> Result<std::result::Result<(), DiscussionText>> {
     if !is_object_id(tip) || tip == base {
         return Ok(Err(DiscussionText::MergeAbsent));
+    }
+    if let RepoHandle::Native(native) = repo {
+        use crate::native_git::SnapshotRead;
+        return Ok(match native.integrated(tip, base, head).await? {
+            SnapshotRead::Found(true) => Ok(()),
+            SnapshotRead::Found(false) => Err(DiscussionText::MergeAbsent),
+            SnapshotRead::Missing => Err(DiscussionText::MergeUnavailable),
+            SnapshotRead::Limited => Err(DiscussionText::MergeLimited),
+        });
     }
     let mut seen = HashSet::from([tip.to_owned()]);
     let mut queue = VecDeque::from([tip.to_owned()]);

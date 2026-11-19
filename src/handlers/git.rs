@@ -129,6 +129,17 @@ async fn proxy(req: Request, ctx: RouteContext<AppState>, service: &str) -> Resu
     } else {
         None
     };
+    let intent = if let Some(push) = &receive {
+        match crate::git_activity::stage(&state.env, repo.id, &push.updates).await {
+            Ok(intent) => intent,
+            Err(error) => {
+                let _ = push.body.cancel();
+                return Err(error);
+            }
+        }
+    } else {
+        None
+    };
 
     let init = RequestInit {
         body,
@@ -156,7 +167,7 @@ async fn proxy(req: Request, ctx: RouteContext<AppState>, service: &str) -> Resu
         response_headers.set("Cache-Control", "no-store")?;
     }
     if upstream.status_code() == 200 {
-        if let Some(push) = receive.filter(|push| push.report && !push.updates.is_empty()) {
+        if let (Some(intent), Some(push)) = (intent, receive.filter(|push| push.report)) {
             if let ResponseBody::Stream(stream) = upstream.body() {
                 let halves = stream.tee();
                 let client = halves.get(0).unchecked_into();
@@ -165,8 +176,9 @@ async fn proxy(req: Request, ctx: RouteContext<AppState>, service: &str) -> Resu
                 let actor = identity.as_ref().map(|id| id.user_id);
                 state.worker_ctx.wait_until(async move {
                     if let Ok(accepted) = git_wire::receive_report(&observer, push.sideband).await {
-                        let updates: Vec<_> = push.updates.into_iter().filter(|update| accepted.contains(&update.name)).collect();
-                        crate::git_activity::record(&env, repo.id, actor, &updates).await;
+                        if crate::git_activity::confirm(&env, intent, actor, &accepted).await.is_err() {
+                            console_log!("event=git_push_confirmation_failed repo_id={}", repo.id);
+                        }
                     }
                 });
                 upstream = git_wire::response_with_stream(upstream, client)?;

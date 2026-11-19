@@ -92,9 +92,47 @@ modes store Git LFS bytes in the private `LFS_OBJECTS` R2 binding.
 
 The default Artifacts deployment requires **Workers Paid** with Artifacts access.
 The Worker can use its `workers.dev` address or a Cloudflare custom domain.
-Enable R2 and configure a separate `LFS_OBJECTS` bucket for each instance that
-serves LFS. Use an isolated D1 database and Git storage for staging.
+Enable R2 and configure a private `LFS_OBJECTS` bucket for each instance.
+Use separate D1, Git storage, and R2 resources for staging.
 [Artifacts pricing](https://developers.cloudflare.com/artifacts/platform/pricing/) · [Custom domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)
+
+### Deployment limits
+
+Set `SHARD_LIMIT_PROFILE` in Wrangler `vars` to `free` or `paid`. The
+Artifacts configuration uses `paid`, the `native` environment uses `free`,
+and a configuration that omits the variable uses `free`. Set
+`env.native.vars.SHARD_LIMIT_PROFILE` to `paid` when a native deployment uses
+a Workers Paid account and needs larger batches. Release archives use the
+same settings in `wrangler.json`.
+
+| Work | `free` | `paid` |
+| --- | ---: | ---: |
+| Repository copy checks per tick | 2 | 8 |
+| Repository cleanups per tick | 1 | 8 |
+| R2 objects per copy page | 2 | 8 |
+| R2 keys per cleanup page | 64 | 256 |
+| Unfinished push checks per tick | 1 | 12 |
+| PR refreshes per tick | 1 | 24 |
+| Merge queue entries per tick | 1 | 12 |
+| Webhook deliveries per tick, per delivery mechanism | 1 | 16 |
+
+`SHARD_LFS_MAX_BYTES` defaults to `100000000` in both profiles. In `free`,
+the configured value can be lowered. In `paid`, it can also be raised to
+the lower of the upload domain's request limit and R2's single-PUT limit
+of `5363466240` bytes. The setting governs new uploads. The domain's Free
+and Pro plans accept 100 MB and Business accepts 200 MB. Workers Free has
+10 ms of CPU per HTTP or cron invocation and 50 external subrequests per
+invocation. D1 Free allows 50 queries per Worker invocation and 100,000
+written rows per day across the account. Workers and R2 usage continue to
+follow their account and zone settings when you change the Shard profile.
+[Workers limits](https://developers.cloudflare.com/workers/platform/limits/) · [D1 limits](https://developers.cloudflare.com/d1/platform/limits/) · [R2 limits](https://developers.cloudflare.com/r2/platform/limits/)
+
+Active Worker HTTP requests can stream while the client is connected.
+An HTTPS origin behind Cloudflare's proxy has a default 125-second read
+timeout and 30-second write timeout. Configure the origin proxy to send
+and receive streams. Shard gives each LFS upload 15 minutes for its body
+and tracks unfinished pushes in D1 for scheduled recovery.
+[Worker duration](https://developers.cloudflare.com/workers/platform/limits/#duration) · [Proxy timeouts](https://developers.cloudflare.com/fundamentals/reference/connection-limits/)
 
 ### Deploy from GitHub or GitLab
 
@@ -289,9 +327,11 @@ pointers in Git, while the LFS Batch endpoint transfers the files using the
 basic adapter. Uploads require a write-scoped token and repository write access.
 Public objects can be downloaded anonymously. Private downloads require a
 repository grant. Each object is scoped to its repository and checked against
-the declared SHA-256 and size. The limits are 100 objects per batch and
-100,000,000 bytes per upload. R2 data needs its own backup.
-Copy LFS objects separately when moving a repository or creating a Git mirror.
+the declared SHA-256 and size. A batch can contain up to 100 objects. New
+uploads follow the [deployment limit](#deployment-limits). A fork publishes
+after its LFS objects have been copied to the fork's own R2 namespace. Repo
+deletion removes access immediately and schedules Git and R2 cleanup.
+Copy LFS objects separately for external Git imports and mirrors.
 [Git LFS Batch API](https://github.com/git-lfs/git-lfs/blob/main/docs/api/batch.md)
 
 ## Images and issue references
@@ -382,24 +422,48 @@ Verify `X-Shard-Signature` as `sha256=` followed by the lowercase hex HMAC-SHA25
 of the exact request body. `X-Shard-Event-Id` identifies the event and
 `X-Shard-Delivery-Id` identifies the subscription delivery across retries.
 Git events include `ref`, `before`, and `after`. A missing tip is JSON `null`.
+For a push through Shard, D1 records the proposed ref transitions before
+forwarding the pack. A complete Git receive report commits the ref event,
+Webhook outbox, and PR refresh together. If that report is lost, the minute
+cron checks the live refs for up to one hour. A recovered observation has
+an unknown actor. Intermediate updates superseded before observation can
+be missed.
+
 Existing instance-level `WEBHOOK_REPO`, `WEBHOOK_ENDPOINT`, and `WEBHOOK_SECRET`
 configuration continues to deliver issue and review events.
 
 ## Backup and restore
 
-Pause writes while taking a paired D1 and Git backup. Keep the SQL and each Git
-mirror in private storage outside the workspace. Record each repository's
-`repos.git_backend` and stable storage ID (`repos.artifacts_repo`) from D1.
+Pause writes and scheduled cleanup while taking a paired D1, Git, and R2
+backup. Keep the SQL, each Git mirror or volume snapshot, and the R2 `lfs/`
+prefix in private backup storage. Record each repository's `id`,
+`git_backend`, stable storage ID (`artifacts_repo`), and `lfs_copy_id` from D1.
 
-For a loopback rehearsal, set `SHARD_SOURCE_D1` to the local persistence directory,
-`SHARD_RESTORE_D1` to an empty persistence path, and `SHARD_BACKUP` to an absolute
-backup directory. Set `SHARD_REPO_URL` to the clone URL for one repository with refs
-and `SHARD_REPO_BACKUP` to its own absolute backup directory. Create both backup
+For an in-place hosted D1 recovery, record a Time Travel bookmark while writes
+are paused. Bookmarks cover seven days on Workers Free and 30 days on Workers
+Paid. Keep a SQL export for recovery into a new database.
+
+For a loopback rehearsal, set `SHARD_RESTORE_D1` to an empty persistence path
+and `SHARD_BACKUP` to an absolute backup directory. Local D1 export reads
+`.wrangler/state` next to the Wrangler configuration. If the source used
+`--persist-to`, copy its `v3/d1` directory into `.wrangler/state/v3/` next to
+a temporary copy of the configuration and pass that copy with `--config`.
+For the native environment, add `--env native` to both D1 commands.
+
+Set `SHARD_REPO_URL` to the clone URL for one repository with refs and
+`SHARD_REPO_BACKUP` to its own absolute backup directory. Create both backup
 directories before running these commands.
 
 ```sh
-mise exec -- node node_modules/wrangler/bin/wrangler.js d1 export DB --local --persist-to "$SHARD_SOURCE_D1" --output "$SHARD_BACKUP/shard.sql"
-mise exec -- node node_modules/wrangler/bin/wrangler.js d1 execute DB --local --persist-to "$SHARD_RESTORE_D1" --file "$SHARD_BACKUP/shard.sql"
+mise exec -- node node_modules/wrangler/bin/wrangler.js d1 export DB --local --output "$SHARD_BACKUP/shard.sql"
+```
+
+Copy `shard.sql` to `shard-restore.sql`. With Wrangler 4.164.0, move the
+`CREATE VIEW git_ref_observations` statement before `CREATE TRIGGER git_ref_observe`
+in the import copy. The local exporter writes triggers before views.
+
+```sh
+mise exec -- node node_modules/wrangler/bin/wrangler.js d1 execute DB --local --persist-to "$SHARD_RESTORE_D1" --file "$SHARD_BACKUP/shard-restore.sql"
 git clone --mirror "$SHARD_REPO_URL" "$SHARD_REPO_BACKUP/source.git"
 git -C "$SHARD_REPO_BACKUP/source.git" bundle create "$SHARD_REPO_BACKUP/source.bundle" --all
 git clone --mirror "$SHARD_REPO_BACKUP/source.bundle" "$SHARD_REPO_BACKUP/restored.git"
@@ -411,6 +475,24 @@ object IDs in both mirrors. For an empty repository, retain the mirror and its
 D1 record. Restore storage to the expected IDs before serving the restored
 database. For native storage, preserve the bare-repository volume, including
 objects from deleted branches that archived pull request comparisons still use.
+
+For R2, configure private S3 remotes in rclone. Set `SHARD_R2_SOURCE` and
+`SHARD_R2_RESTORE` to values of the form `remote:bucket`, pointing to the
+source and an empty restore bucket. Use the same backup directory as the
+D1 export and preserve the complete keys under `lfs/`, including
+`lfs/<repo-id>/<oid>` and `lfs/fork-<copy-id>/<oid>`.
+
+```sh
+rclone copy "$SHARD_R2_SOURCE/lfs" "$SHARD_BACKUP/r2/lfs" --immutable
+rclone check "$SHARD_R2_SOURCE/lfs" "$SHARD_BACKUP/r2/lfs" --download
+rclone copy "$SHARD_BACKUP/r2/lfs" "$SHARD_R2_RESTORE/lfs" --immutable
+rclone check "$SHARD_BACKUP/r2/lfs" "$SHARD_R2_RESTORE/lfs" --download
+```
+
+Bind the restored bucket with its matching D1 and Git backup. Clone a
+repository and a fork with LFS and verify that saved PR revisions also open
+before resuming traffic. [R2 with rclone](https://developers.cloudflare.com/r2/examples/rclone/)
+
 [D1 export and import](https://developers.cloudflare.com/d1/best-practices/import-export-data/) · [D1 Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/)
 
 Worker responses include `X-Request-ID` for log correlation. Daily maintenance
@@ -421,9 +503,11 @@ at 03:00 UTC removes expired sessions, tokens, login throttle windows, and email
 - Pull request comparisons report missing Git objects and traversal limits.
   Shard requires a unique best common ancestor and reports unrelated branches
   or multiple best common ancestors explicitly. Text diffs cover UTF-8 files
-  up to 96 KiB and 512 lines per side. Historical diffs depend on the saved Git
-  objects remaining available. Merge verification separately uses bounded
-  ancestry traversal and requires the saved branch tips to be reachable.
+  up to 96 KiB and 512 lines per side. Same-origin native repositories have
+  one authenticated origin request per merge-base, file-tree comparison, or
+  ancestry-verification step, with a five-second Git operation budget and
+  up to 256 changed files. Artifacts and mixed-backend comparisons use
+  bounded object traversal. Historical diffs require the saved objects.
 - Branch and tag discovery reads at most 512 advertised refs within 256 KiB.
   Search is scoped to one Git snapshot. Commit search follows up to 24
   first-parent commits. Code search skips non-text files and files over 64 KiB

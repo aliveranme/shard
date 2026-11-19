@@ -17,6 +17,13 @@ const MAX_METADATA_BYTES = 4 * 1024 * 1024;
 const MAX_CGI_HEADER_BYTES = 8 * 1024;
 const MAX_GIT_DIAGNOSTIC_BYTES = 8 * 1024;
 const MAX_QUERY_VALUE_BYTES = 4 * 1024;
+const COMPARISON_TIMEOUT_MS = 5_000;
+const MAX_COMPARISON_CHANGES = 256;
+const MAX_COMPARISON_PATH_BYTES = 4_096;
+const MAX_COMPARISON_PATH_PARTS = 13;
+// Each raw record has a 98-byte header and two NUL delimiters.
+const MAX_RAW_DIFF_BYTES = MAX_COMPARISON_CHANGES * (MAX_COMPARISON_PATH_BYTES + 100);
+const RAW_DIFF_ENTRY = /^:(000000|100644|100755|120000|160000) (000000|100644|100755|120000|160000) ([0-9a-f]{40}) ([0-9a-f]{40}) [ADMT]$/;
 const BRANCH_PREFIX = "refs/heads/";
 const TAG_PREFIX = "refs/tags/";
 const SERVICE = /^(git-upload-pack|git-receive-pack)$/;
@@ -137,6 +144,15 @@ function sendJson(res, status, payload) {
   res.statusCode = status;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.end(JSON.stringify(payload));
+}
+
+function sendComparison(res, payload) {
+  const body = JSON.stringify(payload);
+  const length = Buffer.byteLength(body);
+  if (length > MAX_METADATA_BYTES) throw new HttpError(413);
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Content-Length", length);
+  res.end(body);
 }
 
 function sendStatus(res, status) {
@@ -315,6 +331,59 @@ async function resolveRevision(revision, options) {
 async function exactObject(hash, type, options) {
   if (await resolveRevision(`${hash}^{${type}}`, options) !== hash) throw new HttpError(404);
   return hash;
+}
+
+async function comparisonBase(base, head, target, options) {
+  // The first two results suffice to distinguish a unique base from an ambiguous one.
+  const output = await gitOutput("merge-base", ["--all", base, head], {
+    ...options, missing: 1, capturePrefix: 2 * (40 + 2),
+  });
+  if (!output) return [];
+  const bases = output.toString("latin1").trimEnd().split(/\r?\n/, 2);
+  if (bases.some((hash) => !OID.test(hash) || hash === ZERO_OID)) throw new Error("Invalid Git merge base output");
+  // The saved base must remain readable directly in the target repository.
+  if (bases.length === 1) await exactObject(bases[0], "commit", target);
+  return bases;
+}
+
+function diffObject(mode, hash) {
+  if ((mode === "000000") !== (hash === ZERO_OID)) throw new Error("Invalid Git diff object");
+  return mode === "000000" ? null : { mode, hash };
+}
+
+async function comparisonFiles(base, head, options) {
+  const output = await gitOutput("diff-tree", [
+    "-r", "-z", "--raw", "--no-abbrev", "--no-commit-id", "--no-renames", "--no-ext-diff",
+    "--no-relative", "--ignore-submodules=none", base, head, "--",
+  ], { ...options, maxBytes: MAX_RAW_DIFF_BYTES });
+  const changes = [];
+  let at = 0;
+  while (at < output.length) {
+    if (changes.length === MAX_COMPARISON_CHANGES) throw new HttpError(413);
+    const fieldEnd = output.indexOf(0, at);
+    const pathEnd = output.indexOf(0, fieldEnd + 1);
+    if (fieldEnd < 0 || pathEnd < 0) throw new Error("Incomplete Git diff output");
+    const fields = RAW_DIFF_ENTRY.exec(output.toString("latin1", at, fieldEnd));
+    if (!fields) throw new Error("Invalid Git diff output");
+    if (pathEnd - fieldEnd - 1 > MAX_COMPARISON_PATH_BYTES) throw new HttpError(413);
+    const path = output.toString("utf8", fieldEnd + 1, pathEnd);
+    const parts = path.split("/");
+    if (parts.some((part) => part === "" || part === "." || part === "..")) throw new Error("Invalid Git diff path");
+    if (parts.length > MAX_COMPARISON_PATH_PARTS) throw new HttpError(413);
+    const [, oldMode, newMode, oldHash, newHash] = fields;
+    changes.push({ path, before: diffObject(oldMode, oldHash), after: diffObject(newMode, newHash) });
+    at = pathEnd + 1;
+  }
+  return changes;
+}
+
+async function carriesComparison(tip, base, head, options) {
+  await exactObject(tip, "commit", options);
+  for (const ancestor of [base, head]) {
+    if (await resolveRevision(`${ancestor}^{commit}`, options) !== ancestor) return false;
+    if (!await gitOutput("merge-base", ["--is-ancestor", ancestor, tip], { ...options, missing: 1 })) return false;
+  }
+  return true;
 }
 
 async function validateRef(reference, branchesOnly, options) {
@@ -832,6 +901,47 @@ export async function createGitOrigin({ directory, token, importHosts = DEFAULT_
     }
   }
 
+  async function compareSnapshots(res, id, action, query, signal) {
+    res.setHeader("X-Shard-Comparison", "1");
+    const base = controlOid(queryValue(query, "base"), true);
+    const head = controlOid(queryValue(query, "head"), true);
+    const source = query.has("source") ? queryValue(query, "source") : id;
+    const tip = action === "integrated" ? controlOid(queryValue(query, "tip"), true) : null;
+    if (!ID.test(source) || (tip !== null && query.has("source"))) throw new HttpError(422);
+
+    const timeout = AbortSignal.timeout(COMPARISON_TIMEOUT_MS);
+    const comparisonSignal = AbortSignal.any([signal, timeout]);
+    try {
+      const result = await withRepo(id, async (repo) => {
+        const target = { cwd, repo, signal: comparisonSignal };
+        if (tip !== null) return carriesComparison(tip, base, head, target);
+
+        await exactObject(base, "commit", target);
+        async function compare(sourceRepo) {
+          const sourceOptions = sourceRepo === repo ? target : { ...target, repo: sourceRepo };
+          await exactObject(head, "commit", sourceOptions);
+          const objects = join(sourceRepo, "objects");
+          // Git accepts C-quoted alternate paths, including the platform's list separator.
+          const options = sourceRepo === repo ? target : {
+            ...target, env: { GIT_ALTERNATE_OBJECT_DIRECTORIES: `"${objects.replace(/[\\"]/g, "\\$&")}"` },
+          };
+          if (action === "merge-base") return comparisonBase(base, head, target, options);
+          const baseTree = await resolveRevision(`${base}^{tree}`, target);
+          const headTree = await resolveRevision(`${head}^{tree}`, sourceOptions);
+          if (!baseTree || !headTree) throw new Error("Invalid Git comparison tree");
+          return comparisonFiles(baseTree, headTree, options);
+        }
+
+        return key(source) === key(id) ? compare(repo) : withRepo(source, compare);
+      });
+      comparisonSignal.throwIfAborted();
+      sendComparison(res, result);
+    } catch (error) {
+      if (timeout.aborted) throw new HttpError(413);
+      throw error;
+    }
+  }
+
   async function mutateRefs(req, res, id, action, signal) {
     const { reference, newOid, oldOid, baseOid, headOid, source } = await readBody(req);
     await withWrite(id, signal, async (repo) => {
@@ -927,11 +1037,13 @@ export async function createGitOrigin({ directory, token, importHosts = DEFAULT_
     if (path === "/v1/artifacts/merge" && req.method === "POST" && query.size === 0) {
       return mergeArtifacts(req, res, signal);
     }
-    const control = /^\/v1\/repos\/([^/]+)(?:\/(log|commit|tree|blob|file|ref|head|merge))?$/.exec(path);
+    const control = /^\/v1\/repos\/([^/]+)(?:\/(log|commit|tree|blob|file|ref|head|merge|merge-base|compare|integrated))?$/.exec(path);
     if (control && ID.test(control[1])) {
       const [, id, action] = control;
       if (action === "ref" || action === "head" || action === "merge") {
         if (req.method === "POST" && query.size === 0) return mutateRefs(req, res, id, action, signal);
+      } else if (action === "merge-base" || action === "compare" || action === "integrated") {
+        if (req.method === "GET") return compareSnapshots(res, id, action, query, signal);
       } else if (action && req.method === "GET") {
         return withRepo(id, (repo) => readObject(res, action, query, { cwd, repo, signal }));
       }

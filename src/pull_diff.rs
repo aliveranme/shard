@@ -1,4 +1,6 @@
 use crate::git_storage::{is_object_id, BlobRead, RepoHandle, TreeEntry};
+use crate::native_git::{NativeRepo, SnapshotRead};
+use serde::{Deserialize, Deserializer};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::ops::Range;
@@ -19,11 +21,35 @@ pub enum Comparison {
     Limited,
 }
 
+#[derive(Deserialize)]
 pub struct ChangedFile {
     pub path: String,
+    #[serde(skip)]
     pub url_path: String,
-    before: Option<TreeEntry>,
-    after: Option<TreeEntry>,
+    before: Option<FileObject>,
+    after: Option<FileObject>,
+}
+
+#[derive(Deserialize)]
+struct FileObject {
+    hash: String,
+    mode: FileMode,
+}
+
+#[derive(Clone, Copy)]
+struct FileMode(&'static str);
+
+impl<'de> Deserialize<'de> for FileMode {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let mode = match <&str>::deserialize(deserializer)? {
+            "100644" => "100644",
+            "100755" => "100755",
+            "120000" => "120000",
+            "160000" => "160000",
+            _ => return Err(serde::de::Error::custom("Invalid Git diff mode")),
+        };
+        Ok(Self(mode))
+    }
 }
 
 impl ChangedFile {
@@ -36,8 +62,8 @@ impl ChangedFile {
     }
 
     pub fn modes(&self) -> Option<(&'static str, &'static str)> {
-        let before = self.before.as_ref()?.mode;
-        let after = self.after.as_ref()?.mode;
+        let before = self.before.as_ref()?.mode.0;
+        let after = self.after.as_ref()?.mode.0;
         (before != after).then_some((before, after))
     }
 
@@ -50,7 +76,7 @@ impl ChangedFile {
         let mut text = [String::new(), String::new()];
         for ((entry, repo), output) in [(&self.before, target), (&self.after, source)].into_iter().zip(&mut text) {
             let Some(entry) = entry else { continue };
-            if entry.mode == "160000" {
+            if entry.mode.0 == "160000" {
                 return Ok(FileDiff::Submodule);
             }
             let bytes = match repo.read_blob_bounded(&entry.hash, MAX_BLOB_BYTES).await? {
@@ -72,6 +98,13 @@ impl ChangedFile {
 pub async fn compare(target: &RepoHandle, source: &RepoHandle, base: &str, head: &str) -> Result<Comparison> {
     if !is_object_id(base) || !is_object_id(head) {
         return Ok(Comparison::MissingSnapshot);
+    }
+    if let Some((target, source)) = NativeRepo::comparison_pair(target, source) {
+        return match target.file_changes(source, base, head).await? {
+            SnapshotRead::Found(files) => native_files(files),
+            SnapshotRead::Missing => Ok(Comparison::MissingSnapshot),
+            SnapshotRead::Limited => Ok(Comparison::Limited),
+        };
     }
     let Some(base_tree) = commit_tree(target, base).await? else {
         return Ok(Comparison::MissingSnapshot);
@@ -107,6 +140,32 @@ pub async fn compare(target: &RepoHandle, source: &RepoHandle, base: &str, head:
     } else {
         Ok(Comparison::Limited)
     }
+}
+
+fn native_files(mut files: Vec<ChangedFile>) -> Result<Comparison> {
+    if files.len() > MAX_CHANGES {
+        return Ok(Comparison::Limited);
+    }
+    for file in &mut files {
+        let mut parts = file.path.split('/');
+        if file.path.len() > MAX_PATH_BYTES || parts.clone().nth(usize::from(MAX_DEPTH) + 1).is_some() {
+            return Ok(Comparison::Limited);
+        }
+        if parts.any(|part| matches!(part, "" | "." | "..") || part.contains('\0'))
+            || (file.before.is_none() && file.after.is_none())
+            || [&file.before, &file.after].into_iter().flatten().any(|object| {
+                !is_object_id(&object.hash) || object.hash.bytes().all(|byte| byte == b'0')
+            })
+        {
+            return Err(worker::Error::RustError("Native Git origin returned an invalid file change".into()));
+        }
+        file.url_path = crate::util::url_path(&file.path);
+    }
+    files.sort_unstable_by(|a, b| a.path.cmp(&b.path));
+    if files.windows(2).any(|pair| pair[0].path == pair[1].path) {
+        return Err(worker::Error::RustError("Native Git origin returned duplicate file changes".into()));
+    }
+    Ok(Comparison::Complete(files))
 }
 
 async fn commit_tree(repo: &RepoHandle, id: &str) -> Result<Option<String>> {
@@ -195,10 +254,11 @@ impl Walk<'_> {
     }
 }
 
-fn split_entry(entry: Option<TreeEntry>) -> (Option<String>, Option<TreeEntry>) {
+fn split_entry(entry: Option<TreeEntry>) -> (Option<String>, Option<FileObject>) {
     match entry {
         Some(entry) if entry.is_dir => (Some(entry.hash), None),
-        file => (None, file),
+        Some(TreeEntry { hash, mode, .. }) => (None, Some(FileObject { hash, mode: FileMode(mode) })),
+        None => (None, None),
     }
 }
 

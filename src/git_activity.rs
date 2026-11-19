@@ -1,29 +1,172 @@
+use crate::db;
+use crate::git_storage::RepoHandle;
 use crate::git_wire::{RefUpdate, ZERO_OID};
-use crate::webhooks;
-use worker::Env;
+use crate::handlers::common::load_repo_by_id;
+use crate::refs::{self, Inventory};
+use crate::util::{js_int, js_null, js_text, now};
+use serde::Deserialize;
+use worker::d1::{D1Database, D1PreparedStatement};
+use worker::{Env, Error, Result};
+
+const CHECK_DELAY: i64 = 60;
+const RETRY_DELAY: i64 = 300;
+const INTENT_TTL: i64 = 3600;
+
+#[derive(Deserialize)]
+pub(crate) struct PushIntent {
+    id: i64,
+    repo_id: i64,
+    updates: String,
+    expires_at: i64,
+}
+
+fn observable(update: &RefUpdate) -> bool {
+    update.before != update.after
+        && (update.name.starts_with("refs/heads/") || update.name.starts_with("refs/tags/"))
+        && !update.name.ends_with('/')
+        && !update.name.chars().any(char::is_control)
+}
+
+pub(crate) async fn stage(env: &Env, repo_id: i64, updates: &[RefUpdate]) -> Result<Option<PushIntent>> {
+    let updates: Vec<_> = updates.iter().filter(|update| observable(update)).collect();
+    if updates.is_empty() {
+        return Ok(None);
+    }
+    let updates = serde_json::to_string(&updates)?;
+    let time = now();
+    let expires_at = time + INTENT_TTL;
+    let id = env.d1("DB")?.prepare(
+        "INSERT INTO git_push_intents (repo_id, updates, check_at, expires_at)
+         VALUES (?1, ?2, ?3, ?4) RETURNING id",
+    ).bind(&[js_int(repo_id), js_text(&updates), js_int(time + CHECK_DELAY), js_int(expires_at)])?
+        .first::<i64>(Some("id")).await?
+        .ok_or_else(|| Error::RustError("Git push intent could not be reserved".into()))?;
+    Ok(Some(PushIntent { id, repo_id, updates, expires_at }))
+}
+
+pub(crate) async fn confirm(env: &Env, mut intent: PushIntent, actor: Option<i64>, accepted: &[String]) -> Result<()> {
+    let database = env.d1("DB")?;
+    // A scheduled check can settle some refs while the Git response is in flight.
+    for _ in 0..2 {
+        let updates: Vec<RefUpdate> = serde_json::from_str(&intent.updates)?;
+        let confirmed: Vec<_> = updates.iter().filter(|update| accepted.contains(&update.name)).collect();
+        if settle(&database, &intent, actor, &confirmed, None, false).await? {
+            return Ok(());
+        }
+        let Some(current) = db::first(&database,
+            "SELECT id, repo_id, updates, expires_at FROM git_push_intents WHERE id = ?",
+            &[js_int(intent.id)],
+        ).await? else { return Ok(()) };
+        intent = current;
+    }
+    Err(Error::RustError("Git push confirmation raced with reconciliation".into()))
+}
 
 pub(crate) async fn record(env: &Env, repo_id: i64, actor: Option<i64>, updates: &[RefUpdate]) {
-    let mut accepted = Vec::new();
-    let mut branches = Vec::new();
-    for update in updates {
-        if update.before == update.after {
-            continue;
-        }
-        if update.name.starts_with("refs/heads/") {
-            branches.push(update.name.clone());
-        } else if !update.name.starts_with("refs/tags/") {
-            continue;
-        }
-        accepted.push(webhooks::RefUpdate {
-            name: &update.name,
-            before: (update.before != ZERO_OID).then_some(update.before.as_str()),
-            after: (update.after != ZERO_OID).then_some(update.after.as_str()),
-        });
+    let updates: Vec<_> = updates.iter().filter(|update| observable(update)).collect();
+    if !updates.is_empty() && publish(env, repo_id, actor, &updates).await.is_err() {
+        worker::console_log!("event=git_ref_observation_failed repo_id={repo_id}");
     }
-    if !accepted.is_empty() && webhooks::record_refs(env, repo_id, actor, &accepted).await.is_err() {
-        worker::console_log!("event=git_ref_delivery_record_failed repo_id={repo_id}");
+}
+
+async fn publish(env: &Env, repo_id: i64, actor: Option<i64>, updates: &[&RefUpdate]) -> Result<()> {
+    observations(&env.d1("DB")?, repo_id, actor, updates, None, false)?.run().await?;
+    Ok(())
+}
+
+fn observations(
+    database: &D1Database, repo_id: i64, actor: Option<i64>, updates: &[&RefUpdate],
+    intent: Option<&PushIntent>, recovered: bool,
+) -> Result<D1PreparedStatement> {
+    let json = serde_json::to_string(updates)?;
+    database.prepare(
+        "INSERT INTO git_ref_observations (repo_id, name, before_oid, after_oid, actor_id, observed_at, recovered)
+         SELECT ?1, json_extract(j.value, '$.name'), NULLIF(json_extract(j.value, '$.before'), ?7),
+                NULLIF(json_extract(j.value, '$.after'), ?7), ?2, ?3, ?8
+         FROM json_each(?4) AS j
+         WHERE ?5 IS NULL OR EXISTS (SELECT 1 FROM git_push_intents WHERE id = ?5 AND updates = ?6)",
+    ).bind(&[
+        js_int(repo_id), actor.map_or_else(js_null, js_int), js_int(now()), js_text(&json),
+        intent.map_or_else(js_null, |intent| js_int(intent.id)),
+        intent.map_or_else(js_null, |intent| js_text(&intent.updates)), js_text(ZERO_OID), js_int(i64::from(recovered)),
+    ])
+}
+
+async fn settle(
+    database: &D1Database, intent: &PushIntent, actor: Option<i64>, updates: &[&RefUpdate],
+    remaining: Option<&str>, recovered: bool,
+) -> Result<bool> {
+    let mut statements = Vec::with_capacity(2);
+    if !updates.is_empty() {
+        statements.push(observations(database, intent.repo_id, actor, updates, Some(intent), recovered)?);
     }
-    if !branches.is_empty() && crate::pull_review::enqueue_refs(env, repo_id, &branches).await.is_err() {
-        worker::console_log!("event=git_ref_comparison_enqueue_failed repo_id={repo_id}");
+    let args = [js_int(intent.id), js_text(&intent.updates)];
+    let finish = if let Some(remaining) = remaining {
+        database.prepare("UPDATE git_push_intents SET updates = ?3 WHERE id = ?1 AND updates = ?2")
+            .bind(&[args[0].clone(), args[1].clone(), js_text(remaining)])?
+    } else {
+        database.prepare("DELETE FROM git_push_intents WHERE id = ?1 AND updates = ?2").bind(&args)?
+    };
+    statements.push(finish);
+    let result = database.batch(statements).await?.pop()
+        .ok_or_else(|| Error::RustError("Missing Git push settlement result".into()))?;
+    Ok(result.meta()?.and_then(|meta| meta.changes).is_some_and(|changes| changes != 0))
+}
+
+pub(crate) async fn reconcile(env: &Env, limit: i64) -> Result<()> {
+    let database = env.d1("DB")?;
+    let time = now();
+    let intents = db::all::<PushIntent>(&database,
+        "UPDATE git_push_intents SET check_at = ?2 WHERE id IN (
+             SELECT id FROM git_push_intents WHERE check_at <= ?1 ORDER BY check_at, id LIMIT ?3
+         ) RETURNING id, repo_id, updates, expires_at",
+        &[js_int(time), js_int(time + RETRY_DELAY), js_int(limit)],
+    ).await?;
+    for intent in intents {
+        if reconcile_intent(env, &database, &intent, time).await.is_err() {
+            worker::console_log!("event=git_push_reconcile_failed intent_id={}", intent.id);
+        }
+    }
+    Ok(())
+}
+
+async fn reconcile_intent(env: &Env, database: &D1Database, intent: &PushIntent, time: i64) -> Result<()> {
+    let Some(repo) = load_repo_by_id(database, intent.repo_id).await? else { return Ok(()) };
+    let expired = time >= intent.expires_at;
+    let receive_inventory = async {
+        let handle = RepoHandle::open(env, &repo).await?;
+        refs::load(&handle).await.map_err(|_| Error::RustError("Unable to observe refs for an unfinished push".into()))
+    };
+    let inventory = match receive_inventory.await {
+        Ok(inventory) => inventory,
+        Err(_) if expired => return expire(database, intent, &[]).await,
+        Err(error) => return Err(error),
+    };
+    let updates: Vec<RefUpdate> = serde_json::from_str(&intent.updates)?;
+    let (observed, remaining): (Vec<_>, Vec<_>) = updates.iter().partition(|update| {
+        ref_oid(&inventory, &update.name).unwrap_or(ZERO_OID) == update.after
+    });
+    if expired && !remaining.is_empty() {
+        expire(database, intent, &observed).await?;
+    } else if !observed.is_empty() {
+        let remaining = (!remaining.is_empty()).then(|| serde_json::to_string(&remaining)).transpose()?;
+        settle(database, intent, None, &observed, remaining.as_deref(), true).await?;
+    }
+    Ok(())
+}
+
+async fn expire(database: &D1Database, intent: &PushIntent, observed: &[&RefUpdate]) -> Result<()> {
+    if settle(database, intent, None, observed, None, true).await? {
+        worker::console_log!("event=git_push_intent_expired intent_id={}", intent.id);
+    }
+    Ok(())
+}
+
+fn ref_oid<'a>(inventory: &'a Inventory, name: &str) -> Option<&'a str> {
+    if let Some(name) = name.strip_prefix("refs/heads/") {
+        inventory.branches.iter().find(|branch| branch.name == name).map(|branch| branch.oid.as_str())
+    } else {
+        let name = name.strip_prefix("refs/tags/")?;
+        inventory.tags.iter().find(|tag| tag.name == name).map(|tag| tag.oid.as_str())
     }
 }

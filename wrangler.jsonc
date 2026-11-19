@@ -10,6 +10,7 @@
     "directory": "./static",
     "binding": "ASSETS"
   },
+  "vars": { "SHARD_LIMIT_PROFILE": "paid" },
   // Default Git storage for the Cloudflare deploy button and local simulator.
   "artifacts": [
     { "binding": "ARTIFACTS", "namespace": "shard" }
@@ -38,6 +39,7 @@
     "native": {
       "vars": {
         "GIT_BACKEND": "native",
+        "SHARD_LIMIT_PROFILE": "free",
         "NATIVE_GIT_ORIGIN": "http://127.0.0.1:8793"
       },
       "secrets": { "required": ["NATIVE_GIT_TOKEN"] },

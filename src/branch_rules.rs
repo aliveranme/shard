@@ -11,7 +11,6 @@ use askama::Template;
 use serde::Deserialize;
 use worker::{d1::D1Database, Env, Request, Response, Result, RouteContext};
 
-const QUEUE_BATCH: i64 = 6;
 const CLAIM_SECONDS: i64 = 300;
 
 #[derive(Template)]
@@ -254,7 +253,7 @@ pub(crate) async fn request_merge(_req: Request, ctx: RouteContext<AppState>) ->
     util::redirect(&location)
 }
 
-pub(crate) async fn process_queue(env: &Env) -> Result<()> {
+pub(crate) async fn process_queue(env: &Env, limit: i64) -> Result<()> {
     let database = env.d1("DB")?;
     let entries = db::all::<EntryId>(&database,
         "SELECT issue_id FROM merge_queue q
@@ -265,7 +264,7 @@ pub(crate) async fn process_queue(env: &Env) -> Result<()> {
                        (earlier.queued_at, earlier.issue_id) < (q.queued_at, q.issue_id)))))
                 OR (q.state = 'running' AND q.changed_at < ?1))
          ORDER BY changed_at, issue_id LIMIT ?2",
-        &[util::js_int(util::now() - CLAIM_SECONDS), util::js_int(QUEUE_BATCH)],
+        &[util::js_int(util::now() - CLAIM_SECONDS), util::js_int(limit)],
     ).await?;
     for entry in entries {
         if run_entry(env, entry.issue_id).await.is_err() {

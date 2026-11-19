@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -245,7 +245,9 @@ test("forge native Git over loopback", { timeout: 240_000 }, async (t) => {
       const localGit = (...args) => git(null, "-C", worktree, ...args);
       const mainContent = "# Native Git main\n";
       await writeFile(join(worktree, "README.md"), mainContent);
-      await localGit("add", "README.md");
+      await writeFile(join(worktree, "replacement"), "A file before the replacement.\n");
+      await writeFile(join(worktree, "mode-only.txt"), "Same file contents.\n");
+      await localGit("add", "README.md", "replacement", "mode-only.txt");
       await localGit("commit", "-m", "Native Git initial commit");
       const mainOid = await localGit("rev-parse", "HEAD");
       await assert.rejects(git(readToken, "-C", worktree, "push", projectRemote, "main"), { code: 128 });
@@ -400,22 +402,98 @@ test("forge native Git over loopback", { timeout: 240_000 }, async (t) => {
       await writeFile(join(worktree, "target-only.txt"), "The base advanced independently.\n");
       await localGit("add", "target-only.txt");
       await localGit("commit", "-m", "Advance the native target");
-      const targetTip = await localGit("rev-parse", "HEAD");
+      const initialTargetTip = await localGit("rev-parse", "HEAD");
       await git(writeToken, "-C", worktree, "push", projectRemote, "HEAD:refs/heads/main");
-      const cross = await viewer.post(`${project}/pulls/new`, {
-        title: "Review a change from a fork", source_repo: "nativeviewer/project-fork", base_branch: "main", head_branch: branch,
-      });
-      redirected(cross);
-      const before = await owner.get(cross.location);
+      await localGit("checkout", branch);
+      const directories = Array.from({ length: 84 }, (_, index) => `wide-${index}`);
+      const widePath = `${directories.at(-1)}/file.txt`;
+      await Promise.all(directories.map(async (directory) => {
+        await mkdir(join(worktree, directory));
+        await writeFile(join(worktree, directory, "file.txt"), "Original fork snapshot line.\n");
+      }));
+      await rm(join(worktree, "replacement"));
+      await mkdir(join(worktree, "replacement"));
+      await writeFile(join(worktree, "replacement", "nested.txt"), "A file inside the replacement.\n");
+      await localGit("add", "-A");
+      await chmod(join(worktree, "mode-only.txt"), 0o755);
+      await localGit("update-index", "--chmod=+x", "mode-only.txt");
+      await localGit("commit", "-m", "Add a wide native fork comparison");
+      const initialForkTip = await localGit("rev-parse", "HEAD");
+      await git(viewerToken, "-C", worktree, "push", remoteUrl(base, fork), branch);
+
+      const comparisonRequests = [];
+      const recordComparison = (req) => {
+        const url = new URL(req.url, nativeOrigin);
+        if (/^\/v1\/repos\/[^/]+\/(merge-base|compare|commit|tree)$/.test(url.pathname)) comparisonRequests.push(url);
+      };
+      let cross, before;
+      origin.on("request", recordComparison);
+      try {
+        cross = await viewer.post(`${project}/pulls/new`, {
+          title: "Review a change from a fork", source_repo: "nativeviewer/project-fork", base_branch: "main", head_branch: branch,
+        });
+        redirected(cross);
+        before = await owner.get(`${cross.location}?file=${encodeURIComponent(widePath)}`);
+      } finally {
+        origin.off("request", recordComparison);
+      }
+      assert.deepEqual(comparisonRequests.map((url) => url.pathname.split("/").at(-1)), ["merge-base", "compare"]);
+      const [mergeBaseRequest, diffRequest] = comparisonRequests;
+      assert.equal(mergeBaseRequest.searchParams.get("base"), initialTargetTip);
+      assert.equal(diffRequest.searchParams.get("base"), mainOid);
+      for (const url of comparisonRequests) {
+        assert.equal(url.searchParams.get("head"), initialForkTip);
+        assert.match(url.searchParams.get("source") ?? "", /^shard-/);
+        assert.notEqual(url.searchParams.get("source"), url.pathname.split("/")[3]);
+      }
+      for (const [side, wrongOid] of [["base", initialForkTip], ["head", initialTargetTip]]) {
+        const wrongRepo = new URL(diffRequest);
+        wrongRepo.searchParams.set(side, wrongOid);
+        const missing = await request(wrongRepo, { headers: bearer(token) });
+        assert.equal(missing.status, 404, `${side} must exist in its own repository`);
+        await missing.text();
+      }
+
+      assert.equal(before.status, 200);
       assert.match(before.body, /nativeviewer\/project-fork:feature\/notes/);
       assert.match(before.body, /Comparison 1/);
       assert.doesNotMatch(before.body, /target-only\.txt/);
-      await localGit("checkout", branch);
+      assert.match(before.body, new RegExp(`Base commit</span><code[^>]*>${initialTargetTip}</code>`));
+      assert.match(before.body, new RegExp(`Head commit</span><code[^>]*>${initialForkTip}</code>`));
+      assert.match(before.body, new RegExp(`Common ancestor</span><code[^>]*>${mainOid}</code>`));
+      assert.equal((before.body.match(/file=wide-\d+%2Ffile\.txt#file-diff/g) ?? []).length, directories.length);
+      assert.match(before.body, /diff-table__added[\s\S]*Original fork snapshot line\./);
+      assert.match(before.body, /file=replacement%2Fnested\.txt#file-diff/);
+      const replaced = await owner.get(`${cross.location}?file=replacement`);
+      assert.match(replaced.body, /diff-table__deleted[\s\S]*A file before the replacement\./);
+      const mode = await owner.get(`${cross.location}?file=mode-only.txt`);
+      assert.match(mode.body, /100644 → 100755/);
+
+      const comment = await owner.post(`${cross.location}/reviews`, {
+        decision: "line_comment", comparison_version: "1", path: widePath, line: "new:1", body: "Pin this fork line.",
+      });
+      redirected(comment);
+      const review = await owner.get(comment.location);
+      const historical = review.body.match(/href="(\?review=\d+)&amp;file=wide-83%2Ffile\.txt#diff-new-1"/)?.[1];
+      assert.ok(historical, "the saved line review links to the original fork snapshot");
+
+      await writeFile(join(worktree, widePath), "Refreshed fork snapshot line.\n");
       await writeFile(join(worktree, "fork-only.txt"), "This change exists only in the fork.\n");
-      await localGit("add", "fork-only.txt");
+      await localGit("add", "fork-only.txt", widePath);
       await localGit("commit", "-m", "Update the fork comparison");
       const forkTip = await localGit("rev-parse", "HEAD");
       await git(viewerToken, "-C", worktree, "push", remoteUrl(base, fork), branch);
+      await localGit("checkout", "target/main");
+      await writeFile(join(worktree, "target-only.txt"), "The target moved again after review.\n");
+      await localGit("add", "target-only.txt");
+      await localGit("commit", "-m", "Advance the target after opening the pull request");
+      const targetTip = await localGit("rev-parse", "HEAD");
+      await git(writeToken, "-C", worktree, "push", projectRemote, "HEAD:refs/heads/main");
+      const unintegrated = await owner.post(`${cross.location}/reviews`, {
+        decision: "merge_verified", comparison_version: "1",
+      });
+      assert.equal(unintegrated.status, 409);
+      assert.match(unintegrated.body, /does not contain both saved commits/);
       let after;
       for (let attempt = 0; attempt < 10; attempt++) {
         await tick();
@@ -425,6 +503,16 @@ test("forge native Git over loopback", { timeout: 240_000 }, async (t) => {
       }
       assert.match(after.body, /Comparison 2/);
       assert.match(after.body, /file=fork-only\.txt/);
+      const current = await owner.get(`${cross.location}?file=${encodeURIComponent(widePath)}`);
+      assert.match(current.body, new RegExp(`Base commit</span><code[^>]*>${targetTip}</code>`));
+      assert.match(current.body, new RegExp(`Head commit</span><code[^>]*>${forkTip}</code>`));
+      assert.match(current.body, /diff-table__added[\s\S]*Refreshed fork snapshot line\./);
+      assert.doesNotMatch(current.body, /target-only\.txt/);
+      const original = await owner.get(`${cross.location}${historical}&file=${encodeURIComponent(widePath)}`);
+      assert.equal(original.status, 200);
+      assert.match(original.body, /Review comparison/);
+      assert.match(original.body, /id="diff-new-1"[\s\S]*Original fork snapshot line\./);
+      assert.doesNotMatch(original.body, /Refreshed fork snapshot line|file=fork-only\.txt|file=target-only\.txt/);
       assert.equal((await owner.post(`${cross.location}/reviews`, { decision: "approved", comparison_version: "1" })).status, 409);
       redirected(await owner.post(`${project}/settings/branches`, { action: "save", branch: "main", approvals: "0", checks: "ci/fork" }));
       const report = (credential) => guest.send(`${project}/commit/${forkTip}/checks`, {
@@ -445,6 +533,14 @@ test("forge native Git over loopback", { timeout: 240_000 }, async (t) => {
       await git(null, "-C", clone, "fetch", "origin", "main");
       assert.equal(await git(null, "-C", clone, "show", "-s", "--format=%P", "FETCH_HEAD"), `${targetTip} ${forkTip}`);
       assert.match(await git(null, "-C", clone, "show", "FETCH_HEAD:fork-only.txt"), /exists only in the fork/);
+      const earlier = await owner.get(opened.location);
+      const earlierVersion = earlier.body.match(/name="comparison_version" value="(\d+)"/)?.[1];
+      assert.ok(earlierVersion);
+      const verified = await owner.post(`${opened.location}/reviews`, {
+        decision: "merge_verified", comparison_version: earlierVersion,
+      });
+      redirected(verified);
+      assert.match((await owner.get(verified.location)).body, /Verified integration in Git/);
 
       redirected(await owner.post(`${project}/settings/delete`, { confirm: "project" }), "/");
       assert.equal((await guest.get(project)).status, 404);

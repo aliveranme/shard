@@ -1,6 +1,8 @@
-use crate::git_storage::{is_object_id, BlobRead, Commit, CopyError, CreatedRepo, GitFile, TreeEntry};
+use crate::git_storage::{is_object_id, BlobRead, Commit, CopyError, CreatedRepo, GitFile, RepoHandle, TreeEntry};
 use serde::{Deserialize, Serialize};
 use worker::{Env, Error, Fetch, Method, Request, RequestInit, RequestRedirect, Response, ResponseBody, Result, Url};
+
+const MAX_COMPARISON_BYTES: u64 = 4 * 1024 * 1024;
 
 pub(crate) struct NativeGit {
     origin: String,
@@ -10,6 +12,12 @@ pub(crate) struct NativeGit {
 pub(crate) struct NativeRepo {
     client: NativeGit,
     id: String,
+}
+
+pub(crate) enum SnapshotRead<T> {
+    Found(T),
+    Missing,
+    Limited,
 }
 
 #[derive(Serialize)]
@@ -210,6 +218,56 @@ impl NativeRepo {
         let mut url = Url::parse(&format!("{}/v1/repos/{}/{endpoint}", self.client.origin, self.id))?;
         url.query_pairs_mut().extend_pairs(params.iter().copied());
         self.client.send(url.as_str(), RequestInit::default()).await
+    }
+
+    pub(crate) fn comparison_pair<'a>(target: &'a RepoHandle, source: &'a RepoHandle) -> Option<(&'a Self, &'a Self)> {
+        match (target, source) {
+            (RepoHandle::Native(target), RepoHandle::Native(source)) if target.client.origin == source.client.origin => {
+                Some((target, source))
+            }
+            _ => None,
+        }
+    }
+
+    async fn snapshot_read<T: serde::de::DeserializeOwned>(
+        &self, endpoint: &str, params: &[(&str, &str)],
+    ) -> Result<SnapshotRead<T>> {
+        let response = self.read(endpoint, params).await?;
+        match response.status_code() {
+            404 if response.headers().get("X-Shard-Comparison")?.as_deref() == Some("1") => {
+                discard(response);
+                // Only the comparison endpoint can report a missing snapshot.
+                Ok(SnapshotRead::Missing)
+            }
+            413 => {
+                discard(response);
+                Ok(SnapshotRead::Limited)
+            }
+            200 => {
+                let length = response_length(&response, "Content-Length")?;
+                if length > MAX_COMPARISON_BYTES {
+                    discard(response);
+                    return Ok(SnapshotRead::Limited);
+                }
+                let bytes = file_bytes(response, length).await?;
+                Ok(SnapshotRead::Found(serde_json::from_slice(&bytes)?))
+            }
+            _ => Err(unexpected(response)),
+        }
+    }
+
+    pub(crate) async fn merge_bases(&self, source: &Self, base: &str, head: &str) -> Result<SnapshotRead<Vec<String>>> {
+        self.snapshot_read("merge-base", &[("source", &source.id), ("base", base), ("head", head)]).await
+    }
+
+    pub(crate) async fn file_changes<T: serde::de::DeserializeOwned>(
+        &self, source: &Self, base: &str, head: &str,
+    ) -> Result<SnapshotRead<T>> {
+        self.snapshot_read("compare", &[("source", &source.id), ("base", base), ("head", head)]).await
+    }
+
+    pub(crate) async fn integrated(&self, tip: &str, base: &str, head: &str) -> Result<SnapshotRead<bool>> {
+        self.snapshot_read("integrated", &[("tip", tip), ("base", base), ("head", head)]).await
     }
 
     async fn write(&self, endpoint: &str, payload: &impl Serialize) -> std::result::Result<Response, WriteError> {

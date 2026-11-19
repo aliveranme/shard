@@ -10,36 +10,63 @@ const exec = promisify(execFile);
 const media = "application/vnd.git-lfs+json";
 const oid = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
-export async function exerciseLfs({ base, repo, writeToken, readToken, canRunGitLfs = true }) {
-  const batchUrl = `${base}${repo}.git/info/lfs/objects/batch`;
-  const bytes = randomBytes(4096);
-  const spec = { oid: oid(bytes), size: bytes.length };
-  const batch = (operation, token, objects = [spec]) => fetch(batchUrl, {
+function auth(token) {
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function status(response, expected) {
+  const body = await response.text();
+  assert.equal(response.status, expected, body);
+}
+
+function postBatch(base, repo, operation, token, objects) {
+  return fetch(`${base}${repo}.git/info/lfs/objects/batch`, {
     method: "POST",
     headers: { Accept: media, "Content-Type": `${media}; charset=utf-8`, ...auth(token) },
     body: JSON.stringify({ operation, objects }),
   });
-  function auth(token) {
-    return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function result(response) {
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.equal(response.headers.get("content-type"), media);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  const json = await response.json();
+  assert.equal(json.transfer, "basic");
+  return json.objects[0];
+}
+
+export async function prepareLfsObject({ base, repo, writeToken, bytes = randomBytes(4096) }) {
+  const spec = { oid: oid(bytes), size: bytes.length };
+  const batch = ({ repo, token, operation = "download" }) => postBatch(base, repo, operation, token, [spec]);
+  const { actions } = await result(await batch({ repo, token: writeToken, operation: "upload" }));
+  if (actions?.upload) {
+    await status(await fetch(actions.upload.href, {
+      method: "PUT", headers: { ...actions.upload.header, ...auth(writeToken) }, body: bytes,
+    }), 200);
   }
-  async function status(response, expected) {
-    const body = await response.text();
-    assert.equal(response.status, expected, body);
-  }
-  async function result(response) {
-    assert.equal(response.status, 200, await response.clone().text());
-    assert.equal(response.headers.get("content-type"), media);
-    assert.equal(response.headers.get("cache-control"), "no-store");
-    const json = await response.json();
-    assert.equal(json.transfer, "basic");
-    return json.objects[0];
-  }
+  return {
+    bytes, spec, batch,
+    async download({ repo, token }) {
+      const entry = await result(await batch({ repo, token }));
+      assert.ok(entry.actions?.download, JSON.stringify(entry));
+      return fetch(entry.actions.download.href, { headers: auth(token) });
+    },
+  };
+}
+
+export async function exerciseLfs({ base, repo, writeToken, readToken, canRunGitLfs = true, maxObjectBytes = 100_000_000 }) {
+  const bytes = randomBytes(4096);
+  const spec = { oid: oid(bytes), size: bytes.length };
+  const batch = (operation, token, objects = [spec]) => postBatch(base, repo, operation, token, objects);
   const unauthenticated = await batch("download");
   assert.match(unauthenticated.headers.get("lfs-authenticate"), /^Basic /);
   await status(unauthenticated, 401);
   if (readToken) await status(await batch("upload", readToken), 403);
   assert.equal((await result(await batch("download", writeToken))).error.code, 404);
-  assert.equal((await result(await batch("upload", writeToken, [{ ...spec, size: 100_000_001 }]))).error.code, 413);
+  const boundary = { ...spec, size: maxObjectBytes };
+  assert.ok((await result(await batch("upload", writeToken, [boundary]))).actions?.upload);
+  assert.equal((await result(await batch("upload", writeToken, [{ ...boundary, size: maxObjectBytes + 1 }]))).error.code, 413);
   assert.equal((await result(await batch("upload", writeToken, [{ ...spec, oid: spec.oid.toUpperCase() }]))).error.code, 422);
   await status(await batch("upload", writeToken, Array(101).fill(spec)), 413);
   await status(await batch("upload", writeToken, [{ ...spec, oid: "x".repeat(65_536) }]), 413);

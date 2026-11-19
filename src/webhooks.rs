@@ -1,7 +1,6 @@
 //! Repository webhook settings and scheduled delivery of committed events.
 
 use crate::ctx::AppState;
-use crate::git_storage::is_object_id;
 use crate::handlers::common::{can_admin, forbidden, not_found, page_title, visible_repo};
 use crate::i18n::{CommonText, RepoText, WebhookText as Text};
 use crate::models::{Repo, Ts};
@@ -13,8 +12,6 @@ use wasm_bindgen::prelude::*;
 use worker::d1::D1Database;
 use worker::{Env, Request, Response, Result, RouteContext, Url};
 
-const BATCH_SIZE: usize = 8;
-const SUBSCRIPTION_BATCH_SIZE: usize = 4;
 const MAX_SUBSCRIPTIONS: i64 = 10;
 const RECENT_DELIVERIES: i64 = 5;
 const RETENTION_SECONDS: i64 = 30 * 86_400;
@@ -180,7 +177,7 @@ fn legacy_endpoint(raw: &str, local_http: bool) -> Option<Url> {
     None
 }
 
-async fn deliver_legacy(env: &Env, database: &D1Database) -> Result<()> {
+async fn deliver_legacy(env: &Env, database: &D1Database, limit: usize) -> Result<()> {
     let (Ok(url), Ok(repo), Ok(secret)) = (
         env.var("WEBHOOK_ENDPOINT"),
         env.var("WEBHOOK_REPO"),
@@ -226,12 +223,12 @@ async fn deliver_legacy(env: &Env, database: &D1Database) -> Result<()> {
             repo_id.clone(),
             util::js_int(util::now()),
             max_attempts.clone(),
-            util::js_int(BATCH_SIZE as i64),
+            util::js_int(limit as i64),
         ],
     )
     .await?;
 
-    for _ in 0..BATCH_SIZE {
+    for _ in 0..limit {
         let now = util::now();
         // Claim one event atomically before sending. An expired lease can be
         // reclaimed, so use the attempt number to fence stale completions.
@@ -585,73 +582,6 @@ fn webhook_error(message: &str) -> worker::Error {
     worker::Error::RustError(message.into())
 }
 
-#[derive(Serialize)]
-pub(crate) struct RefUpdate<'a> {
-    pub(crate) name: &'a str,
-    pub(crate) before: Option<&'a str>,
-    pub(crate) after: Option<&'a str>,
-}
-
-/// Record transitions accepted by Git. The projection and webhook enqueue share
-/// one D1 transaction. Git remains the authority for reading and changing refs.
-pub(crate) async fn record_refs(
-    env: &Env,
-    repo_id: i64,
-    actor_id: Option<i64>,
-    updates: &[RefUpdate<'_>],
-) -> Result<()> {
-    let updates: Vec<_> = updates.iter().filter(|update| {
-        update.before != update.after
-            && (update.name.starts_with("refs/heads/") || update.name.starts_with("refs/tags/"))
-    }).collect();
-    if updates.is_empty() {
-        return Ok(());
-    }
-    if updates.iter().any(|update| {
-        update.name.ends_with('/') || update.name.chars().any(char::is_control)
-            || update.before.into_iter().chain(update.after).any(|oid| {
-                !is_object_id(oid) || oid.bytes().all(|byte| byte == b'0')
-            })
-    }) {
-        return Err(webhook_error("invalid Git reference transition"));
-    }
-    let json = serde_json::to_string(&updates)
-        .map_err(|_| webhook_error("Git reference serialization failed"))?;
-    let params = [util::js_int(repo_id), util::js_text(&json)];
-    let database = env.d1("DB")?;
-    let update = database.prepare(
-        "UPDATE repository_git_refs AS r SET oid = json_extract(j.value, '$.after')
-           FROM json_each(?2) AS j
-          WHERE r.repo_id = ?1 AND r.name = json_extract(j.value, '$.name')
-            AND r.oid IS json_extract(j.value, '$.before')",
-    ).bind(&params)?;
-    let insert = database.prepare(
-        "INSERT INTO repository_git_refs (repo_id, name, oid)
-         SELECT r.id, json_extract(j.value, '$.name'), json_extract(j.value, '$.after')
-           FROM repos r, json_each(?2) AS j WHERE r.id = ?1
-         ON CONFLICT (repo_id, name) DO NOTHING",
-    ).bind(&params)?;
-    let events = database.prepare(
-        "INSERT INTO webhook_events (repo_id, repo, kind, action, actor_id, created_at, ref, before_oid, after_oid)
-         SELECT r.id, r.artifacts_repo,
-                CASE WHEN json_extract(j.value, '$.name') GLOB 'refs/tags/*' THEN 'tag' ELSE 'push' END,
-                CASE WHEN json_extract(j.value, '$.before') IS NULL THEN 'created'
-                     WHEN json_extract(j.value, '$.after') IS NULL THEN 'deleted' ELSE 'updated' END,
-                ?3, ?4, json_extract(j.value, '$.name'), json_extract(j.value, '$.before'), json_extract(j.value, '$.after')
-           FROM repos r, json_each(?2) AS j
-          WHERE r.id = ?1 AND EXISTS (
-              SELECT 1 FROM webhook_subscriptions s WHERE s.repo_id = r.id AND s.disabled_at IS NULL
-          )",
-    ).bind(&[
-        params[0].clone(),
-        params[1].clone(),
-        actor_id.map_or_else(util::js_null, util::js_int),
-        util::js_int(util::now()),
-    ])?;
-    database.batch(vec![update, insert, events]).await?;
-    Ok(())
-}
-
 #[derive(Deserialize)]
 struct ClaimedDelivery {
     id: i64,
@@ -739,7 +669,7 @@ async fn try_subscription(
         .await.ok().filter(|&status| status != 0))
 }
 
-async fn deliver_subscriptions(env: &Env, database: &D1Database) -> Result<()> {
+async fn deliver_subscriptions(env: &Env, database: &D1Database, limit: usize) -> Result<()> {
     clean_subscriptions(database).await?;
     let Some(secret) = encryption_secret(env) else {
         return Ok(());
@@ -747,7 +677,7 @@ async fn deliver_subscriptions(env: &Env, database: &D1Database) -> Result<()> {
     let key = shard_webhook_encryption_key(&secret)
         .await.map_err(|_| webhook_error("webhook encryption key import failed"))?;
     let max_attempts = util::js_int(MAX_ATTEMPTS);
-    for _ in 0..SUBSCRIPTION_BATCH_SIZE {
+    for _ in 0..limit {
         let now = util::now();
         let Some(claim) = db::first::<ClaimedDelivery>(
             database,
@@ -808,8 +738,8 @@ fn delivery_result(status: Option<u16>, attempts: i64, now: i64) -> (&'static st
     }
 }
 
-pub(crate) async fn deliver_pending(env: &Env) -> Result<()> {
+pub(crate) async fn deliver_pending(env: &Env, subscriptions_limit: usize, legacy_limit: usize) -> Result<()> {
     let database = env.d1("DB")?;
-    let subscriptions = deliver_subscriptions(env, &database).await;
-    deliver_legacy(env, &database).await.and(subscriptions)
+    let subscriptions = deliver_subscriptions(env, &database, subscriptions_limit).await;
+    deliver_legacy(env, &database, legacy_limit).await.and(subscriptions)
 }

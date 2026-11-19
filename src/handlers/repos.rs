@@ -583,35 +583,38 @@ pub async fn delete(_req: Request, ctx: RouteContext<AppState>) -> Result<Respon
     let Some(repo) = visible_repo(&state, &owner, &name).await? else {
         return repository_not_found(&state);
     };
-    if !can_admin(&state, &repo) {
+    let Some(user_id) = state.user_id().filter(|_| can_admin(&state, &repo)) else {
         return super::common::forbidden(&state, state.locale.t(RepoText::DeleteForbidden));
-    }
+    };
     let form = state.form()?;
     let confirmation = util::form_value(form, "confirm").unwrap_or_default();
     let settings_url = format!("/{}/{}/settings", repo.owner_name, repo.name);
     if confirmation != repo.name {
         return util::redirect(&format!("{settings_url}?error=confirm-deletion"));
     }
-    let storage = match GitStorage::from_env(&state.env, repo.git_backend) {
-        Ok(storage) => storage,
-        Err(error) => {
-            console_log!("repository: initialize Git storage for deletion: {error}");
-            return util::redirect(&format!("{settings_url}?error=delete-storage-failed"));
-        }
-    };
-    if let Err(error) = storage.delete(&repo.storage_id).await {
-        console_log!("repository: delete Git storage: {error:?}");
-        return util::redirect(&format!("{settings_url}?error=delete-storage-failed"));
+    #[derive(serde::Deserialize)]
+    struct Deleted {
+        id: i64,
     }
     let deleted = async {
         let database = state.db()?;
-        db::run(&database, "DELETE FROM repos WHERE id = ?", &[util::js_int(repo.id)]).await
+        // The delete trigger records the Git identity and LFS namespace in the same transaction.
+        db::first::<Deleted>(
+            &database,
+            "DELETE FROM repos WHERE id = ?1 AND name = ?2 COLLATE BINARY
+               AND EXISTS (SELECT 1 FROM users WHERE id = ?3 AND (id = repos.owner_id OR is_admin = 1))
+             RETURNING id",
+            &[util::js_int(repo.id), util::js_text(&confirmation), util::js_int(user_id)],
+        ).await
     }.await;
-    if let Err(error) = deleted {
-        console_log!("repository: delete metadata: {error}");
-        return util::redirect(&format!("{settings_url}?error=delete-failed"));
+    match deleted {
+        Ok(Some(deleted)) if deleted.id == repo.id => util::redirect("/"),
+        Ok(_) => repository_not_found(&state),
+        Err(error) => {
+            console_log!("repository: delete metadata: {error}");
+            util::redirect(&format!("{settings_url}?error=delete-failed"))
+        }
     }
-    util::redirect("/")
 }
 
 enum BrowseEntry {

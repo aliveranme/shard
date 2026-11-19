@@ -18,7 +18,7 @@ Use the pinned Wrangler simulator and real Git over loopback for validation. App
 | Area | Verified capability and boundary | Delivery condition |
 |---|---|---|
 | Git storage | The [Artifacts Worker binding](https://developers.cloudflare.com/artifacts/api/workers-binding/) reads commits, trees and blobs by SHA and supports import and fork. [Git HTTPS](https://developers.cloudflare.com/artifacts/api/git-protocol/) supports upload-pack and v1 receive-pack. | Shard validates receive-pack commands at the proxy. The native origin and Artifacts fast-forward path advance the target using an expected old ref. Divergent Artifacts merges use the configured native bridge. |
-| Push events | [Artifacts event subscriptions](https://developers.cloudflare.com/artifacts/guides/event-subscriptions/) expose push events with a ref and before/after SHA. The local simulator omits these events. | Shard schedules open comparison refresh and webhook delivery from accepted updates on its Git proxy and Web controls. Provider-side updates outside Shard need separate event ingestion. |
+| Push events | [Artifacts event subscriptions](https://developers.cloudflare.com/artifacts/guides/event-subscriptions/) expose push events with a ref and before/after SHA. The local simulator omits these events. | Shard records pending push ref transitions in D1 and commits Webhook delivery and PR refresh together when an accepted transition is observed. The minute cron reconciles unfinished pushes against Git refs. Provider-side updates outside Shard need their own event ingestion. |
 | Import | The binding imports [public HTTPS remotes](https://developers.cloudflare.com/artifacts/guides/import-repositories/). | The native origin performs credentialed imports from allowed HTTPS hosts. The minute cron advances pending publication. D1 transactions apply portable metadata bundles. |
 | Search and metadata | D1 supports transactional [batches](https://developers.cloudflare.com/d1/worker-api/d1-database/#batch). | Repository and global discussion lists filter visible issues. Code and commit search scans one Git snapshot within explicit object, byte and history limits. |
 | Limits | [Workers](https://developers.cloudflare.com/workers/platform/limits/#memory) have 128 MB per isolate. [Artifacts](https://developers.cloudflare.com/artifacts/platform/limits/) caps pushes at 64 MiB and new repositories at 1 GB. [Streams](https://developers.cloudflare.com/workers/runtime-apis/streams/) reduce buffering within both ceilings. | Show limits to users. Git protocol v2 receive-pack is unavailable upstream. Test the supported clone and push paths locally. |
@@ -58,7 +58,10 @@ engine on its own. [durable-git content API](https://github.com/littledivy/durab
 
 Native mode uses `git http-backend` and a persistent volume for Git Smart
 HTTP, pack handling and ref locking. The origin also serves repository
-lifecycle and object reads through an authenticated HTTP API.
+lifecycle, object reads, and bounded commit-pinned comparisons through an
+authenticated HTTP API. Shard budgets background work by deployment profile
+and queries Git snapshots on demand. D1 stores no per-file or per-commit search
+index from pushes.
 [Git HTTP backend](https://git-scm.com/docs/git-http-backend)
 
 Evaluate the same Git and Web workflows before adding a Cloudflare-only
@@ -69,9 +72,9 @@ objects separately from Git refs.
 
 Both Git backends use the Shard LFS Batch route. The Worker authorizes each
 operation with existing Git token roles, then streams a verified SHA-256
-object to or from a private, repository-scoped R2 key. Basic uploads accept
-up to 100,000,000 bytes through the Worker. Back up the R2 bucket with D1 and
-Git storage. [Git LFS Batch API](https://github.com/git-lfs/git-lfs/blob/main/docs/api/batch.md)
+object to or from a private, repository-scoped R2 key. Forks copy LFS pages
+before publication. Repository cleanup and copy progress live in D1. Back up
+the R2 bucket with D1 and Git storage. [Git LFS Batch API](https://github.com/git-lfs/git-lfs/blob/main/docs/api/batch.md)
 
 ## Deployment prerequisites
 

@@ -20,6 +20,7 @@ mod i18n;
 mod issue_filters;
 mod issue_metadata;
 mod lfs;
+mod limits;
 mod markdown;
 mod branch_rules;
 mod metadata_import;
@@ -338,16 +339,26 @@ async fn serve(mut req: Request, env: Env, worker_ctx: Context, request_id: &str
 #[event(scheduled)]
 async fn scheduled(event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
     if event.cron() == "* * * * *" {
-        if repo_lifecycle::reconcile_pending(&env).await.is_err() {
+        let limits = match limits::ScheduledLimits::read(&env) {
+            Ok(limits) => limits,
+            Err(error) => {
+                console_log!("event=scheduled_limits_invalid error={error}");
+                return;
+            }
+        };
+        if repo_lifecycle::reconcile_pending(&env, &limits).await.is_err() {
             console_log!("event=repository_copy_reconcile_failed");
         }
-        if pull_review::refresh_pending(&env).await.is_err() {
+        if git_activity::reconcile(&env, limits.push_intents).await.is_err() {
+            console_log!("event=git_push_reconcile_failed");
+        }
+        if pull_review::refresh_pending(&env, limits.pr_refreshes).await.is_err() {
             console_log!("event=pull_comparison_refresh_failed");
         }
-        if branch_rules::process_queue(&env).await.is_err() {
+        if branch_rules::process_queue(&env, limits.merges).await.is_err() {
             console_log!("event=merge_queue_failed");
         }
-        if webhooks::deliver_pending(&env).await.is_err() {
+        if webhooks::deliver_pending(&env, limits.webhook_subscriptions, limits.webhook_legacy).await.is_err() {
             console_log!("event=webhook_delivery_failed");
         }
         return;

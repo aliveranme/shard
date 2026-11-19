@@ -11,7 +11,7 @@ import { promisify } from "node:util";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { unstable_dev } from "wrangler";
-import { exerciseLfs } from "./lfs.mjs";
+import { exerciseLfs, prepareLfsObject } from "./lfs.mjs";
 
 const exec = promisify(execFile);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -67,6 +67,7 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
       WEBHOOK_ENDPOINT: `http://127.0.0.1:${receiver.address().port}/hooks/shard`,
       WEBHOOK_LOCAL_HTTP_ORIGIN: `http://127.0.0.1:${receiver.address().port}`,
       WEBHOOK_ENCRYPTION_KEY: "19".repeat(32),
+      SHARD_LFS_MAX_BYTES: "100000001",
     };
     config.d1_databases = config.d1_databases.map((binding) => ({
       ...binding, database_name: `${binding.database_name}-http-tests`,
@@ -818,6 +819,27 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
         "UPDATE webhook_subscription_deliveries SET next_attempt_at=0 WHERE state='pending'"]);
       await tick();
       assert.deepEqual(subscriptionDeliveries, [delivery, delivery]);
+      const recoveryRef = "refs/tags/delivery/recovered";
+      const database = (sql) => cli(["d1", "execute", "DB", "--local", "--persist-to", persistence, "--command", sql]);
+      await database(`CREATE TRIGGER interrupt_git_observation BEFORE INSERT ON webhook_events
+        WHEN NEW.ref = '${recoveryRef}' AND NEW.actor_id IS NOT NULL
+        BEGIN SELECT RAISE(ABORT, 'interrupted ref publication'); END`);
+      try {
+        await git("-C", worktree, "push", "origin", `${featureCommit}:${recoveryRef}`);
+        const remote = await git("-C", worktree, "ls-remote", "origin", recoveryRef);
+        assert.equal(remote.stdout.trim(), `${featureCommit}\t${recoveryRef}`);
+        assert.equal(subscriptionDeliveries.length, 2);
+        await database(`UPDATE git_push_intents SET check_at = 0
+          WHERE EXISTS (SELECT 1 FROM json_each(updates) WHERE json_extract(value, '$.name') = '${recoveryRef}')`);
+        await tick();
+        await tick();
+        assert.equal(subscriptionDeliveries.length, 3);
+        const recovered = JSON.parse(subscriptionDeliveries[2].body);
+        assert.deepEqual([recovered.ref, recovered.before, recovered.after, recovered.actor_id],
+          [recoveryRef, null, featureCommit, null]);
+      } finally {
+        await database("DROP TRIGGER interrupt_git_observation");
+      }
       const hookPage = await owner.get(hook);
       assert.match(hookPage.body, /History reporter/);
       assert.doesNotMatch(hookPage.body, /repository-hook-regression-key/);
@@ -826,10 +848,10 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
       redirected(await owner.post(hook, { action: "disable", subscription_id }));
       await git("-C", worktree, "push", "origin", `:${tagRef}`);
       await tick();
-      assert.equal(subscriptionDeliveries.length, 2);
+      assert.equal(subscriptionDeliveries.length, 3);
     });
 
-    await t.test("Artifacts transfers actual LFS objects with scoped credentials", async () => {
+    await t.test("private LFS forks keep their bytes after source cleanup", async () => {
       const repo = "/suiteowner/lfs-objects";
       redirected(await owner.post("/repo/create", { name: "lfs-objects", private: "on" }));
       const token = async (scope) => {
@@ -839,7 +861,46 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
         return value;
       };
       const canRunGitLfs = await exec("git", ["lfs", "version"]).then(() => true, () => false);
-      await exerciseLfs({ base, repo, writeToken: await token("write"), readToken: await token("read"), canRunGitLfs });
+      const writeToken = await token("write");
+      const readToken = await token("read");
+      await exerciseLfs({ base, repo, writeToken, readToken, canRunGitLfs, maxObjectBytes: 100_000_001 });
+
+      const objects = [];
+      for (let index = 0; index < 9; index++) {
+        objects.push(await prepareLfsObject({ base, repo, writeToken }));
+      }
+      const fork = "/suiteowner/lfs-fork";
+      let copied = await owner.post(`${repo}/fork`, { name: "lfs-fork" });
+      redirected(copied);
+      const pendingPath = copied.location;
+      assert.match(pendingPath, /^\/user\/settings\/repository-copies\/\d+$/);
+      assert.equal((await owner.get(fork)).status, 404);
+      for (let attempt = 0; attempt < 6 && copied.location !== fork; attempt++) {
+        await owner.get(pendingPath);
+        copied = await owner.post(pendingPath, {});
+      }
+      redirected(copied, fork);
+      const forbidden = await objects[0].batch({ repo: fork });
+      assert.equal(forbidden.status, 401);
+      await forbidden.text();
+
+      const sourceRow = JSON.parse(await cli(["d1", "execute", "DB", "--local", "--persist-to", persistence,
+        "--json", "--command", "SELECT id FROM repos WHERE name = 'lfs-objects'"])).flatMap((item) => item.results)[0];
+      const bucket = config.r2_buckets.find((binding) => binding.binding === "LFS_OBJECTS").bucket_name;
+      const sourceKey = `${bucket}/lfs/${sourceRow.id}/${objects[0].spec.oid}`;
+      const outfile = join(temporary, "lfs-source-object");
+      const readBucket = () => cli(["r2", "object", "get", sourceKey, "--local", "--persist-to", persistence, "--file", outfile]);
+      await readBucket();
+      assert.deepEqual(await readFile(outfile), objects[0].bytes);
+      redirected(await owner.post(`${repo}/settings/delete`, { confirm: "lfs-objects" }), "/");
+      assert.equal((await owner.get(repo)).status, 404);
+      await tick();
+      await assert.rejects(readBucket, /does not exist|not found/i);
+      for (const object of objects) {
+        const download = await object.download({ repo: fork, token: readToken });
+        assert.equal(download.status, 200);
+        assert.deepEqual(Buffer.from(await download.arrayBuffer()), object.bytes);
+      }
     });
 
     await t.test("private repository grants govern Git, issue classification and notifications", async () => {

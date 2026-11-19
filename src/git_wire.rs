@@ -1,5 +1,5 @@
 use js_sys::{Reflect, Uint8Array};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use wasm_bindgen::{prelude::*, JsCast};
 use worker::web_sys::ReadableStream;
 use worker::{Error, Request, Response, ResponseBody, Result};
@@ -18,7 +18,7 @@ extern "C" {
     async fn shard_update_request(reference: &str, before: &str, after: &str) -> std::result::Result<Uint8Array, JsValue>;
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub(crate) struct RefUpdate {
     pub name: String,
     pub before: String,

@@ -1,11 +1,11 @@
 //! Backend-independent Git LFS basic transfers.
 use crate::ctx::AppState;
 use crate::handlers::common::{repo_role, RepoRole};
-use crate::{auth, db, util};
+use crate::{auth, db, limits, util};
 use js_sys::{Reflect, Uint8Array};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen::{prelude::wasm_bindgen, JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use worker::web_sys::ReadableStreamDefaultReader;
 use worker::*;
@@ -14,8 +14,26 @@ const MEDIA: &str = "application/vnd.git-lfs+json";
 const BINARY: &str = "application/octet-stream";
 const MAX_JSON: usize = 64 * 1024;
 const MAX_OBJECTS: usize = 100;
-// Stay within the smallest Workers plan's incoming request size limit.
-const MAX_OBJECT_BYTES: u64 = 100_000_000;
+// Leave time for the storage request to settle after its stream is cancelled.
+const WRITE_GRACE: i64 = 30;
+pub(crate) const WRITE_LEASE: i64 = 15 * 60 + WRITE_GRACE;
+
+#[wasm_bindgen(inline_js = r#"
+export function shard_lfs_stream(body, size, timeout) {
+    const { readable, writable } = new FixedLengthStream(size);
+    // A failed pipe errors the readable stream consumed by R2.
+    body.pipeTo(writable, { signal: AbortSignal.timeout(timeout) }).catch(() => {});
+    return readable;
+}
+"#)]
+extern "C" {
+    #[wasm_bindgen(catch)]
+    fn shard_lfs_stream(
+        body: worker::web_sys::ReadableStream,
+        size: f64,
+        timeout: u32,
+    ) -> std::result::Result<worker::web_sys::ReadableStream, JsValue>;
+}
 
 type HttpError = (u16, &'static str);
 const HIDDEN: HttpError = (404, "Repository not found");
@@ -24,13 +42,41 @@ const STORAGE: HttpError = (503, "LFS storage unavailable");
 const MISSING: HttpError = (404, "LFS object not found");
 const INVALID_OBJECT: HttpError = (422, "Invalid SHA-256 object ID or size");
 const WRONG_SIZE: HttpError = (422, "Object size does not match");
-const TOO_LARGE: HttpError = (413, "LFS object exceeds 100 MB");
+const TOO_LARGE: HttpError = (413, "LFS object exceeds the configured upload limit");
 
 #[derive(Deserialize)]
 struct Repository {
     id: i64,
+    lfs_copy_id: Option<i64>,
     owner_id: i64,
     visibility: String,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum Namespace {
+    Repo(i64),
+    Fork(i64),
+}
+
+impl Namespace {
+    pub(crate) fn for_repo(repo_id: i64, copy_id: Option<i64>) -> Self {
+        copy_id.map_or(Self::Repo(repo_id), Self::Fork)
+    }
+
+    fn prefix(self) -> String {
+        match self {
+            Self::Repo(id) => format!("lfs/{id}/"),
+            Self::Fork(id) => format!("lfs/fork-{id}/"),
+        }
+    }
+}
+
+struct Transfer<'a> {
+    bucket: Bucket,
+    repo_id: i64,
+    key: String,
+    oid: &'a str,
+    size: u64,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -78,6 +124,7 @@ pub async fn batch(req: Request, ctx: RouteContext<AppState>) -> Result<Response
     if batch.objects.len() > MAX_OBJECTS {
         return failure((413, "LFS batches accept at most 100 objects"));
     }
+    let upload_limit = batch.operation.writes().then(|| limits::lfs_object_bytes(&ctx.data.env)).transpose()?;
 
     let bucket = match ctx.data.env.bucket("LFS_OBJECTS") {
         Ok(bucket) => bucket,
@@ -89,10 +136,11 @@ pub async fn batch(req: Request, ctx: RouteContext<AppState>) -> Result<Response
     };
     // Keep actions on the batch origin and leave credentials to the LFS client.
     let prefix = format!("{}{path}/{}", url.origin().ascii_serialization(), repo.id);
+    let object_prefix = Namespace::for_repo(repo.id, repo.lfs_copy_id).prefix();
     let mut objects = Vec::with_capacity(batch.objects.len());
     for object in batch.objects {
         let mut entry = json!(object);
-        match batch_object(&bucket, repo.id, &prefix, &object, batch.operation).await {
+        match batch_object(&bucket, &object_prefix, &prefix, &object, upload_limit).await {
             Ok(Some(actions)) => entry["actions"] = actions,
             Ok(None) => {}
             Err((code, message)) => entry["error"] = json!({"code": code, "message": message}),
@@ -104,35 +152,39 @@ pub async fn batch(req: Request, ctx: RouteContext<AppState>) -> Result<Response
 
 async fn batch_object(
     bucket: &Bucket,
-    repo_id: i64,
+    object_prefix: &str,
     prefix: &str,
     spec: &ObjectSpec,
-    operation: Operation,
+    upload_limit: Option<u64>,
 ) -> std::result::Result<Option<serde_json::Value>, HttpError> {
     let size = u64::try_from(spec.size).map_err(|_| INVALID_OBJECT)?;
-    validate_object(&spec.oid, size)?;
-    let exists = match bucket.head(object_key(repo_id, &spec.oid)).await.map_err(|_| STORAGE)? {
+    validate_oid(&spec.oid)?;
+    let exists = match bucket.head(format!("{object_prefix}{}", spec.oid)).await.map_err(|_| STORAGE)? {
         Some(object) if object.size() != size => return Err(WRONG_SIZE),
         Some(_) => true,
         None => false,
     };
     let href = format!("{prefix}/{}/{size}", spec.oid);
-    match (operation, exists) {
-        (Operation::Upload, true) => Ok(None),
-        (Operation::Upload, false) => Ok(Some(json!({
+    match (upload_limit, exists) {
+        (Some(_), true) => Ok(None),
+        (Some(limit), false) if size > limit => Err(TOO_LARGE),
+        (Some(_), false) => Ok(Some(json!({
             "upload": {"href": href, "header": {"Content-Type": BINARY}},
             "verify": {"href": format!("{href}/verify")},
         }))),
-        (Operation::Download, true) => Ok(Some(json!({"download": {"href": href}}))),
-        (Operation::Download, false) => Err(MISSING),
+        (None, true) => Ok(Some(json!({"download": {"href": href}}))),
+        (None, false) => Err(MISSING),
     }
 }
 
 pub async fn upload(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
-    let (bucket, key, oid, size) = match transfer(&req, &ctx, Operation::Upload).await {
+    let Transfer { bucket, repo_id, key, oid, size } = match transfer(&req, &ctx, Operation::Upload).await {
         Ok(target) => target,
         Err(error) => return failure(error),
     };
+    if size > limits::lfs_object_bytes(&ctx.data.env)? {
+        return failure(TOO_LARGE);
+    }
     let body = req.inner().body();
     if util::header(&req, "content-encoding").is_some_and(|value| !value.eq_ignore_ascii_case("identity")) {
         return failure((415, "LFS uploads require an unencoded body"));
@@ -143,22 +195,37 @@ pub async fn upload(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
         Some(_) => return failure(WRONG_SIZE),
         None => return failure((411, "LFS uploads require Content-Length")),
     }
-    let data = match body {
-        Some(stream) => Data::from(stream),
-        None if size == 0 => Data::Empty,
-        None => return failure(WRONG_SIZE),
+    if body.is_none() && size != 0 {
+        return failure(WRONG_SIZE);
+    }
+    #[derive(Deserialize)]
+    struct Lease {
+        id: i64,
+    }
+    let database = ctx.data.db()?;
+    let expires = util::now() + WRITE_LEASE;
+    let Some(lease) = db::first::<Lease>(
+        &database,
+        "INSERT INTO repo_lfs_uploads (repo_id, expires_at)
+         SELECT id, ?2 FROM repos WHERE id = ?1 RETURNING id",
+        &[util::js_int(repo_id), util::js_int(expires)],
+    ).await? else {
+        return failure(HIDDEN);
     };
-    // R2 consumes the original known-length Workers stream and validates the
-    // digest before storing it. The conditional PUT keeps objects immutable.
-    let put = bucket
-        .put(&key, data)
-        .sha256(digest(oid).to_vec())
-        .only_if(Conditional {
-            etag_does_not_match: Some("*".into()),
-            ..Default::default()
-        })
-        .execute()
-        .await;
+    let put = async {
+        let data = match body {
+            Some(body) => bounded_stream(body, size, expires)?,
+            None => Data::Empty,
+        };
+        put_object(&bucket, &key, data, oid).await
+    }
+    .await;
+    db::run(
+        &database,
+        "DELETE FROM repo_lfs_uploads WHERE id = ?",
+        &[util::js_int(lease.id)],
+    )
+    .await?;
     match put {
         Ok(Some(_)) => empty(),
         Ok(None) => check_stored(&bucket, key, size).await,
@@ -176,7 +243,7 @@ pub async fn upload(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
 }
 
 pub async fn download(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
-    let (bucket, key, _, size) = match transfer(&req, &ctx, Operation::Download).await {
+    let Transfer { bucket, key, size, .. } = match transfer(&req, &ctx, Operation::Download).await {
         Ok(target) => target,
         Err(error) => return failure(error),
     };
@@ -198,7 +265,7 @@ pub async fn download(req: Request, ctx: RouteContext<AppState>) -> Result<Respo
 }
 
 pub async fn verify(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
-    let (bucket, key, oid, size) = match transfer(&req, &ctx, Operation::Upload).await {
+    let Transfer { bucket, key, oid, size, .. } = match transfer(&req, &ctx, Operation::Upload).await {
         Ok(target) => target,
         Err(error) => return failure(error),
     };
@@ -225,16 +292,17 @@ async fn transfer<'a>(
     req: &Request,
     ctx: &'a RouteContext<AppState>,
     operation: Operation,
-) -> std::result::Result<(Bucket, String, &'a str, u64), HttpError> {
+) -> std::result::Result<Transfer<'a>, HttpError> {
     let repo = authorized(req, ctx, operation).await?;
     if ctx.param("repo_id").and_then(|id| id.parse().ok()) != Some(repo.id) {
         return Err(HIDDEN);
     }
     let oid = ctx.param("oid").ok_or(INVALID_OBJECT)?;
     let size = ctx.param("size").and_then(|size| decimal(size)).ok_or(INVALID_OBJECT)?;
-    validate_object(oid, size)?;
+    validate_oid(oid)?;
     let bucket = ctx.data.env.bucket("LFS_OBJECTS").map_err(|_| STORAGE)?;
-    Ok((bucket, object_key(repo.id, oid), oid, size))
+    let key = format!("{}{oid}", Namespace::for_repo(repo.id, repo.lfs_copy_id).prefix());
+    Ok(Transfer { bucket, repo_id: repo.id, key, oid, size })
 }
 
 async fn authorized(
@@ -247,7 +315,7 @@ async fn authorized(
     let database = ctx.data.db().map_err(|_| STORAGE)?;
     let repo: Repository = db::first(
         &database,
-        "SELECT r.id, r.owner_id, r.visibility
+        "SELECT r.id, r.owner_id, r.visibility, r.lfs_copy_id
            FROM repo_paths p JOIN users pu ON pu.id = p.owner_id JOIN repos r ON r.id = p.repo_id
           WHERE pu.username = ? COLLATE NOCASE AND p.name = ? COLLATE NOCASE",
         &[util::js_text(owner), util::js_text(name)],
@@ -278,12 +346,9 @@ async fn authorized(
     Ok(repo)
 }
 
-fn validate_object(oid: &str, size: u64) -> std::result::Result<(), HttpError> {
+fn validate_oid(oid: &str) -> std::result::Result<(), HttpError> {
     if oid.len() != 64 || !oid.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')) {
         return Err(INVALID_OBJECT);
-    }
-    if size > MAX_OBJECT_BYTES {
-        return Err(TOO_LARGE);
     }
     Ok(())
 }
@@ -303,8 +368,94 @@ fn digest(oid: &str) -> [u8; 32] {
     digest
 }
 
-fn object_key(repo_id: i64, oid: &str) -> String {
-    format!("lfs/{repo_id}/{oid}")
+fn bounded_stream(body: worker::web_sys::ReadableStream, size: u64, expires: i64) -> Result<Data> {
+    let seconds = expires - WRITE_GRACE - util::now();
+    if seconds <= 0 {
+        return Err(Error::RustError("LFS write lease expired".into()));
+    }
+    Ok(Data::from(shard_lfs_stream(body, size as f64, seconds as u32 * 1000)?))
+}
+
+async fn put_object(bucket: &Bucket, key: &str, data: Data, oid: &str) -> Result<Option<Object>> {
+    // R2 checks the hash and prevents concurrent writes from replacing bytes.
+    bucket
+        .put(key, data)
+        .sha256(digest(oid).to_vec())
+        .only_if(Conditional {
+            etag_does_not_match: Some("*".into()),
+            ..Default::default()
+        })
+        .execute()
+        .await
+}
+
+pub(crate) async fn copy_page(
+    env: &Env,
+    source: Namespace,
+    target: Namespace,
+    cursor: Option<&str>,
+    expires: i64,
+    limit: u32,
+) -> Result<Option<String>> {
+    let bucket = env.bucket("LFS_OBJECTS")?;
+    let source = source.prefix();
+    let target = target.prefix();
+    if source == target {
+        return Err(Error::RustError("LFS fork source and destination overlap".into()));
+    }
+    let list = bucket.list().prefix(&source).limit(limit);
+    let list = match cursor {
+        Some(cursor) => list.cursor(cursor),
+        None => list,
+    }.execute().await?;
+    for entry in list.objects() {
+        let source_key = entry.key();
+        let size = entry.size();
+        let oid = source_key.strip_prefix(&source)
+            .filter(|oid| validate_oid(oid).is_ok())
+            .ok_or_else(|| Error::RustError("Invalid object in LFS source prefix".into()))?;
+        let target_key = format!("{target}{oid}");
+        if let Some(existing) = bucket.head(&target_key).await? {
+            if existing.size() == size {
+                continue;
+            }
+            return Err(Error::RustError("LFS fork object size mismatch".into()));
+        }
+        let object = bucket.get(&source_key).execute().await?
+            .filter(|object| object.size() == size)
+            .ok_or_else(|| Error::RustError("LFS source object changed during copy".into()))?;
+        let Some(body) = object.body() else {
+            return Err(Error::RustError("LFS source returned no body".into()));
+        };
+        let ResponseBody::Stream(body) = body.response_body()? else {
+            return Err(Error::RustError("LFS source returned a non-stream body".into()));
+        };
+        let data = bounded_stream(body, size, expires)?;
+        if put_object(&bucket, &target_key, data, oid).await?.is_none()
+            && !bucket.head(&target_key).await?.is_some_and(|object| object.size() == size)
+        {
+            return Err(Error::RustError("LFS fork object was not stored".into()));
+        }
+    }
+    if list.truncated() {
+        return list.cursor().map(Some)
+            .ok_or_else(|| Error::RustError("LFS listing returned no continuation cursor".into()));
+    }
+    Ok(None)
+}
+
+pub(crate) async fn delete_page(env: &Env, namespace: Namespace, limit: u32) -> Result<bool> {
+    let bucket = env.bucket("LFS_OBJECTS")?;
+    let prefix = namespace.prefix();
+    let list = bucket.list().prefix(&prefix).limit(limit).execute().await?;
+    let keys: Vec<_> = list.objects().into_iter().map(|object| object.key()).collect();
+    if keys.iter().any(|key| !key.starts_with(&prefix)) {
+        return Err(Error::RustError("LFS cleanup listing escaped its prefix".into()));
+    }
+    if !keys.is_empty() {
+        bucket.delete_multiple(keys).await?;
+    }
+    Ok(!list.truncated())
 }
 
 fn decimal(text: &str) -> Option<u64> {

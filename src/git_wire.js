@@ -170,27 +170,32 @@ export async function shard_receive_report(body, sideband) {
     let fatal = false;
     for (;;) {
       const item = await input.next();
-      if (item === null) return "[]";
+      if (item === null) throw new Error("Incomplete Git receive report");
       if (item === flush) break;
       if (!sideband || item[0] === 1) collected.push(sideband ? item.subarray(1) : item);
       if (sideband && item[0] === 3) fatal = true;
     }
     // A packet flush ends the Git report. HTTP EOF lets the origin finish its write.
-    if (!await input.atEnd() || fatal) return "[]";
+    if (!await input.atEnd() || fatal) throw new Error("Unconfirmed Git receive result");
     const status = sideband ? packets(concat(collected)) : collected;
     let unpacked = false;
     const accepted = [];
     for (const line of status) {
-      if (line === flush) return JSON.stringify(unpacked ? accepted : []);
+      if (line === flush) {
+        if (!unpacked) throw new Error("Missing Git unpack status");
+        return JSON.stringify(accepted);
+      }
       const text = decoder.decode(line).replace(/\n$/, "");
       if (!unpacked) {
+        if (!text.startsWith("unpack ")) throw new Error("Missing Git unpack status");
         if (text !== "unpack ok") return "[]";
         unpacked = true;
       } else if (text.startsWith("ok refs/")) {
         accepted.push(text.slice(3));
       }
     }
-    return JSON.stringify(unpacked && !sideband ? accepted : []);
+    if (!unpacked || sideband) throw new Error("Incomplete Git receive report");
+    return JSON.stringify(accepted);
   } finally {
     input.cancel();
   }

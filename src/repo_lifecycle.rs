@@ -2,6 +2,8 @@ use crate::ctx::AppState;
 use crate::handlers::common::{not_found, page_title, visible_repo};
 use crate::git_storage::{CopyError, GitBackend, GitStorage};
 use crate::i18n::{CommonText, LifecycleText as Text, RepoText};
+use crate::limits::ScheduledLimits;
+use crate::lfs::{self, Namespace};
 use crate::models::Repo;
 use crate::native_git::ImportCredential;
 use crate::pagination::{PageRequest, Pagination, PAGE_SIZE};
@@ -18,7 +20,6 @@ use worker::*;
 const TRANSFERS: &str = "/user/settings/transfers";
 const IMPORT: &str = "/user/settings/repository-import";
 const COPIES: &str = "/user/settings/repository-copies";
-const COPY_CHECK_LIMIT: i64 = 8;
 const COPY_CHECK_INTERVAL: i64 = 30;
 const COPY_START_GRACE: i64 = 300;
 
@@ -573,6 +574,8 @@ async fn start_copy(
          SELECT ?1, ?2, ?3, ?4, COALESCE((SELECT visibility = 'private' FROM repos WHERE id = ?7), 0),
                 ?5, ?6, ?7, ?8, ?9
          WHERE NOT EXISTS (SELECT 1 FROM repo_paths WHERE owner_id = ?1 AND name = ?2 COLLATE NOCASE)
+           AND NOT EXISTS (SELECT 1 FROM repos WHERE artifacts_repo = ?5 AND git_backend = ?9)
+           AND NOT EXISTS (SELECT 1 FROM repo_storage_cleanup WHERE artifacts_repo = ?5 AND git_backend = ?9)
            AND (?7 IS NULL OR EXISTS (
              SELECT 1 FROM repos s JOIN users u ON u.id = ?1 WHERE s.id = ?7
                AND s.git_backend = ?9
@@ -614,11 +617,15 @@ async fn start_copy(
             (None, _) => storage.start_copy(&storage_id, &destination.description, source_repo.as_deref(), &source_url).await,
             (Some(_), _) => Err(CopyError::Rejected),
         };
-        let next = match result.err() {
+        let next = match result {
             // Another repo owns this opaque identity. Never inspect or delete it.
-            Some(CopyError::Collision) => "failed",
-            Some(CopyError::Missing | CopyError::Rejected) => "discard",
-            _ => "pending",
+            Err(CopyError::Collision) => "failed",
+            Err(CopyError::Missing | CopyError::Rejected) => "discard",
+            Err(CopyError::Unknown) => {
+                console_error!("Git copy submission {id} returned an unknown storage result");
+                "pending"
+            }
+            Ok(()) | Err(CopyError::Pending) => "pending",
         };
         db::run(
             &database,
@@ -643,7 +650,8 @@ async fn start_copy(
     let Some(job) = load_copy(state, id).await? else {
         return copy_not_found(state);
     };
-    reconcile_copy(&state.env, &state.db()?, &job).await?;
+    let limit = ScheduledLimits::read(&state.env)?.lfs_copy_objects;
+    reconcile_copy(&state.env, &state.db()?, &job, limit).await?;
     if let Some(url) = load_copy(state, id).await?.and_then(|job| ready_path(state, &job)) {
         return redirect(&url);
     }
@@ -742,7 +750,8 @@ async fn copy_status_page(ctx: RouteContext<AppState>, poll: bool) -> Result<Res
         return copy_not_found(state);
     };
     if poll {
-        let unknown = reconcile_copy(&state.env, &state.db()?, &job).await?;
+        let limit = ScheduledLimits::read(&state.env)?.lfs_copy_objects;
+        let unknown = reconcile_copy(&state.env, &state.db()?, &job, limit).await?;
         let Some(job) = load_copy(state, id).await? else {
             return copy_not_found(state);
         };
@@ -752,7 +761,7 @@ async fn copy_status_page(ctx: RouteContext<AppState>, poll: bool) -> Result<Res
 }
 
 /// Poll a bounded rotation. Claiming a check advances even jobs whose storage is unavailable.
-pub(crate) async fn reconcile_pending(env: &Env) -> Result<()> {
+pub(crate) async fn reconcile_pending(env: &Env, limits: &ScheduledLimits) -> Result<()> {
     let database = env.d1("DB")?;
     let checked_at = now();
     let jobs: Vec<CopyJob> = db::all(
@@ -761,101 +770,232 @@ pub(crate) async fn reconcile_pending(env: &Env) -> Result<()> {
             "UPDATE repo_copies SET last_checked_at = ?1
              WHERE id IN (
                 SELECT id FROM repo_copies
-                 WHERE state IN ('starting', 'pending', 'discard')
+                 WHERE state IN ('starting', 'pending') AND lfs_lease_until <= ?1
                    AND (last_checked_at IS NULL OR last_checked_at <= ?2)
                  ORDER BY COALESCE(last_checked_at, created_at), id LIMIT ?3
              ) RETURNING {COPY_COLUMNS}"
         ),
-        &[js_int(checked_at), js_int(checked_at - COPY_CHECK_INTERVAL), js_int(COPY_CHECK_LIMIT)],
+        &[js_int(checked_at), js_int(checked_at - COPY_CHECK_INTERVAL), js_int(limits.repo_copies)],
     )
     .await?;
     let mut failed = false;
     for job in jobs {
-        if reconcile_copy(env, &database, &job).await.is_err() {
-            failed = true;
-            console_error!("Unable to reconcile Git copy {}", job.id);
+        match reconcile_copy(env, &database, &job, limits.lfs_copy_objects).await {
+            Ok(unknown) => failed |= unknown,
+            Err(error) => {
+                failed = true;
+                console_error!("Unable to reconcile Git or LFS copy {}: {error}", job.id);
+            }
         }
     }
+    if let Err(error) = reconcile_cleanup(env, &database, now(), limits).await {
+        failed = true;
+        console_error!("Repository storage cleanup: {error}");
+    }
     if failed {
-        return Err(Error::RustError("Git copy reconciliation failed".into()));
+        return Err(Error::RustError("Repository lifecycle reconciliation failed".into()));
     }
     Ok(())
 }
 
 /// Returns true when storage could not confirm the operation's current state.
-async fn reconcile_copy(env: &Env, database: &D1Database, job: &CopyJob) -> Result<bool> {
-    if matches!(job.state.as_str(), "failed" | "ready") {
+async fn reconcile_copy(env: &Env, database: &D1Database, job: &CopyJob, lfs_limit: u32) -> Result<bool> {
+    let starting = job.state == "starting";
+    if (!starting && job.state != "pending")
+        || (starting && now().saturating_sub(job.created_at) < COPY_START_GRACE)
+    {
         return Ok(false);
     }
-    let Ok(storage) = GitStorage::from_env(env, job.git_backend) else {
-        return Ok(true);
+    let storage = match GitStorage::from_env(env, job.git_backend) {
+        Ok(storage) => storage,
+        Err(error) => {
+            console_error!("Unable to open Git storage for copy {}: {error}", job.id);
+            return Ok(true);
+        }
     };
     let id = [js_int(job.id)];
-    if job.state == "discard" {
-        return clean_copy(database, &storage, job).await;
-    }
-
-    // An interrupted start can be recovered by the opaque storage ID.
-    // A missing target while the start call is in flight proves nothing.
-    let starting = job.state == "starting";
-    match storage.copy_info(&job.storage_id).await {
-        Err(error) => match error {
-            CopyError::Missing if now().saturating_sub(job.created_at) >= COPY_START_GRACE => {
-                db::run(
-                    database,
-                    "UPDATE repo_copies SET state = 'failed' WHERE id = ? AND state = ?",
-                    &[js_int(job.id), js_text(&job.state)],
-                )
-                .await?;
-            }
-            CopyError::Missing | CopyError::Pending => {}
-            _ => return Ok(true),
-        },
-        Ok(info) => {
-            if info.name != job.storage_id {
-                return Ok(true);
-            }
-            if starting {
-                db::run(database, "UPDATE repo_copies SET state = 'pending' WHERE id = ? AND state = 'starting'", &id).await?;
-            }
+    let info = match storage.copy_info(&job.storage_id).await {
+        Err(CopyError::Missing) if now().saturating_sub(job.created_at) >= COPY_START_GRACE => {
             db::run(
                 database,
-                "INSERT INTO repos (owner_id, name, description, default_branch, artifacts_repo, artifacts_remote,
-                                    visibility, forked_from, created_at, updated_at, private_fork, git_backend)
-                 SELECT c.owner_id, c.name, c.description, ?2, c.artifacts_repo, ?3,
-                        CASE WHEN c.private_fork = 1 THEN 'private' ELSE c.visibility END,
-                        CASE WHEN c.private_fork = 0 THEN u.username || '/' || s.name END, ?4, ?4, c.private_fork, c.git_backend
-                 FROM repo_copies c JOIN repo_copy_access a ON a.id = c.id
-                 LEFT JOIN repos s ON s.id = c.source_id LEFT JOIN users u ON u.id = s.owner_id
-                 WHERE c.id = ?1 AND c.state = 'pending' AND a.allowed = 1",
-                &[js_int(job.id), js_text(&info.default_branch), js_text(&info.remote), js_int(now())],
-            )
-            .await?;
-            // Claim cleanup only if publication did not occur and access was lost.
-            let discard = db::first::<Identity>(
-                database,
-                "UPDATE repo_copies SET state = 'discard' WHERE id = ? AND state = 'pending'
-                   AND id IN (SELECT id FROM repo_copy_access WHERE allowed = 0) RETURNING id",
-                &id,
-            )
-            .await?;
-            if discard.is_some() {
-                return clean_copy(database, &storage, job).await;
-            }
+                "UPDATE repo_copies SET state = 'discard' WHERE id = ? AND state = ? AND lfs_lease_until <= ?",
+                &[js_int(job.id), js_text(&job.state), js_int(now())],
+            ).await?;
+            return Ok(false);
         }
-    }
-    Ok(false)
-}
+        Err(CopyError::Missing | CopyError::Pending) => return Ok(false),
+        Err(error) => {
+            console_error!("Unable to inspect Git copy {}: {error:?}", job.id);
+            return Ok(true);
+        }
+        Ok(info) if info.name != job.storage_id => {
+            console_error!("Git storage returned a mismatched identity for copy {}", job.id);
+            return Ok(true);
+        }
+        Ok(info) => info,
+    };
 
-async fn clean_copy(database: &D1Database, storage: &GitStorage, job: &CopyJob) -> Result<bool> {
-    if storage.delete(&job.storage_id).await.is_err() {
-        return Ok(true);
+    if starting {
+        db::run(database, "UPDATE repo_copies SET state = 'pending' WHERE id = ? AND state = 'starting'", &id).await?;
+    }
+    if job.kind == "fork" {
+        if let Err(error) = copy_lfs_page(env, database, job.id, lfs_limit).await {
+            console_error!("Unable to copy LFS objects for fork {}: {error}", job.id);
+            discard_revoked_copy(database, job.id).await?;
+            return Ok(true);
+        }
     }
     db::run(
         database,
-        "UPDATE repo_copies SET state = 'failed' WHERE id = ? AND state = 'discard'",
-        &[js_int(job.id)],
-    )
-    .await?;
+        "INSERT INTO repos (owner_id, name, description, default_branch, artifacts_repo, artifacts_remote,
+                            visibility, forked_from, created_at, updated_at, private_fork, git_backend, lfs_copy_id)
+         SELECT c.owner_id, c.name, c.description, ?2, c.artifacts_repo, ?3,
+                CASE WHEN c.private_fork = 1 THEN 'private' ELSE c.visibility END,
+                CASE WHEN c.private_fork = 0 THEN u.username || '/' || s.name END, ?4, ?4, c.private_fork, c.git_backend,
+                CASE WHEN c.kind = 'fork' THEN c.id END
+         FROM repo_copies c JOIN repo_copy_access a ON a.id = c.id
+         LEFT JOIN repos s ON s.id = c.source_id LEFT JOIN users u ON u.id = s.owner_id
+         WHERE c.id = ?1 AND c.state = 'pending' AND a.allowed = 1
+           AND (c.kind = 'import' OR (c.lfs_complete = 1 AND c.lfs_lease_until = 0))",
+        &[js_int(job.id), js_text(&info.default_branch), js_text(&info.remote), js_int(now())],
+    ).await?;
+    discard_revoked_copy(database, job.id).await?;
     Ok(false)
+}
+
+async fn discard_revoked_copy(database: &D1Database, id: i64) -> Result<()> {
+    db::run(
+        database,
+        "UPDATE repo_copies SET state = 'discard' WHERE id = ? AND state = 'pending'
+           AND lfs_lease_until <= ? AND id IN (SELECT id FROM repo_copy_access WHERE allowed = 0)",
+        &[js_int(id), js_int(now())],
+    ).await
+}
+
+#[derive(Deserialize)]
+struct CopyPage {
+    source_id: i64,
+    source_copy_id: Option<i64>,
+    lfs_cursor: Option<String>,
+}
+
+async fn copy_lfs_page(env: &Env, database: &D1Database, id: i64, limit: u32) -> Result<()> {
+    let checked_at = now();
+    let expires = checked_at + lfs::WRITE_LEASE;
+    let Some(page) = db::first::<CopyPage>(
+        database,
+        "UPDATE repo_copies SET lfs_lease_until = ?2
+         WHERE id = ?1 AND state = 'pending' AND kind = 'fork' AND lfs_complete = 0
+           AND lfs_lease_until <= ?3 AND id IN (SELECT id FROM repo_copy_access WHERE allowed = 1)
+         RETURNING source_id, lfs_cursor,
+                   (SELECT s.lfs_copy_id FROM repos s WHERE s.id = repo_copies.source_id) AS source_copy_id",
+        &[js_int(id), js_int(expires), js_int(checked_at)],
+    ).await? else {
+        return Ok(());
+    };
+
+    let result = lfs::copy_page(
+        env,
+        Namespace::for_repo(page.source_id, page.source_copy_id),
+        Namespace::Fork(id),
+        page.lfs_cursor.as_deref(),
+        expires,
+        limit,
+    ).await;
+    match result {
+        Ok(cursor) => db::run(
+            database,
+            "UPDATE repo_copies SET lfs_lease_until = 0, lfs_cursor = ?3, lfs_complete = ?4
+             WHERE id = ?1 AND state = 'pending' AND lfs_lease_until = ?2",
+            &[js_int(id), js_int(expires), cursor.as_deref().map_or(JsValue::NULL, js_text), js_int(i64::from(cursor.is_none()))],
+        ).await,
+        Err(error) => {
+            db::run(
+                database,
+                "UPDATE repo_copies SET lfs_lease_until = 0 WHERE id = ? AND lfs_lease_until = ?",
+                &[js_int(id), js_int(expires)],
+            ).await?;
+            Err(error)
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct Cleanup {
+    id: i64,
+    repo_id: Option<i64>,
+    copy_id: Option<i64>,
+    lfs_copy_id: Option<i64>,
+    artifacts_repo: String,
+    git_backend: GitBackend,
+    git_deleted: i64,
+}
+
+async fn reconcile_cleanup(env: &Env, database: &D1Database, checked_at: i64, limits: &ScheduledLimits) -> Result<()> {
+    db::run(
+        database,
+        "DELETE FROM repo_lfs_uploads WHERE id IN (
+             SELECT id FROM repo_lfs_uploads WHERE expires_at <= ? ORDER BY expires_at LIMIT 256
+         )",
+        &[js_int(checked_at)],
+    ).await?;
+    let jobs: Vec<Cleanup> = db::all(
+        database,
+        "UPDATE repo_storage_cleanup SET due_at = ?2
+         WHERE id IN (
+             SELECT q.id FROM repo_storage_cleanup q WHERE q.due_at <= ?1
+               AND NOT EXISTS (SELECT 1 FROM repo_lfs_uploads w WHERE w.repo_id = q.repo_id AND w.expires_at > ?1)
+               AND NOT EXISTS (SELECT 1 FROM repo_copies c WHERE c.id = q.copy_id AND c.lfs_lease_until > ?1)
+             ORDER BY q.due_at, q.id LIMIT ?3
+         ) RETURNING id, repo_id, copy_id, lfs_copy_id, artifacts_repo, git_backend, git_deleted",
+        &[js_int(checked_at), js_int(checked_at + COPY_CHECK_INTERVAL), js_int(limits.repo_cleanups)],
+    ).await?;
+    let mut failed = false;
+    for job in jobs {
+        if let Err(error) = clean_storage(env, database, &job, limits.lfs_cleanup_objects).await {
+            failed = true;
+            console_error!("Unable to clean repository storage job {}: {error}", job.id);
+        }
+    }
+    if failed {
+        return Err(Error::RustError("One or more repository storage cleanup jobs failed".into()));
+    }
+    Ok(())
+}
+
+async fn clean_storage(env: &Env, database: &D1Database, job: &Cleanup, lfs_limit: u32) -> Result<()> {
+    let id = [js_int(job.id)];
+    if job.git_deleted == 0 {
+        let live = db::first::<Identity>(
+            database,
+            "SELECT id FROM repos WHERE artifacts_repo = ?1 AND git_backend = ?2
+             UNION ALL
+             SELECT id FROM repo_copies WHERE artifacts_repo = ?1 AND git_backend = ?2
+               AND state IN ('starting', 'pending') LIMIT 1",
+            &[js_text(&job.artifacts_repo), js_text(job.git_backend.name())],
+        ).await?;
+        if live.is_some() {
+            return Err(Error::RustError("Git storage is still referenced".into()));
+        }
+        GitStorage::from_env(env, job.git_backend)?
+            .delete(&job.artifacts_repo).await
+            .map_err(|error| Error::RustError(format!("Git deletion failed: {error:?}")))?;
+        db::run(database, "UPDATE repo_storage_cleanup SET git_deleted = 1 WHERE id = ?", &id).await?;
+    }
+
+    let namespace = job.lfs_copy_id.map(Namespace::Fork).or_else(|| job.repo_id.map(Namespace::Repo));
+    if let Some(namespace) = namespace {
+        if !lfs::delete_page(env, namespace, lfs_limit).await? {
+            return Ok(());
+        }
+    }
+    if let Some(copy_id) = job.copy_id {
+        let mark_failed = database.prepare(
+            "UPDATE repo_copies SET state = 'failed' WHERE id = ? AND state = 'discard'",
+        ).bind(&[js_int(copy_id)])?;
+        let finish = database.prepare("DELETE FROM repo_storage_cleanup WHERE id = ?").bind(&id)?;
+        database.batch(vec![mark_failed, finish]).await?;
+        return Ok(());
+    }
+    db::run(database, "DELETE FROM repo_storage_cleanup WHERE id = ?", &id).await
 }

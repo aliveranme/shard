@@ -6,6 +6,7 @@ use base64::Engine;
 use worker::*;
 
 const SESSION_TTL: i64 = 30 * 24 * 3600;
+const TOKEN_USAGE_INTERVAL: i64 = 60;
 
 pub async fn current_user(env: &Env, req: &Request) -> Result<Option<User>> {
     let Some(token) = util::cookie(req, "shard_session") else {
@@ -128,6 +129,7 @@ pub async fn git_identity(env: &Env, req: &Request) -> Result<Option<GitIdentity
 
     let hash = crypto::sha256_hex(&secret).await?;
     let database = env.d1("DB")?;
+    let now = util::now();
     #[derive(serde::Deserialize)]
     struct Row {
         id: i64,
@@ -135,24 +137,29 @@ pub async fn git_identity(env: &Env, req: &Request) -> Result<Option<GitIdentity
         username: String,
         scope: String,
         is_admin: i64,
+        last_used_at: Option<i64>,
     }
     let row: Option<Row> = db::first(
         &database,
-        "SELECT t.id, t.user_id, t.scope, u.username, u.is_admin
+        "SELECT t.id, t.user_id, t.scope, u.username, u.is_admin, t.last_used_at
            FROM access_tokens t JOIN users u ON u.id = t.user_id
           WHERE t.token_hash = ? AND (t.expires_at IS NULL OR t.expires_at > ?)",
-        &[util::js_text(&hash), util::js_int(util::now())],
+        &[util::js_text(&hash), util::js_int(now)],
     )
     .await?;
     let Some(row) = row else {
         return Ok(None);
     };
-    db::run(
-        &database,
-        "UPDATE access_tokens SET last_used_at = ? WHERE id = ?",
-        &[util::js_int(util::now()), util::js_int(row.id)],
-    )
-    .await?;
+    let cutoff = now - TOKEN_USAGE_INTERVAL;
+    if row.last_used_at.is_none_or(|last| last <= cutoff) {
+        db::run(
+            &database,
+            "UPDATE access_tokens SET last_used_at = ?1 WHERE id = ?2
+               AND (last_used_at IS NULL OR last_used_at <= ?3)",
+            &[util::js_int(now), util::js_int(row.id), util::js_int(cutoff)],
+        )
+        .await?;
+    }
     Ok(Some(GitIdentity {
         user_id: row.user_id,
         username: row.username,

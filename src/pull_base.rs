@@ -1,6 +1,7 @@
 use crate::git_storage::{is_object_id, RepoHandle};
 use crate::models::Repo;
 use crate::i18n::DiscussionText;
+use crate::native_git::{NativeRepo, SnapshotRead};
 use crate::refs::{self, RefsError};
 use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
@@ -98,6 +99,23 @@ async fn load_refs(repo: &RepoHandle) -> Result<refs::Inventory, DiscussionText>
 pub(crate) async fn find(repos: &Repositories, base: &str, head: &str) -> Result<String, BaseError> {
     if !is_object_id(base) || !is_object_id(head) {
         return Err(BaseError::Missing);
+    }
+    if let Some((target, source)) = NativeRepo::comparison_pair(&repos.target, repos.source()) {
+        return match target.merge_bases(source, base, head).await.map_err(BaseError::Storage)? {
+            SnapshotRead::Missing => Err(BaseError::Missing),
+            SnapshotRead::Limited => Err(BaseError::Limited),
+            SnapshotRead::Found(mut bases) => match bases.len() {
+                0 => Err(BaseError::Unrelated),
+                1 => {
+                    let hash = bases.pop().ok_or(BaseError::Missing)?;
+                    if !is_object_id(&hash) || hash.bytes().all(|byte| byte == b'0') {
+                        return Err(BaseError::Storage(worker::Error::RustError("Native Git origin returned an invalid merge base".into())));
+                    }
+                    Ok(hash)
+                }
+                _ => Err(BaseError::Ambiguous),
+            },
+        };
     }
     if base == head {
         repos.target.read_commit(base).await.map_err(BaseError::Storage)?.ok_or(BaseError::Missing)?;
