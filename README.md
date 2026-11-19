@@ -104,7 +104,7 @@ push over HTTPS, open pull requests, and use issues and reviews immediately.
 | Default (`shard-free`) | One SQLite Durable Object per repository, 32 MiB per push | Same-repository fast-forward | Optional R2 | Workers Free, D1, Static Assets, Rate Limiting, Cron |
 | `npm run deploy:paid` (`managed` or `managed-staging`) | Artifacts, 64 MiB per push | Same-repository and cross-repository Artifacts merges through the Git container | R2 multipart | Workers Paid, Artifacts, Containers, Workflows, private R2, scoped S3 credentials |
 | `--env artifacts` (`shard`) | Artifacts, 64 MiB per push | Same-repository fast-forward. Configure an external Git bridge for other Artifacts merges | R2 proxy by default | Workers Paid and R2. Preserves the original Artifacts instance's bindings |
-| `--env native` (`shard-native`) | Bare repositories on the origin disk. The optional direct hostname avoids the Worker request-body ceiling. | Full same-origin merges with Git 2.38+ | R2 proxy or multipart via `deploy:paid` | Workers Free or Paid, an HTTPS Git origin with persistent storage, and R2 |
+| `--env native` (`shard-native`, hybrid) | Bare repositories on a Git server you operate. A direct Git hostname can route pack transfers to that server. | Full same-origin merges with Git 2.38+ | R2 proxy or multipart via `deploy:paid` | Workers Free or Paid, D1 and R2 on Cloudflare. Supply an HTTPS Git origin and persistent storage. |
 
 Give each instance separate D1, Git storage, and any R2 resources.
 See the [deployment and capacity guide in Simplified Chinese](docs/deployment-capacity.md) for configuration, plan quotas and scaling options.
@@ -338,10 +338,13 @@ Git 2.38 or later.
 ### Large repositories on Workers Paid
 
 Use the native Git origin when a push or repository exceeds Artifacts capacity.
-Give it a persistent volume and a dedicated HTTPS Git hostname. Point DNS at
-the origin directly. For a hostname in Cloudflare DNS, use **DNS only**. The
-reverse proxy must stream uploads and downloads and accept the intended pack
-size. With Nginx, use these settings inside the TLS server for the Git hostname.
+The Paid preset deploys the Shard Worker and configures R2 multipart uploads.
+Run the Git origin on a host you operate with a persistent volume and a
+dedicated HTTPS hostname. For a hostname in Cloudflare DNS, use **DNS only**
+to send Git packs directly to that host. A proxied hostname is subject to the
+zone's request-body limit. The reverse proxy must stream uploads and downloads
+and accept the intended pack size. With Nginx, use these settings inside the
+TLS server for the Git hostname.
 
 ```nginx
 location / {

@@ -11,7 +11,7 @@
 | 默认 Free | 顶层 `shard-free` | 每仓库一个 SQLite Durable Object | Workers Free、D1、Static Assets、Rate Limiting、Cron。可选 R2 |
 | 托管 Paid | `managed` 或 `managed-staging` | Artifacts | Workers Paid、Artifacts、D1、R2、Containers、Durable Objects、Workflows。构建容器镜像需要 Docker |
 | 旧 Artifacts | `artifacts` | 原 Artifacts 命名空间 | Workers Paid、Artifacts、D1、R2。可选自管合并桥 |
-| 原生 Git | `native` | 自管主机上的裸 Git 仓库 | Workers Free 或 Paid、D1、R2、HTTPS Git 源站及持久盘。Paid 预设启用 R2 分片 |
+| 原生 Git（混合部署） | `native` | 自备主机持久盘上的裸 Git 仓库 | Cloudflare 托管 Worker、D1 和 R2，另需自备 HTTPS Git 源站。Paid 预设启用 R2 分片 |
 
 四种方案均使用 `DB`、`ASSETS` 和 `REQUEST_LIMITER`。`GIT_BACKEND` 为新建仓库和无凭据导入选择默认后端。已创建的仓库按 D1 中记录的后端访问，fork 继承源仓库的后端。配置中的变量会在发布时写入 Worker。由控制台维护的文本变量应从对应环境的 `vars` 中移除，`keep_vars: true` 会保留这些变量。令牌通过 Worker Secret 或 Git 忽略的 `.env.deploy.*` 文件提供。[配置源文件](../wrangler.jsonc) · [变量与密钥配置](../README.md#worker-variables-and-secrets)
 
@@ -43,11 +43,13 @@ mise exec -- npm run deploy -- --env artifacts
 
 ### 原生 Git
 
+Cloudflare Workers 运行 Shard 网站、API 和权限检查，D1 保存应用数据，R2 保存 LFS 对象。你在自备主机上运行 Git 源站，普通 Git 仓库落在该主机的持久盘上。`deploy:paid -- --env native` 发布 Worker 并配置 R2 分片，源站需单独运行。
+
 在主机安装项目指定的 Node 和 Git 2.32+，Web 非快进合并需要 Git 2.38+。配置 `SHARD_GIT_DIRECTORY` 为持久卷，设置 `SHARD_GIT_TOKEN`，运行 `node scripts/git-origin.mjs`。服务默认监听 `127.0.0.1:8793`，通过 HTTPS 反代暴露。在 Worker 的 `env.native.vars` 设置 `NATIVE_GIT_ORIGIN`，并把同一份共享密钥保存为 `NATIVE_GIT_TOKEN`。普通原生部署默认采用 `free` 处理预算与 `proxy` LFS。在 Workers Paid 账号可将 `SHARD_LIMIT_PROFILE` 设为 `paid`，或使用下面的 Paid 预设。[原生源站安装](../README.md#deploy-with-a-native-git-origin)
 
 | 启用原生直连 | 值 |
 | --- | --- |
-| Git 域名 | HTTPS，DNS only。反代流式转发请求和响应，设置所需的请求体积和读写空闲超时 |
+| Git 域名 | 独立 HTTPS 域名，在 Cloudflare DNS 中设为 **DNS only** 后，客户端将 pack 直接传给源站。若启用 Cloudflare HTTP 代理，上传仍受域名套餐的请求体上限约束。源站反代须流式转发请求和响应，并配置请求体积和读写空闲超时 |
 | Worker 文本变量 | `NATIVE_GIT_ORIGIN` 和 `NATIVE_GIT_DIRECT_ORIGIN` 可都指向 Git 域名，例如 `https://git.example.com` |
 | 源站环境变量 | `SHARD_GIT_FORGE_ORIGIN` 指向 Worker，例如 `https://forge.example.com`。源站绑定在环回接口且反代覆盖 `X-Real-IP` 时可设 `SHARD_GIT_TRUST_PROXY=1` |
 | Paid 预设 | 设置 `CLOUDFLARE_ACCOUNT_ID`，绑定私有 `LFS_OBJECTS`。在密钥文件提供 `NATIVE_GIT_TOKEN`、`SHARD_LFS_R2_ACCESS_KEY_ID` 和 `SHARD_LFS_R2_SECRET_ACCESS_KEY` |
