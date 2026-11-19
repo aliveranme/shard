@@ -3,7 +3,7 @@
 Living record of what works, what is missing, and how it was verified.
 Update this file whenever a milestone lands or a limitation changes.
 
-**Snapshot:** 2026-11-19 · Default Workers Free deployment and managed Paid preset · local verification
+**Snapshot:** 2026-11-19 · Shard 0.2.0 · local verification
 
 | Item | Value |
 |---|---|
@@ -149,6 +149,8 @@ Architecture, service boundaries, and operational constraints are recorded in [P
 | 2026-11-19 | `mise run test` at `413d3cb` | Rebuilt the Worker and passed all 74 tests. Coverage included the scheduled pull request refresh in the native Git suite, the default Free Git scenario, Artifacts HTTP, signed R2 direct and multipart uploads, and the deployment and release gates. |
 | 2026-11-19 | First Free publish through Wrangler and a loopback Cloudflare API | A dashboard-style D1 binding applied all 25 schema migrations before Worker upload. Upload metadata contained the `free-git-v1` SQLite class migration and no R2, Artifacts or Workflow bindings. |
 | 2026-11-19 | Free public Git import | A local Git `upload-pack` fixture supplied the HTTPS advertisement and pack response. The repository kept its `trunk` default, refs and imported file contents. |
+| 2026-11-19 | Concurrent SQLite Git mirrors and default branch deletion | Four simultaneous Git mirrors of a repository with 8,300 blobs preserved both refs and the expected file and passed `git fsck --full`. The repository rejected a push that deleted its configured default branch. |
+| 2026-11-19 | v0.2.0 pre-release checks | `mise run check` and all 83 tests in `npm run ci -- --container` passed. The Git merge container reported bridge protocol 1 and returned HTTP 401 to an unauthenticated merge. |
 
 ## How to update
 

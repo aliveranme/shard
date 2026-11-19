@@ -660,7 +660,13 @@ test("default Free deployment serves and persists repositories without paid bind
     const forkRemote = remoteUrl(`http://127.0.0.1:${worker.port}`, fork);
     assert.equal(await git(null, "ls-remote", "--symref", forkRemote), expectedRefs);
     const clone = join(temporary, "fork-clone");
-    await git(null, "clone", "--branch", "main", forkRemote, clone);
+    const defaultClone = join(temporary, "fork-default-clone");
+    await Promise.all([
+      git(null, "clone", "--branch", "main", forkRemote, clone),
+      git(null, "clone", forkRemote, defaultClone),
+    ]);
+    assert.equal(await git(null, "-C", defaultClone, "symbolic-ref", "HEAD"), "refs/heads/web/notes");
+    assert.equal(await git(null, "-C", defaultClone, "rev-parse", "HEAD"), original);
     assert.equal(await readFile(join(clone, "README.md"), "utf8"), readme);
     assert.equal(await readFile(join(clone, "notes.txt"), "utf8"), "Review the stored notes.\n");
   } finally {

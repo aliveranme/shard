@@ -4,7 +4,7 @@ import { RepoCell } from "durable-git";
 import { isGitlinkMode, isTreeMode, parseCommit, parseTag, parseTree } from "../node_modules/durable-git/src/git/objects.ts";
 import { ObjCache } from "../node_modules/durable-git/src/git/packstore.ts";
 import { FLUSH, pkt, PktParser } from "../node_modules/durable-git/src/git/pktline.ts";
-import { advertisement, validatePush } from "../node_modules/durable-git/src/git/protocol.ts";
+import { advertisement, renderStatus, validatePush } from "../node_modules/durable-git/src/git/protocol.ts";
 import { GitStore } from "../node_modules/durable-git/src/git/store.ts";
 import { concat, isOid, td, te, ZERO_OID } from "../node_modules/durable-git/src/git/util.ts";
 import { shard_receive_request } from "../src/git_wire.js";
@@ -133,7 +133,11 @@ async function readJson(request) {
 
 function leasedResponse(response, release) {
   const reader = response.body.getReader();
+  let finished = false;
+  let canceling = false;
   function finish() {
+    if (finished) return;
+    finished = true;
     reader.releaseLock();
     release();
   }
@@ -141,11 +145,13 @@ function leasedResponse(response, release) {
     async pull(controller) {
       try {
         const { done, value } = await reader.read();
+        if (canceling) return;
         if (!done) {
           controller.enqueue(value);
           return;
         }
       } catch (error) {
+        if (canceling) return;
         finish();
         controller.error(error);
         return;
@@ -154,6 +160,7 @@ function leasedResponse(response, release) {
       controller.close();
     },
     async cancel(reason) {
+      canceling = true;
       try {
         await reader.cancel(reason);
       } finally {
@@ -265,6 +272,7 @@ export class GitRepository extends RepoCell {
   #writes = null;
   #readers = 0;
   #idle = null;
+  #preparingPack = null;
 
   constructor(ctx, env) {
     super(ctx, env);
@@ -443,6 +451,21 @@ export class GitRepository extends RepoCell {
     });
   }
 
+  async #preparePack(request) {
+    // Only one cold walk may rebuild the shared reachable table. A second
+    // rebuild can otherwise clear rows already being streamed by a warm clone.
+    while (this.#preparingPack && !this.store.reachableCacheValid()) await this.#preparingPack;
+    if (this.store.reachableCacheValid()) return super.fetch(request);
+    const preparation = Promise.withResolvers();
+    this.#preparingPack = preparation.promise;
+    try {
+      return await super.fetch(request);
+    } finally {
+      this.#preparingPack = null;
+      preparation.resolve();
+    }
+  }
+
   async #forkSnapshot() {
     const head = this.store.head();
     const refs = this.store.refs();
@@ -453,7 +476,7 @@ export class GitRepository extends RepoCell {
     let pack = new Uint8Array();
     if (refs.length) {
       const req = new Request(`${INTERNAL}/${UPLOAD}`, { method: "POST", body: fetchRequest(refs) });
-      const response = await super.fetch(req);
+      const response = await this.#preparePack(req);
       if (!response.ok) return response;
       pack = await readBytes(response.body, this.#maxPush + 8);
     }
@@ -743,7 +766,7 @@ export class GitRepository extends RepoCell {
       const bytes = await readBytes(input, MAX_UPLOAD_REQUEST);
       const parser = new PktParser(bytes);
       if (parser.read()?.text === "command=ls-refs") return this.#lsRefs(parser);
-      return super.fetch(new Request(`${INTERNAL}/${UPLOAD}`, {
+      return await this.#preparePack(new Request(`${INTERNAL}/${UPLOAD}`, {
         method: "POST",
         headers: { "x-repo": name },
         body: bytes,
@@ -799,6 +822,16 @@ export class GitRepository extends RepoCell {
       return empty(oversized ? 413 : 400);
     }
     const head = this.store.head();
+    const updates = JSON.parse(push.updates);
+    // A settings change can reach this cell before the matching D1 update.
+    // Check the actual symbolic HEAD under the same lock as receive-pack.
+    if (updates.some(({ name, before, after }) => name === head && before !== ZERO_OID && after === ZERO_OID)) {
+      void push.body.cancel().catch(() => {});
+      if (oversized) return empty(413);
+      if (!push.report) return empty(409);
+      const results = updates.map(({ name }) => ({ ref: name, ok: false, msg: "cannot delete the default branch" }));
+      return gitResponse(RECEIVE, "result", renderStatus(results, null, push.sideband));
+    }
     try {
       const response = await super.fetch(new Request(`${INTERNAL}/${RECEIVE}`, {
         method: "POST",

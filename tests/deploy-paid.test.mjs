@@ -27,6 +27,8 @@ function exercise(t, {
   secrets = JSON.stringify(credentials),
   configure = () => {},
   deployStatus = 0,
+  workerOverride,
+  workersBuilds = false,
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "shard-deploy-paid-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -36,6 +38,7 @@ function exercise(t, {
   const temp = join(dir, "temp");
   const log = join(dir, "calls.jsonl");
   const raw = {
+    name: "free",
     keep_vars: true,
     assets: { directory: "./static", binding: "ASSETS" },
     vars: { GIT_BACKEND: "durable", SHARD_LIMIT_PROFILE: "free" },
@@ -70,7 +73,7 @@ function exercise(t, {
     }
     fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({
       args, environment, configPath, config, secretsPath, secretsMatch,
-      sanitize: process.env.WRANGLER_LOG_SANITIZE, ci: process.env.CI,
+      sanitize: process.env.WRANGLER_LOG_SANITIZE, ci: process.env.CI, workerOverride: process.env.WRANGLER_CI_OVERRIDE_NAME,
     }) + "\\n");
     switch (args.slice(0, 2).join(" ")) {
       case "d1 list":
@@ -90,6 +93,10 @@ function exercise(t, {
   const env = { ...process.env, TMPDIR: temp, TMP: temp, TEMP: temp, WRANGLER_LOG_SANITIZE: "false" };
   delete env.CLOUDFLARE_ENV;
   delete env.CLOUDFLARE_ACCOUNT_ID;
+  delete env.WRANGLER_CI_OVERRIDE_NAME;
+  delete env.WORKERS_CI;
+  if (workersBuilds) env.WORKERS_CI = "1";
+  if (workerOverride !== undefined) env.WRANGLER_CI_OVERRIDE_NAME = workerOverride;
   if (accountId !== null) env.CLOUDFLARE_ACCOUNT_ID = accountId;
   env[secretName] = "different-shell-value";
   const command = [join(dir, "deploy.mjs"), "--config", configPath, ...args];
@@ -230,4 +237,40 @@ test("ordinary deploy and the managed CD invocation keep the original config", a
       }
     });
   }
+});
+
+test("a connected Worker name cannot redirect a named deployment", async (t) => {
+  for (const [name, args] of [
+    ["legacy Artifacts", ["--env", "artifacts"]],
+    ["Paid staging", ["--paid", "--env", "managed-staging"]],
+  ]) {
+    await t.test(name, (t) => {
+      const result = exercise(t, {
+        args, workerOverride: "connected-production",
+        configure(raw) { raw.env.artifacts = { ...managed("legacy"), name: "legacy" }; },
+      });
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, /Workers Builds is connected to 'connected-production'.*targets/);
+      assert.deepEqual(result.calls, []);
+    });
+  }
+});
+
+test("deployment accepts the connected Worker for the default and matching named targets", (t) => {
+  for (const [args, workerOverride] of [[[], "custom-free"], [["--env", "managed"], "free-managed"]]) {
+    const result = exercise(t, { args, workerOverride, accountId: null, secrets: null });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(result.commands, ["d1 migrations", "deploy"]);
+    assert.equal(result.calls[1].workerOverride, workerOverride);
+  }
+});
+
+test("Workers Builds refuses a different configured account before invoking Wrangler", (t) => {
+  const result = exercise(t, {
+    args: ["--env", "managed-staging"], workersBuilds: true, secrets: null,
+    configure(raw) { raw.env["managed-staging"].account_id = "a".repeat(32); },
+  });
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /account_id must match the Workers Builds account/);
+  assert.deepEqual(result.calls, []);
 });

@@ -7,6 +7,7 @@ import { test } from "node:test";
 
 const staging = "managed-staging";
 const production = "managed";
+const productionWorkerTag = "production-worker-tag";
 
 function target(environment, databaseId) {
   const name = `shard-${environment}`;
@@ -63,6 +64,10 @@ function exercise(t, { branch = "main", stagingResult } = {}) {
     const option = (name) => args[args.indexOf(name) + 1];
     const env = option("--env");
     const call = { env, args: args.slice(0, args.indexOf("--config")) };
+    if (args[0] === "deploy") {
+      call.matchTag = process.env.WRANGLER_CI_MATCH_TAG;
+      call.overrideName = process.env.WRANGLER_CI_OVERRIDE_NAME;
+    }
     appendFileSync(${JSON.stringify(log)}, JSON.stringify(call) + "\\n");
     if (args[0] === "workflows") {
       const result = args[1] === "trigger" ? { id: option("--id") } : ${JSON.stringify(results)}[env];
@@ -71,7 +76,10 @@ function exercise(t, { branch = "main", stagingResult } = {}) {
   `);
   const result = spawnSync(process.execPath, [join(dir, "scripts", "cd.mjs"), "--config", config], {
     cwd: dir, encoding: "utf8", timeout: 20_000,
-    env: { ...env, WORKERS_CI: "1", SHARD_RELEASE_BRANCH: "main", WORKERS_CI_BRANCH: branch, WORKERS_CI_COMMIT_SHA: tag },
+    env: {
+      ...env, WORKERS_CI: "1", SHARD_RELEASE_BRANCH: "main", WORKERS_CI_BRANCH: branch, WORKERS_CI_COMMIT_SHA: tag,
+      WRANGLER_CI_MATCH_TAG: productionWorkerTag, WRANGLER_CI_OVERRIDE_NAME: `shard-${production}`,
+    },
   });
   assert.ifError(result.error);
   const calls = readFileSync(log, "utf8").split("\n").filter(Boolean).map(JSON.parse);
@@ -90,7 +98,7 @@ function assertReleaseCalls(calls, tag, targets) {
       ["deploy", "--tag", tag],
       ["workflows", "trigger", workflow, JSON.stringify({ tag }), "--id", instance],
       ["workflows", "instances", "describe", workflow, instance],
-    ].map((args) => ({ env, args })));
+    ].map((args) => ({ env, args, ...(env === production && args[0] === "deploy" ? { matchTag: productionWorkerTag } : {}) })));
   }
 }
 

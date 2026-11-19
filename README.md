@@ -118,8 +118,8 @@ Give each instance separate D1, Git storage, and any R2 resources.
    creation and the first push.
 
 For a repository you already own, connect it in Workers & Pages and use the
-same commands. The build token needs Workers Scripts Edit and D1 Edit in
-the target account. Add Workers Routes Edit when deploying routes in a zone.
+same commands. Select a Workers Builds token with Workers Scripts Edit and D1
+Edit in the target account. Add Workers Routes Edit when deploying routes in a zone.
 Workers Builds uses `.node-version`, the pinned Rust toolchain and `worker-build`.
 The deploy command applies the D1 migrations before publishing the Worker.
 [Deploy to Cloudflare buttons](https://developers.cloudflare.com/workers/platform/deploy-buttons/) · [Workers Builds settings](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/)
@@ -140,6 +140,8 @@ Automatic reuse accepts an empty database or a schema with Shard's initial
 migration and core tables. To select an existing database explicitly, set its
 UUID in `database_id`. The script applies pending migrations, then Wrangler
 publishes the Worker with the selected bindings.
+When a D1 jurisdiction is set, deployment checks it before reusing a database
+by name and applies it when creating a database.
 
 For another instance, choose a Worker and D1 name in `wrangler.jsonc`. Where
 configured, choose unique R2 bucket and Artifacts namespace names. Pass
@@ -222,6 +224,10 @@ Workers Builds reports the build and deploy result on the linked commit.
 After deploying with the Paid preset, this staged release path retains its
 dashboard-managed LFS settings through `keep_vars`. Use matching R2 settings
 and secrets in both environments when staging multipart uploads.
+
+Workers Builds must be connected to the production Worker named in the
+configuration. Staging uses its own Worker identity and bindings. Production
+retains the identity check for the connected Worker.
 [Migrate GitHub Actions jobs to Cloudflare](PLAN.md#migrate-github-actions-jobs-to-cloudflare)
 
 If you enable builds for other branches, leave their preview command separate
@@ -374,6 +380,11 @@ The Web UI supports same-repository fast-forward merges. For a divergent or
 cross-repository change targeting a protected branch, merge locally on top of
 the current target tip. Push the result to a topic branch in the target
 repository and open a fast-forward pull request.
+
+On the SQLite Git backend, keep each ref name distinct from its ancestors.
+For example, Git clients using file-based refs can fail to fetch when a
+repository has both `refs/heads/topic` and `refs/heads/topic/notes`.
+Shallow clones support numeric `--depth` on this backend.
 
 Free imports accept credential-free HTTPS Git URLs on `github.com`,
 `gitlab.com` and `codeberg.org`. Use the native origin for imports that

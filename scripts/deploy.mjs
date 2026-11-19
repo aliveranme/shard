@@ -158,6 +158,11 @@ function deploy() {
     throw new Error(`Wrangler environment '${environment}' is missing from the configuration.`);
   }
   const target = environment ? rawConfig.env[environment] : rawConfig;
+  const workerOverride = process.env.WRANGLER_CI_OVERRIDE_NAME;
+  const workerName = target.name ?? (rawConfig.name && `${rawConfig.name}-${environment}`);
+  if (environment && workerOverride !== undefined && workerOverride !== workerName) {
+    throw new Error(`Workers Builds is connected to '${workerOverride}', but Wrangler environment '${environment}' targets '${workerName}'.`);
+  }
   const database = target.d1_databases?.find(({ binding }) => binding === "DB");
   if (!database) throw new Error("Configure a D1 database bound as DB in the deployment environment.");
 
@@ -196,6 +201,11 @@ function deploy() {
     return;
   }
 
+  // Wrangler resolves DB to the first binding or database name equal to DB.
+  if (!dryRun && target.d1_databases.find((db) => db.binding === "DB" || db.database_name === "DB") !== database) {
+    throw new Error("Another D1 database shadows the DB binding in Wrangler.");
+  }
+
   const origin = target.vars?.NATIVE_GIT_ORIGIN;
   if (origin !== undefined && !dryRun) {
     const url = URL.parse(origin);
@@ -212,6 +222,14 @@ function deploy() {
   if (paid) {
     configurePaid(rawConfig, target, lfsBinding, dryRun);
     if (!dryRun) paidSecrets = readPaidSecrets(secretsFile, target.vars);
+  }
+
+  // Wrangler prefers a configured account ID, but Workers Builds can only release to its own account.
+  const buildsAccount = process.env.CLOUDFLARE_ACCOUNT_ID || process.env.CF_ACCOUNT_ID;
+  const configuredAccount = target.account_id || rawConfig.account_id;
+  if (!dryRun && process.env.WORKERS_CI === "1" && buildsAccount && configuredAccount &&
+      String(configuredAccount).toLowerCase() !== buildsAccount.toLowerCase()) {
+    throw new Error("Wrangler account_id must match the Workers Builds account before applying D1 migrations.");
   }
 
   let temporaryConfig;
@@ -236,7 +254,7 @@ function deploy() {
       deployArgs.push("--secrets-file", file);
     }
     if (!database.database_id || database.database_id === unsetDatabaseId) {
-      const name = database.database_name;
+      const { database_name: name, jurisdiction } = database;
       if (!name) throw new Error("Set database_name on the DB binding for automatic D1 setup.");
       const databases = JSON.parse(run(["d1", "list", "--json"], { capture: true }));
       if (!Array.isArray(databases) || !databases.every((candidate) =>
@@ -249,16 +267,15 @@ function deploy() {
       if (matches.length > 1) throw new Error(`Multiple D1 databases are named '${name}'.`);
       const [existing] = matches;
       if (existing) {
-        // Wrangler resolves the first matching name or binding, then uses its configured UUID.
-        if (target.d1_databases.find((db) => db.binding === "DB" || db.database_name === "DB") !== database) {
-          throw new Error("Another D1 database shadows the DB binding in Wrangler.");
+        if (jurisdiction && existing.jurisdiction !== jurisdiction) {
+          throw new Error(`D1 database '${name}' does not match the configured '${jurisdiction}' jurisdiction.`);
         }
         database.database_id = existing.uuid;
       }
 
       writeConfig();
       if (existing) verifyExistingDatabase(run, database);
-      else run(["d1", "create", name, "--binding", "DB"]);
+      else run(["d1", "create", name, "--binding", "DB", ...(jurisdiction ? ["--jurisdiction", jurisdiction] : [])]);
     }
     const migrationOutput = run(["d1", "migrations", "apply", "DB", "--remote"], { capture: true, ci: true });
     process.stdout.write(migrationOutput);

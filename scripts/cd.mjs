@@ -12,9 +12,9 @@ const env = { ...process.env, CI: "true", WRANGLER_SEND_METRICS: "false" };
 delete env.CLOUDFLARE_ENV;
 delete env.WRANGLER_CI_OVERRIDE_NAME;
 
-function node(args, capture = false) {
+function node(args, capture = false, childEnv = env) {
   return execFileSync(process.execPath, args, {
-    env, stdio: capture ? ["ignore", "pipe", "inherit"] : "inherit", encoding: "utf8",
+    env: childEnv, stdio: capture ? ["ignore", "pipe", "inherit"] : "inherit", encoding: "utf8",
     maxBuffer: 4 * 1024 * 1024, timeout: capture ? 30_000 : undefined,
   });
 }
@@ -86,7 +86,11 @@ async function main() {
     return target(name, unstable_readConfig({ config, env: name }));
   });
   const flags = (deployment) => ["--config", config, "--env", deployment.name];
-  const deploy = (deployment, args) => node(["scripts/deploy.mjs", ...flags(deployment), ...args]);
+  // Workers Builds validates the connected production Worker's tag on upload.
+  const stagingEnv = { ...env };
+  delete stagingEnv.WRANGLER_CI_MATCH_TAG;
+  const deploy = (deployment, args) => node(["scripts/deploy.mjs", ...flags(deployment), ...args],
+    false, deployment === staging ? stagingEnv : env);
   if (["worker", "database", "bucket", "namespace"].some((key) => staging[key] === production[key]) ||
       new Set([...staging.workflows, ...production.workflows]).size !== 4 ||
       staging.uuid && staging.uuid === production.uuid || staging.routes.some((route) => production.routes.includes(route))) {

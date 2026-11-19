@@ -1,30 +1,29 @@
 # Changelog
 
-## Unreleased
-
-- New deployments use Workers Free with D1 and SQLite Durable Objects for Git. The Deploy to Cloudflare button opens this configuration. Upgrade the original Artifacts instance with `npm run deploy -- --env artifacts` and its existing bindings.
-- `npm run deploy:paid` selects the managed Paid environment, configures the Artifacts origin, and enables R2 multipart uploads with bucket-scoped credentials.
-- Source checkouts and prebuilt archives share one deploy command. It creates or reuses the selected D1 database, applies migrations and then publishes the Worker. A first deploy can upload Worker secrets with `--secrets-file`.
-- Shipped Wrangler configurations preserve dashboard-managed Worker variables across deployments.
-- Automatic D1 reuse by name checks for an empty schema or an existing Shard database before applying migrations.
-- The managed Cloudflare environments coordinate protected merges in Durable Objects, resume repository copies in Workflows, and run divergent Artifacts merges in a Git container.
-- Workers Builds can run the test suite and container smoke check, then promote the same commit through staging and production with a release verification Workflow in each environment.
-
 ## 0.2.0
 
 ### Added
 
-- `r2-direct` lets Git LFS clients upload directly to private R2 using signed single PUT requests.
-- `r2-multipart` lets Git LFS clients use the packaged `scripts/git-lfs-r2-multipart.mjs` custom transfer agent for multipart uploads to private R2. Shard verifies the full object's SHA-256 and size after multipart assembly and before publishing it. Direct uploads also pass whole-object verification before publication.
+- The Deploy to Cloudflare button now starts a Workers Free instance with D1 and one SQLite Durable Object per Git repository. The default includes Git over HTTPS, public and private repositories, forks, issue tracking, and same-repository fast-forward merges. Bind a private R2 bucket to enable Git LFS on this instance.
+- `npm run deploy:paid` selects managed Workers Paid, configures the Artifacts origin, and enables R2 multipart uploads with bucket-scoped credentials.
+- Git LFS supports signed single PUTs in `r2-direct` mode and resumable uploads in `r2-multipart` mode with the packaged `scripts/git-lfs-r2-multipart.mjs` adapter. Shard verifies object size and SHA-256 before publication. Downloads use the standard Git LFS Basic adapter in every mode.
+- Managed deployments coordinate protected merges in Durable Objects, resume repository copies in Workflows, and run divergent Artifacts merges in a Git container. Workers Builds can verify the same commit in staging and production.
 
 ### Changed
 
-- GitHub releases use notes from the matching version section. The prebuilt archive includes the changelog and multipart transfer agent.
+- The deploy command creates or reuses the selected D1 database, applies migrations before upload, and preserves dashboard-managed Worker variables. The prebuilt archive uses the same command and accepts `--secrets-file` for first deployment.
+- GitHub Releases include version-specific notes, a prebuilt Worker archive, and a SHA-256 checksum.
+
+### Fixed
+
+- Concurrent SQLite Git clones and forks share reachability-cache preparation. Git protects the current default branch even while repository settings are syncing to D1.
+- Named deployments reject mismatched Workers Builds targets and shadowed D1 bindings before migrating. Managed staging now deploys independently while production retains its Workers Builds identity check.
 
 ### Upgrade
 
-- `proxy` remains the default and streams uploads through the Worker with the existing 100 MB limit. Downloads continue to use the Git LFS Basic transfer adapter in all modes.
-- Apply the new D1 migration before deploying the Worker. To opt in, set `SHARD_LFS_UPLOAD_MODE` to `r2-direct` or `r2-multipart`, configure the R2 endpoint and bucket, and add the bucket-scoped S3 credentials and staging lifecycle rule. The [Git LFS documentation](https://github.com/aliveranme/shard/blob/main/README.md#git-lfs-upload-modes) covers Worker and client setup.
+- Existing Artifacts instances use `npm run deploy -- --env artifacts`. Carry over the existing Worker name, D1 database ID, Artifacts namespace, R2 bucket, and routes. Existing native instances use `--env native`.
+- Deploy applies the pending D1 migrations. Ordinary R2 bindings continue to use the 100 MB proxy upload by default. Use the Paid preset or configure the upload mode explicitly to switch to signed uploads.
+- See the [deployment guide](https://github.com/aliveranme/shard/blob/main/README.md#deploy-to-cloudflare) for all modes and the [Git LFS guide](https://github.com/aliveranme/shard/blob/main/README.md#git-lfs-upload-modes) for R2 setup.
 
 ## 0.1.0
 

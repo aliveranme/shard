@@ -16,7 +16,7 @@ const ledger = (name) => ({ type: "table", name, sql: `CREATE TABLE "${name}" (i
 const rows = (results) => JSON.stringify([{ success: true, results }]);
 const existing = JSON.stringify([{ name: "shard", uuid }]);
 
-function exercise(t, { list = existing, queries = [], id = placeholder, table, dryRun = false } = {}) {
+function exercise(t, { list = existing, queries = [], id = placeholder, table, jurisdiction, shadow = false, dryRun = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "shard-deploy-d1-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const cli = join(dir, "node_modules", "wrangler");
@@ -25,8 +25,10 @@ function exercise(t, { list = existing, queries = [], id = placeholder, table, d
   mkdirSync(join(cli, "bin"), { recursive: true });
   writeFileSync(join(dir, "deploy.mjs"), readFileSync(new URL("../scripts/deploy.mjs", import.meta.url)));
   writeFileSync(config, JSON.stringify({ env: { production: { d1_databases: [
-    { binding: "DB", database_name: "shard", database_id: id, migrations_table: table },
+    ...(shadow ? [{ binding: "OTHER", database_name: "DB", database_id: uuid }] : []),
+    { binding: "DB", database_name: "shard", database_id: id, migrations_table: table, jurisdiction },
   ] } } }));
+  writeFileSync(log, "");
   writeFileSync(join(cli, "package.json"), '{"main":"index.cjs"}');
   writeFileSync(join(cli, "index.cjs"), `exports.experimental_readRawConfig = ({ config }) => ({
     rawConfig: JSON.parse(require("node:fs").readFileSync(config, "utf8")), configPath: config
@@ -36,9 +38,10 @@ function exercise(t, { list = existing, queries = [], id = placeholder, table, d
     const args = process.argv.slice(2);
     const config = args[args.indexOf("--config") + 1];
     const env = args[args.indexOf("--env") + 1];
-    const binding = JSON.parse(fs.readFileSync(config, "utf8")).env[env].d1_databases[0];
+    const databases = JSON.parse(fs.readFileSync(config, "utf8")).env[env].d1_databases;
+    const binding = databases.find((db) => db.binding === "DB" || db.database_name === "DB");
     const log = ${JSON.stringify(log)};
-    const calls = fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\\n").map(JSON.parse) : [];
+    const calls = fs.readFileSync(log, "utf8").split("\\n").filter(Boolean).map(JSON.parse);
     fs.appendFileSync(log, JSON.stringify({ args, config, env, id: binding.database_id }) + "\\n");
     if (args[1] === "list") process.stdout.write(${JSON.stringify(list)});
     if (args[1] === "execute") {
@@ -48,17 +51,20 @@ function exercise(t, { list = existing, queries = [], id = placeholder, table, d
     }
     if (args[1] === "create") {
       const raw = JSON.parse(fs.readFileSync(config, "utf8"));
-      raw.env[env].d1_databases[0].database_id = ${JSON.stringify(uuid)};
+      raw.env[env].d1_databases.find((db) => db.binding === "DB").database_id = ${JSON.stringify(uuid)};
       fs.writeFileSync(config, JSON.stringify(raw));
     }
   `);
   const args = [join(dir, "deploy.mjs"), "--config", config, "--env", "production"];
   if (dryRun) args.push("--dry-run");
-  const result = spawnSync(process.execPath, args, { cwd: dir, encoding: "utf8" });
+  const env = { ...process.env };
+  delete env.WRANGLER_CI_OVERRIDE_NAME;
+  const result = spawnSync(process.execPath, args, { cwd: dir, env, encoding: "utf8" });
   assert.ifError(result.error);
-  const calls = readFileSync(log, "utf8").trim().split("\n").map(JSON.parse);
+  const calls = readFileSync(log, "utf8").split("\n").filter(Boolean).map(JSON.parse);
   assert.ok(calls.every((call) => call.env === "production"));
-  assert.equal(JSON.parse(readFileSync(config, "utf8")).env.production.d1_databases[0].database_id, id);
+  const original = JSON.parse(readFileSync(config, "utf8")).env.production.d1_databases;
+  assert.equal(original.find((db) => db.binding === "DB").database_id, id);
   assert.equal(readdirSync(dir).some((name) => name.startsWith(".wrangler.deploy-")), false);
   return { ...result, calls, commands: calls.map(({ args }) => args[0] === "d1" ? args[1] : args[0]) };
 }
@@ -118,4 +124,28 @@ test("automatic D1 reuse fails closed", async (t) => {
       assert.deepEqual(result.commands, commands);
     });
   }
+});
+
+test("an earlier D1 name cannot shadow the intended DB binding", (t) => {
+  for (const options of [{ id: explicit }, { list: "[]" }]) {
+    const result = exercise(t, { ...options, shadow: true });
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /shadows the DB binding/);
+    assert.deepEqual(result.commands, []);
+  }
+});
+
+test("automatic D1 setup honors the configured jurisdiction", async (t) => {
+  await t.test("creates a database in the selected jurisdiction", (t) => {
+    const result = exercise(t, { list: "[]", jurisdiction: "eu" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(result.commands, ["list", "create", "migrations", "deploy"]);
+    assert.deepEqual(result.calls[1].args.slice(0, 7), ["d1", "create", "shard", "--binding", "DB", "--jurisdiction", "eu"]);
+  });
+  await t.test("rejects a namesake outside the selected jurisdiction", (t) => {
+    const result = exercise(t, { jurisdiction: "eu" });
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /configured 'eu' jurisdiction/);
+    assert.deepEqual(result.commands, ["list"]);
+  });
 });
