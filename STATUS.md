@@ -141,6 +141,7 @@ Architecture, service boundaries, and operational constraints are recorded in [P
 | 2026-11-19 | `npm run cd -- --dry-run` and isolated release gate | Both managed bundles built their Git image and resolved independent bindings. With real Wrangler Workflow commands against a loopback API, production followed matching staging success and was skipped on staging error, wrong revision or a non-production branch. |
 | 2026-11-19 | Release Workflow on Linux with Docker | The local Workflow checked the configured version tag, D1, R2 and CSS, then started the actual Git image through its Durable Object and verified readiness. It rejected an invalid release tag. |
 | 2026-11-19 | Managed prebuilt deployment dry run | The release archive layout supplied the Worker entrypoint, Wasm, migrations and Docker context without a local Rust build. Wrangler built the merge image and bundled `managed-staging`. |
+| 2026-11-19 | CD gate and native Git cron regressions | Four isolated Wrangler fixture cases checked the staging result, revision, branch and deployment order. With the coordinator unbound, the native Git test confirmed that one scheduled tick advanced a queued protected merge after its required check passed. |
 
 ## How to update
 

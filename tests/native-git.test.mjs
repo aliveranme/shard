@@ -97,6 +97,7 @@ async function startWorker(temporary, nativeOrigin, token) {
   config.main = resolve(root, config.main);
   config.assets.directory = resolve(root, config.assets.directory);
   const native = config.env.native;
+  native.durable_objects = { bindings: [] };
   native.vars = {
     ...native.vars,
     PUBLIC_ORIGIN: "https://forge.example.test",
@@ -520,16 +521,23 @@ test("forge native Git over loopback", { timeout: 240_000 }, async (t) => {
         body: JSON.stringify({ context: "ci/fork", state: "success" }),
       });
       assert.equal((await report(viewerToken)).status, 403);
-      assert.equal((await report(writeToken)).status, 204);
-      assert.match((await owner.get(cross.location)).body, /ci\/fork[\s\S]*Passed/);
       redirected(await owner.post(`${cross.location}/merge`, { action: "queue", comparison_version: "2" }));
-      for (let attempt = 0; attempt < 10; attempt++) {
-        await tick();
-        after = await owner.get(cross.location);
-        if (after.body.includes("Merged by Shard")) break;
+      // Let the enqueue handler finish its attempt while the required check is missing.
+      const waiting = /Waiting for required approvals or checks/;
+      const deadline = Date.now() + 10_000;
+      let queued = await owner.get(cross.location);
+      while (!waiting.test(queued.body) && Date.now() < deadline) {
         await delay(75);
+        queued = await owner.get(cross.location);
       }
-      assert.match(after.body, /Merged by Shard/);
+      assert.match(queued.body, waiting);
+      assert.equal((await report(writeToken)).status, 204);
+      const ready = await owner.get(cross.location);
+      assert.match(ready.body, /ci\/fork[\s\S]*Passed/);
+      assert.match(ready.body, waiting);
+      assert.equal(await git(null, "ls-remote", projectRemote, "refs/heads/main"), `${targetTip}\trefs/heads/main`);
+      await tick();
+      assert.match((await owner.get(cross.location)).body, /Merged by Shard/);
       await git(null, "-C", clone, "fetch", "origin", "main");
       assert.equal(await git(null, "-C", clone, "show", "-s", "--format=%P", "FETCH_HEAD"), `${targetTip} ${forkTip}`);
       assert.match(await git(null, "-C", clone, "show", "FETCH_HEAD:fork-only.txt"), /exists only in the fork/);
