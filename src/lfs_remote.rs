@@ -346,7 +346,6 @@ fn bad_digest(error: &Error) -> bool {
 }
 
 async fn publish(state: &AppState, target: &Transfer<'_>, stage: &str) -> Result<Response> {
-    let expires = now() + WRITE_LEASE;
     let object = match target.bucket.get(stage).execute().await {
         Ok(Some(object)) => object,
         Ok(None) => return already_stored(target).await?.map_or_else(|| failure(MISSING), Ok),
@@ -364,10 +363,13 @@ async fn publish(state: &AppState, target: &Transfer<'_>, stage: &str) -> Result
         Some(body)
     } else {
         // A multipart checksum is composite. Hash the actual assembled bytes once.
-        let sha = shard_lfs_sha256(body, time_left(expires - WRITE_GRACE)?).await.map_err(Error::from)?;
+        let timeout = time_left(now() + WRITE_LEASE - WRITE_GRACE)?;
+        let sha = shard_lfs_sha256(body, timeout).await.map_err(Error::from)?;
         if sha != target.oid { return failure(BAD_DIGEST) }
         None
     };
+    // Start the write lease after verification so hashing does not consume the copy's time.
+    let expires = now() + WRITE_LEASE;
     let Some(lease) = acquire_write(&database, target.repo_id, expires).await? else {
         if let Some(body) = data { let _ = body.cancel(); }
         return failure(HIDDEN);

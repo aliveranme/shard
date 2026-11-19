@@ -1,14 +1,13 @@
 use crate::git_storage::{is_object_id, BlobRead, RepoHandle, TreeEntry};
 use crate::native_git::{GitServiceRepo, SnapshotRead};
+use crate::limits::Profile;
 use serde::{Deserialize, Deserializer};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::ops::Range;
-use worker::Result;
+use worker::{Env, Result};
 
 const MAX_DEPTH: u8 = 12;
-const MAX_TREE_READS: u8 = 80;
-const MAX_ENTRIES: u32 = 4_096;
 const MAX_CHANGES: usize = 256;
 const MAX_PATH_BYTES: usize = 4_096;
 const MAX_BLOB_BYTES: usize = 96 * 1024;
@@ -95,7 +94,7 @@ impl ChangedFile {
     }
 }
 
-pub async fn compare(target: &RepoHandle, source: &RepoHandle, base: &str, head: &str) -> Result<Comparison> {
+pub async fn compare(env: &Env, target: &RepoHandle, source: &RepoHandle, base: &str, head: &str) -> Result<Comparison> {
     if !is_object_id(base) || !is_object_id(head) {
         return Ok(Comparison::MissingSnapshot);
     }
@@ -106,6 +105,12 @@ pub async fn compare(target: &RepoHandle, source: &RepoHandle, base: &str, head:
             SnapshotRead::Limited => Ok(Comparison::Limited),
         };
     }
+    let (reads_left, external_reads_left, entries_left) = match Profile::read(env)? {
+        // Durable Objects use the internal-service budget. Leave native calls headroom
+        // for current tips, access checks, commit metadata and the selected file preview.
+        Profile::Free => (80, 36, 4_096),
+        Profile::Paid => (160, 160, 8_192),
+    };
     let Some(base_tree) = commit_tree(target, base).await? else {
         return Ok(Comparison::MissingSnapshot);
     };
@@ -129,12 +134,16 @@ pub async fn compare(target: &RepoHandle, source: &RepoHandle, base: &str, head:
     let mut walk = Walk {
         target,
         source,
-        reads_left: MAX_TREE_READS,
-        entries_left: MAX_ENTRIES,
+        reads_left,
+        external_reads_left,
+        entries_left,
         changed: Vec::new(),
         path: String::new(),
     };
     if walk.pair(Some(&base_tree), Some(head_tree), 0).await? {
+        for file in &mut walk.changed {
+            file.url_path = crate::util::url_path(&file.path);
+        }
         walk.changed.sort_unstable_by(|a, b| a.path.cmp(&b.path));
         Ok(Comparison::Complete(walk.changed))
     } else {
@@ -177,7 +186,8 @@ async fn commit_tree(repo: &RepoHandle, id: &str) -> Result<Option<String>> {
 struct Walk<'a> {
     target: &'a RepoHandle,
     source: &'a RepoHandle,
-    reads_left: u8,
+    reads_left: u16,
+    external_reads_left: u16,
     entries_left: u32,
     changed: Vec<ChangedFile>,
     path: String,
@@ -188,6 +198,12 @@ impl Walk<'_> {
         let Some(hash) = hash else { return Ok(Some(Vec::new())) };
         if self.reads_left == 0 {
             return Ok(None);
+        }
+        if matches!(repo, RepoHandle::Service(service) if !service.is_durable()) {
+            if self.external_reads_left == 0 {
+                return Ok(None);
+            }
+            self.external_reads_left -= 1;
         }
         self.reads_left -= 1;
         let Some(mut entries) = repo.read_tree_bounded(hash, self.entries_left).await? else {
@@ -240,7 +256,7 @@ impl Walk<'_> {
                     return Ok(false);
                 }
                 self.changed.push(ChangedFile {
-                    url_path: crate::util::url_path(&self.path),
+                    url_path: String::new(),
                     path: self.path.clone(),
                     before: before_file,
                     after: after_file,

@@ -43,7 +43,15 @@ function exercise(t, {
     assets: { directory: "./static", binding: "ASSETS" },
     vars: { GIT_BACKEND: "durable", SHARD_LIMIT_PROFILE: "free" },
     d1_databases: [{ binding: "DB", database_name: "free-db", database_id: uuid }],
-    env: { managed: managed("production"), "managed-staging": managed("staging") },
+    env: {
+      managed: managed("production"),
+      "managed-staging": managed("staging"),
+      native: {
+        name: "native",
+        vars: { GIT_BACKEND: "native", SHARD_LIMIT_PROFILE: "free" },
+        d1_databases: [{ binding: "DB", database_name: "native-db", database_id: uuid }],
+      },
+    },
   };
   configure(raw);
   mkdirSync(join(cli, "bin"), { recursive: true });
@@ -225,7 +233,11 @@ test("a failed paid publish removes both temporary files", (t) => {
 });
 
 test("ordinary deploy and the managed CD invocation keep the original config", async (t) => {
-  for (const [name, args, environment] of [["default", [], ""], ["managed CD", ["--env", "managed", "--tag", "revision"], "managed"]]) {
+  for (const [name, args, environment] of [
+    ["default", [], ""],
+    ["native Free", ["--env", "native"], "native"],
+    ["managed CD", ["--env", "managed", "--tag", "revision"], "managed"],
+  ]) {
     await t.test(name, (t) => {
       const result = exercise(t, { args, accountId: null, secrets: null });
       assert.equal(result.status, 0, result.stderr);
@@ -234,6 +246,35 @@ test("ordinary deploy and the managed CD invocation keep the original config", a
         assert.equal(call.environment, environment);
         assert.equal(call.configPath, result.configPath);
         assert.deepEqual(call.config, result.raw);
+      }
+    });
+  }
+});
+
+test("native Paid opt-in preserves bindings and explicit limit overrides", async (t) => {
+  for (const [name, dryRun, configured, expected] of [
+    ["deploy", false, undefined, { cpu_ms: 300000 }],
+    ["dry run", true, { cpu_ms: 60000, subrequests: 5000 }, { cpu_ms: 60000, subrequests: 5000 }],
+  ]) {
+    await t.test(name, (t) => {
+      const result = exercise(t, {
+        args: ["--env", "native", ...(dryRun ? ["--dry-run"] : [])],
+        accountId: null,
+        secrets: null,
+        configure(raw) {
+          raw.env.native.vars.SHARD_LIMIT_PROFILE = "paid";
+          if (configured) raw.env.native.limits = configured;
+        },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(result.commands, dryRun ? ["deploy"] : ["d1 migrations", "deploy"]);
+      for (const call of result.calls) {
+        assert.equal(call.environment, "native");
+        assert.notEqual(call.configPath, result.configPath);
+        assert.deepEqual(call.config, {
+          ...result.raw,
+          env: { ...result.raw.env, native: { ...result.raw.env.native, limits: expected } },
+        });
       }
     });
   }

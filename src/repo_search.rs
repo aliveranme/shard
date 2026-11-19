@@ -1,7 +1,8 @@
 use crate::ctx::AppState;
-use crate::git_storage::{is_object_id, BlobRead, Commit, RepoHandle, TreeEntry};
+use crate::git_storage::{is_object_id, BlobRead, Commit, GitBackend, RepoHandle, TreeEntry};
 use crate::handlers::common::{can_admin, not_found, page_title, visible_repo};
 use crate::i18n::{CommonText, RepoText, SearchText};
+use crate::limits::Profile;
 use crate::models::Repo;
 use crate::templates::{render, Chrome};
 use crate::util::{query_param, url_path};
@@ -13,14 +14,36 @@ const MAX_QUERY_BYTES: usize = 256;
 const MAX_REF_BYTES: usize = 1_024;
 const MAX_PATH_BYTES: usize = 4_096;
 const MAX_DEPTH: usize = 16;
-const MAX_ENTRIES: u32 = 2_048;
-// Keep native origin calls below the 50-subrequest Worker limit after auth and D1.
-const MAX_OBJECT_READS: usize = 36;
 const MAX_FILE_BYTES: usize = 64 * 1024;
-const MAX_CONTENT_BYTES: usize = 512 * 1024;
-const MAX_HISTORY: usize = 24;
 const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 const MAX_RESULTS: usize = 40;
+
+struct SearchLimits {
+    reads: usize,
+    entries: u32,
+    content_bytes: usize,
+    commits: usize,
+}
+
+impl SearchLimits {
+    fn for_backend(profile: Profile, backend: GitBackend) -> Self {
+        match profile {
+            Profile::Free => Self {
+                // Native reads leave room for authentication and snapshot lookup within 50 external calls.
+                reads: if matches!(backend, GitBackend::Durable) { 64 } else { 36 },
+                entries: 2_048,
+                content_bytes: 512 * 1024,
+                commits: 24,
+            },
+            Profile::Paid => Self {
+                reads: 128,
+                entries: 4_096,
+                content_bytes: 2 * 1024 * 1024,
+                commits: 64,
+            },
+        }
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SearchMode {
@@ -51,6 +74,7 @@ struct SearchPage {
     branch_url: String,
     query: String,
     mode: SearchMode,
+    max_commits: usize,
     results: Option<SearchResults>,
     error: Option<&'static str>,
 }
@@ -98,6 +122,7 @@ pub async fn search(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
         _ => SearchMode::Path,
     };
     let locale = state.locale;
+    let limits = SearchLimits::for_backend(Profile::read(&state.env)?, repo.git_backend);
     let mut page = SearchPage {
         chrome: Chrome::new(state),
         title: page_title(&[&repo.full_name(), locale.t(SearchText::RepositorySearch)]),
@@ -107,6 +132,7 @@ pub async fn search(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
         branch,
         query,
         mode,
+        max_commits: limits.commits,
         repo,
         results: None,
         error: None,
@@ -121,7 +147,7 @@ pub async fn search(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
     } else {
         let loaded = async {
             let handle = RepoHandle::open(&state.env, &page.repo).await?;
-            load_results(&handle, &page.repo, &page.branch, query, mode).await
+            load_results(&handle, &page.repo, &page.branch, query, mode, limits).await
         }.await;
         match loaded {
             Ok(Some(results)) => {
@@ -154,9 +180,10 @@ async fn load_results(
     branch: &str,
     query: &str,
     mode: SearchMode,
+    limits: SearchLimits,
 ) -> Result<Option<SearchResults>> {
-    let history_limit = if mode == SearchMode::Commits { MAX_HISTORY + 1 } else { 1 };
-    let history = handle.log(branch, history_limit as u32).await?;
+    let history_limit = if mode == SearchMode::Commits { limits.commits as u32 + 1 } else { 1 };
+    let history = handle.log(branch, history_limit).await?;
     let Some(head) = history.first() else { return Ok(None) };
     if !is_object_id(&head.hash) {
         return Err(Error::RustError("Invalid Git snapshot ID".into()));
@@ -168,7 +195,7 @@ async fn load_results(
     };
     let repo_url = format!("/{}/{}", repo.owner_name, repo.name);
     if mode == SearchMode::Commits {
-        scan_commits(handle, &repo_url, query, history, &mut results).await;
+        scan_commits(handle, &repo_url, query, history, limits.commits, &mut results).await;
     } else {
         let tree = if let Some(tree) = &head.tree {
             Cow::Borrowed(tree.as_str())
@@ -184,9 +211,9 @@ async fn load_results(
             query,
             code: mode == SearchMode::Code,
             results: &mut results,
-            reads_left: MAX_OBJECT_READS,
-            entries_left: MAX_ENTRIES,
-            bytes_left: MAX_CONTENT_BYTES,
+            reads_left: limits.reads,
+            entries_left: limits.entries,
+            bytes_left: limits.content_bytes,
             path: String::new(),
         };
         scan.tree(&tree, 0).await;
@@ -199,10 +226,11 @@ async fn scan_commits(
     repo_url: &str,
     query: &str,
     history: Vec<Commit>,
+    max_commits: usize,
     results: &mut SearchResults,
 ) {
-    results.coverage.scan_limited = history.len() > MAX_HISTORY;
-    for commit in history.into_iter().take(MAX_HISTORY) {
+    results.coverage.scan_limited = history.len() > max_commits;
+    for commit in history.into_iter().take(max_commits) {
         if !is_object_id(&commit.hash) {
             results.coverage.read_failed = true;
             continue;
@@ -221,6 +249,10 @@ async fn scan_commits(
             }
         };
         if let Some(detail) = detail {
+            if results.hits.len() == MAX_RESULTS {
+                results.coverage.result_limited = true;
+                break;
+            }
             results.hits.push(Hit {
                 url: format!("{repo_url}/commit/{}?branch={}", commit.hash, results.snapshot),
                 title: commit.hash,
@@ -339,14 +371,16 @@ impl FileScan<'_> {
         };
         self.bytes_left -= bytes.len();
         let Ok(text) = std::str::from_utf8(&bytes) else { return };
+        let Some(offset) = text.find(self.query) else { return };
         if bytes.contains(&0) {
             return;
         }
-        if let Some((line, text, offset)) = text.lines().enumerate().find_map(|(line, text)| {
-            text.find(self.query).map(|offset| (line + 1, text, offset))
-        }) {
-            self.file_hit(Some(excerpt(text, offset)), Some(line));
-        }
+        // Queries contain no line breaks. Only locate the line after finding a match.
+        let before = &text[..offset];
+        let start = before.rfind('\n').map_or(0, |at| at + 1);
+        let line = text[start..].lines().next().unwrap_or_default();
+        let number = before.bytes().filter(|&byte| byte == b'\n').count() + 1;
+        self.file_hit(Some(excerpt(line, offset - start)), Some(number));
     }
 
     fn file_hit(&mut self, detail: Option<String>, line: Option<usize>) {

@@ -5,13 +5,13 @@ pub(crate) const R2_SINGLE_PUT_BYTES: u64 = (5 * 1024 - 5) * 1024 * 1024;
 const R2_OBJECT_BYTES: u64 = (5 * 1024 - 5) * 1024 * 1024 * 1024;
 
 #[derive(Clone, Copy)]
-enum Profile {
+pub(crate) enum Profile {
     Free,
     Paid,
 }
 
 impl Profile {
-    fn read(env: &Env) -> Result<Self> {
+    pub(crate) fn read(env: &Env) -> Result<Self> {
         let value = env.var("SHARD_LIMIT_PROFILE").ok().map(|value| value.to_string());
         match value.as_deref() {
             None | Some("free") => Ok(Self::Free),
@@ -25,6 +25,7 @@ pub(crate) struct ScheduledLimits {
     pub(crate) repo_copies: i64,
     pub(crate) repo_cleanups: i64,
     pub(crate) lfs_copy_objects: u32,
+    pub(crate) lfs_reconcile_objects: u32,
     pub(crate) lfs_cleanup_objects: u32,
     pub(crate) push_intents: i64,
     pub(crate) pr_refreshes: i64,
@@ -35,12 +36,14 @@ pub(crate) struct ScheduledLimits {
 
 impl ScheduledLimits {
     pub(crate) fn read(env: &Env) -> Result<Self> {
+        let s3_configured = env.var("SHARD_LFS_R2_ENDPOINT").is_ok();
         Ok(match Profile::read(env)? {
             Profile::Free => Self {
                 repo_copies: 2,
                 repo_cleanups: 1,
                 lfs_copy_objects: 2,
-                lfs_cleanup_objects: 64,
+                lfs_reconcile_objects: if s3_configured { 1 } else { 2 },
+                lfs_cleanup_objects: 256,
                 push_intents: 1,
                 pr_refreshes: 1,
                 merges: 1,
@@ -48,15 +51,18 @@ impl ScheduledLimits {
                 webhook_legacy: 1,
             },
             Profile::Paid => Self {
-                repo_copies: 8,
-                repo_cleanups: 8,
+                // A maximal S3 multipart copy uses 1,024 part requests plus setup and completion.
+                // Reserve capacity for other jobs in the same invocation, even at the Paid default of 10,000.
+                repo_copies: if s3_configured { 3 } else { 12 },
+                repo_cleanups: 12,
                 lfs_copy_objects: 8,
-                lfs_cleanup_objects: 256,
-                push_intents: 12,
-                pr_refreshes: 24,
+                lfs_reconcile_objects: if s3_configured { 1 } else { 16 },
+                lfs_cleanup_objects: 1_000,
+                push_intents: 24,
+                pr_refreshes: if s3_configured { 28 } else { 32 },
                 merges: 12,
-                webhook_subscriptions: 16,
-                webhook_legacy: 16,
+                webhook_subscriptions: 32,
+                webhook_legacy: 32,
             },
         })
     }

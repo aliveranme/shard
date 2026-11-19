@@ -68,7 +68,7 @@ function configurePaid(rawConfig, target, lfsBinding, dryRun) {
   vars.SHARD_LFS_UPLOAD_MODE = "r2-multipart";
   vars.SHARD_LFS_R2_BUCKET = bucket;
   rawConfig.keep_vars = true;
-  // Whole-object hashing consumes CPU. A fork LFS page can copy eight objects with up to 1,024 parts each.
+  // Whole-object hashing consumes CPU, and one LFS page can copy 8 × 1,024 R2 ranges.
   target.limits = { cpu_ms: 300_000, subrequests: 20_000, ...(target.limits ?? rawConfig.limits) };
   if (dryRun) return;
 
@@ -158,6 +158,11 @@ function deploy() {
     throw new Error(`Wrangler environment '${environment}' is missing from the configuration.`);
   }
   const target = environment ? rawConfig.env[environment] : rawConfig;
+  const nativePaid = environment === "native" && target.vars?.SHARD_LIMIT_PROFILE === "paid";
+  if (nativePaid) {
+    // The explicit profile is the operator's Workers Paid opt-in for this native deployment.
+    target.limits = { cpu_ms: 300_000, ...(target.limits ?? rawConfig.limits) };
+  }
   const workerOverride = process.env.WRANGLER_CI_OVERRIDE_NAME;
   const workerName = target.name ?? (rawConfig.name && `${rawConfig.name}-${environment}`);
   if (environment && workerOverride !== undefined && workerOverride !== workerName) {
@@ -196,7 +201,7 @@ function deploy() {
     return result.stdout;
   }
 
-  if (dryRun && !paid) {
+  if (dryRun && !paid && !nativePaid) {
     run([...deployArgs, "--dry-run"]);
     return;
   }
@@ -215,7 +220,7 @@ function deploy() {
   }
   const lfsBucket = target.vars?.SHARD_LFS_R2_BUCKET;
   const lfsBinding = target.r2_buckets?.find(({ binding }) => binding === "LFS_OBJECTS");
-  if (lfsBucket !== undefined && lfsBucket !== lfsBinding?.bucket_name) {
+  if ((!dryRun || paid) && lfsBucket !== undefined && lfsBucket !== lfsBinding?.bucket_name) {
     throw new Error("SHARD_LFS_R2_BUCKET must match the LFS_OBJECTS bucket name in this environment.");
   }
   let paidSecrets;
@@ -241,7 +246,7 @@ function deploy() {
     temporaryConfig = deploymentConfig = copy;
   }
   try {
-    if (paid) writeConfig();
+    if (paid || nativePaid) writeConfig();
     if (dryRun) {
       run([...deployArgs, "--dry-run"]);
       return;

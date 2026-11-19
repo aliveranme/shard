@@ -45,6 +45,7 @@ export class ArtifactsMergeContainer extends DurableObject {
       const token = crypto.randomUUID();
       container.start({
         image: container.images.bridge,
+        instance: this.env.SHARD_GIT_MERGE_INSTANCE ?? "standard-1",
         enableInternet: true,
         env: {
           SHARD_GIT_TOKEN: token,

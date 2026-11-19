@@ -882,7 +882,7 @@ pub(crate) async fn reconcile_pending(env: &Env, limits: &ScheduledLimits) -> Re
         if job.awaiting_submission() || copy_workflow_active(env, job.id, true).await {
             continue;
         }
-        match reconcile_copy(env, &database, &job, limits.lfs_copy_objects).await {
+        match reconcile_copy(env, &database, &job, limits.lfs_reconcile_objects).await {
             Ok(progress) => failed |= matches!(progress, CopyProgress::Unknown),
             Err(error) => {
                 failed = true;

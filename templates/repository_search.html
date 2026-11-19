@@ -29,7 +29,7 @@
     {% if mode.as_str() == "code" %}
       {{ chrome.locale.t(crate::i18n::SearchText::CodeCoverage) }}
     {% else if mode.as_str() == "commits" %}
-      {{ chrome.locale.t(crate::i18n::SearchText::CommitCoverage) }}
+      {{ chrome.locale.commit_search_coverage(max_commits) }}
     {% else %}
       {{ chrome.locale.t(crate::i18n::SearchText::PathCoverage) }}
     {% endif %}

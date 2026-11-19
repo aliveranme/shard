@@ -429,7 +429,7 @@ async fn detail(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result
             let Some((base, head)) = snapshot.diff_tips() else {
                 return Ok(Comparison::MissingSnapshot);
             };
-            let comparison = pull_diff::compare(&handle.target, handle.source(), base, head).await?;
+            let comparison = pull_diff::compare(&state.env, &handle.target, handle.source(), base, head).await?;
             if let (Comparison::Complete(files), Some(path)) = (&comparison, selected) {
                 if let Ok(index) = files.binary_search_by(|file| file.path.cmp(&path)) {
                     let file = &files[index];

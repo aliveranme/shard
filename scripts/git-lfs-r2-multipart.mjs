@@ -17,7 +17,8 @@ const CONTROL_RETRY_MS = 90_000;
 const PART_TIMEOUT_MS = 55 * 60_000;
 const PART_RETRY_MS = 60 * 60_000;
 const PART_IDLE_MS = 60_000;
-const FINISH_TIMEOUT_MS = 16 * 60_000;
+// Verification and publication can each use a 15-minute server window.
+const FINISH_TIMEOUT_MS = 31 * 60_000;
 const MAX_ATTEMPTS = 5;
 
 class TransferError extends Error {

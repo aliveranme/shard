@@ -2,7 +2,8 @@
 // (d5eba04eda584b855a1bde1f86a836b751c378c0). Review them together on upgrade.
 import { RepoCell } from "durable-git";
 import { isGitlinkMode, isTreeMode, parseCommit, parseTag, parseTree } from "../node_modules/durable-git/src/git/objects.ts";
-import { ObjCache } from "../node_modules/durable-git/src/git/packstore.ts";
+import { PackWriter } from "../node_modules/durable-git/src/git/pack.ts";
+import { ObjCache, PACK_CHUNK } from "../node_modules/durable-git/src/git/packstore.ts";
 import { FLUSH, pkt, PktParser } from "../node_modules/durable-git/src/git/pktline.ts";
 import { advertisement, renderStatus, validatePush } from "../node_modules/durable-git/src/git/protocol.ts";
 import { GitStore } from "../node_modules/durable-git/src/git/store.ts";
@@ -28,11 +29,14 @@ const MAX_RAW_COMMIT = 256 * 1024;
 const MAX_CONTROL = 8 * 1024;
 const MAX_QUERY = 4 * 1024;
 const MAX_METADATA = 4 * MIB;
-const MAX_ADVERTISEMENT = 256 * 1024;
-const MAX_COPY_REFS = 512;
+const MAX_ADVERTISEMENT = MIB;
+const MAX_COPY_REFS = 2048;
+const COPY_BATCH_BYTES = 64 * 1024;
+const IMPORT_TIMEOUT_MS = 60_000;
 const MAX_UPLOAD_REQUEST = 16 * MIB;
 const CONTROL = /^\/v1\/repos\/([^/]+)(?:\/(log|commit|commit-raw|tree|blob|file|ref|head|merge|fork))?$/;
 const SMART = /^\/v1\/git\/([^/]+)\.git\/(info\/refs|git-upload-pack|git-receive-pack)$/;
+const NAK = pkt("NAK\n");
 
 class HttpError extends Error {
   constructor(status) {
@@ -86,6 +90,11 @@ function queryLimit(query, optional = false, maximum = Number.MAX_SAFE_INTEGER) 
   const number = Number(value);
   if (!/^\d+$/.test(value) || !Number.isSafeInteger(number) || number > maximum) throw new HttpError(422);
   return number;
+}
+
+function boundedMiB(value, maximum) {
+  const mib = Number.parseInt(value, 10);
+  return mib > 0 ? Math.min(mib, maximum) : maximum;
 }
 
 function validOid(value) {
@@ -262,12 +271,56 @@ function fetchRequest(refs, ofsDelta = false) {
   ]);
 }
 
-function unpackResponse(bytes) {
-  const parser = new PktParser(bytes);
-  if (parser.read()?.text !== "NAK") throw new HttpError(422);
-  const pack = parser.rest();
-  if (pack.length < 32 || td.decode(pack.subarray(0, 4)) !== "PACK") throw new HttpError(422);
-  return pack;
+// Reads small framing prefixes without buffering the pack that follows them.
+class CopyReader {
+  #reader;
+  #rest = null;
+
+  constructor(body) {
+    if (!body) throw new HttpError(422);
+    this.#reader = body.getReader();
+  }
+
+  async read() {
+    if (this.#rest) {
+      const value = this.#rest;
+      this.#rest = null;
+      return { done: false, value };
+    }
+    if (!this.#reader) return { done: true };
+    const next = await this.#reader.read();
+    if (next.done) this.#release();
+    return next;
+  }
+
+  async take(length) {
+    const bytes = new Uint8Array(length);
+    let filled = 0;
+    while (filled < length) {
+      const { done, value } = await this.read();
+      if (done) throw new HttpError(422);
+      const count = Math.min(length - filled, value.length);
+      bytes.set(value.subarray(0, count), filled);
+      filled += count;
+      if (count < value.length) this.#rest = value.subarray(count);
+    }
+    return bytes;
+  }
+
+  async cancel() {
+    if (!this.#reader) return;
+    try {
+      await this.#reader.cancel().catch(() => {});
+    } finally {
+      this.#release();
+    }
+  }
+
+  #release() {
+    this.#reader.releaseLock();
+    this.#reader = null;
+    this.#rest = null;
+  }
 }
 
 export class GitRepository extends RepoCell {
@@ -278,14 +331,18 @@ export class GitRepository extends RepoCell {
   #preparingPack = null;
 
   constructor(ctx, env) {
-    super(ctx, env);
+    super(ctx, {
+      ...env,
+      MAX_PUSH_MB: String(boundedMiB(env.MAX_PUSH_MB, MAX_PUSH_MIB)),
+      INGEST_CACHE_MB: String(boundedMiB(env.INGEST_CACHE_MB, MAX_INGEST_CACHE_MIB)),
+    });
     const head = this.store.getMeta(SYMBOLIC_HEAD);
     if (head && this.store.head() !== head) this.store.setHead(head);
     this.#dropOrphanPacks();
   }
 
   get #maxPush() {
-    return (Number.parseInt(this.env.MAX_PUSH_MB, 10) || 8) * MIB;
+    return Number(this.env.MAX_PUSH_MB) * MIB;
   }
 
   async fetch(request) {
@@ -405,7 +462,7 @@ export class GitRepository extends RepoCell {
       return this.#read(name, () => empty(501));
     }
     if (action === "fork" && request.method === "GET" && query.size === 0) {
-      return this.#read(name, () => this.#forkSnapshot());
+      return this.#read(name, () => this.#forkSnapshot(), true);
     }
     if (action === "commit-raw" && request.method === "GET" && query.size === 1) {
       return this.#read(name, () => this.#rawCommit(queryOid(query)));
@@ -428,15 +485,19 @@ export class GitRepository extends RepoCell {
         this.#publish(name, MAIN, []);
       } else if (kind === "fork" || kind === "import") {
         if (kind === "fork" && (!validId(source) || source === name)) throw new HttpError(422);
-        const { head, refs, pack } = kind === "fork" ? await this.#copyFork(source) : await this.#import(source);
-        if (this.store.getMeta(STAGING) === "1") this.#reset();
-        this.store.setMeta(STAGING, "1");
+        const { head, refs, pack } = kind === "fork" ?
+          await this.#copyFork(source, request.signal) : await this.#import(source, request.signal);
         try {
+          if (this.store.getMeta(STAGING) === "1") this.#reset();
+          this.store.setMeta(STAGING, "1");
           await this.#ingestCopy(refs, pack);
+          request.signal.throwIfAborted();
           this.#publish(name, head, refs);
         } catch (error) {
-          this.#reset();
+          if (this.store.getMeta(STAGING) === "1") this.#reset();
           throw error;
+        } finally {
+          await pack?.cancel();
         }
       } else {
         throw new HttpError(422);
@@ -474,46 +535,149 @@ export class GitRepository extends RepoCell {
 
   async #forkSnapshot() {
     const head = this.store.head();
-    const refs = this.store.refs();
+    const refs = this.ctx.storage.sql.exec(
+      "SELECT name, target FROM refs WHERE name != 'HEAD' ORDER BY name LIMIT ?", MAX_COPY_REFS + 1,
+    ).toArray();
+    if (refs.length > MAX_COPY_REFS) throw new HttpError(413);
     const metadata = te.encode(JSON.stringify({ head, refs }));
-    if (refs.length > MAX_COPY_REFS || metadata.length > MAX_ADVERTISEMENT) throw new HttpError(413);
+    if (metadata.length > MAX_ADVERTISEMENT) throw new HttpError(413);
     const prefix = new Uint8Array(4);
     new DataView(prefix.buffer).setUint32(0, metadata.length);
-    let pack = new Uint8Array();
-    if (refs.length) {
+    if (refs.length && !this.store.reachableCacheValid()) {
       const req = new Request(`${INTERNAL}/${UPLOAD}`, { method: "POST", body: fetchRequest(refs) });
-      const response = await this.#preparePack(req);
-      if (!response.ok) return response;
-      pack = await readBytes(response.body, this.#maxPush + 8);
+      const prepared = await this.#preparePack(req);
+      if (!prepared.ok) return prepared;
+      // The upload-pack negotiation preamble is queued first. Cancel it before
+      // consuming the pack and walk the persisted set with byte-sized batches.
+      await prepared.body?.cancel();
+      if (!this.store.reachableCacheValid()) return empty(503);
     }
-    return new Response(concat([prefix, metadata, pack]), { headers: { "Content-Type": SNAPSHOT } });
+    return new Response(ReadableStream.from(this.#forkStream(prefix, metadata, refs.length > 0)), {
+      headers: { "Content-Type": SNAPSHOT },
+    });
   }
 
-  async #copyFork(source) {
+  async *#forkStream(prefix, metadata, hasPack) {
+    yield prefix;
+    yield metadata;
+    if (!hasPack) return;
+    yield NAK;
+
+    // The engine's upload-pack batches by object count. Bound packed copy
+    // batches by bytes even when a fork is larger than the transfer cap.
+    const pending = [];
+    const limit = this.#maxPush;
+    let written = 0;
+    let queued = 0;
+    const writer = new PackWriter(chunk => {
+      if ((written += chunk.length) > limit) throw new HttpError(413);
+      if (!chunk.length) return;
+      pending.push(chunk);
+      queued += chunk.length;
+    });
+    const flush = () => {
+      const bytes = pending.length === 1 ? pending[0] : concat(pending);
+      pending.length = 0;
+      queued = 0;
+      return bytes;
+    };
+    const total = this.store.reachableCount();
+    writer.header(total);
+
+    const pageSize = 1000;
+    const emptyData = new Uint8Array();
+    const store = this.store;
+    const writeObject = async function* (oid) {
+      const object = await store.get(oid);
+      if (!object) throw new Error(`Missing fork object ${oid}`);
+      writer.rawFull(object.type, object.data.length, emptyData);
+      const slices = function* () {
+        for (let offset = 0; offset < object.data.length; offset += PACK_CHUNK) {
+          yield object.data.subarray(offset, offset + PACK_CHUNK);
+        }
+      };
+      const compressed = ReadableStream.from(slices()).pipeThrough(new CompressionStream("deflate"));
+      for await (const chunk of compressed) {
+        writer.out(chunk);
+        if (queued >= COPY_BATCH_BYTES) yield flush();
+      }
+    };
+    let emitted = 0;
+    let packId = 0;
+    let offset = -1;
+    for (;;) {
+      const entries = this.store.reachablePackedAfter(packId, offset, pageSize);
+      for (const entry of entries) {
+        packId = entry.packId;
+        offset = entry.offset;
+        if (entry.baseOid && !this.store.reachableHas(entry.baseOid)) {
+          // A snapshot has to remain readable without its source or a base
+          // that is no longer reachable from one of the copied refs.
+          yield* writeObject(entry.oid);
+        } else {
+          if (entry.dataLen > limit - written) throw new HttpError(413);
+          if (entry.baseOid) writer.rawDelta(entry.entrySize, entry.baseOid, emptyData);
+          else writer.rawFull(entry.type, entry.entrySize, emptyData);
+          for (let read = 0; read < entry.dataLen; read += PACK_CHUNK) {
+            const length = Math.min(PACK_CHUNK, entry.dataLen - read);
+            if (length >= COPY_BATCH_BYTES && queued) yield flush();
+            // PackWriter.out is the pinned engine's checksum-and-emit step.
+            writer.out(await this.store.packs.readRaw(packId, entry.dataOff + read, length));
+            if (queued >= COPY_BATCH_BYTES) yield flush();
+          }
+        }
+        emitted++;
+      }
+      if (entries.length < pageSize) break;
+    }
+    let after = "";
+    for (;;) {
+      const oids = this.store.reachableLooseAfter(after, pageSize);
+      for (const oid of oids) {
+        yield* writeObject(oid);
+        after = oid;
+        emitted++;
+      }
+      if (oids.length < pageSize) break;
+    }
+    if (emitted !== total) throw new Error("Git fork reachability changed during transfer");
+    writer.finish();
+    yield flush();
+  }
+
+  async #copyFork(source, signal) {
     const namespace = this.env.GIT_REPOS;
     const stub = namespace.get(namespace.idFromName(source));
-    const response = await stub.fetch(`${INTERNAL}/v1/repos/${source}/fork`);
+    const response = await stub.fetch(`${INTERNAL}/v1/repos/${source}/fork`, { signal });
     if (!response.ok) {
       void response.body?.cancel().catch(() => {});
       if (response.status === 404) throw new HttpError(404);
       if (response.status === 413) throw new HttpError(422);
       throw new HttpError(500);
     }
-    if (response.headers.get("Content-Type") !== SNAPSHOT) throw new Error("Invalid Git fork response");
-    const bytes = await readBytes(response.body, this.#maxPush + MAX_ADVERTISEMENT + 12);
-    if (bytes.length < 4) throw new Error("Invalid Git fork metadata");
-    const length = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0);
-    if (length > MAX_ADVERTISEMENT || length > bytes.length - 4) throw new Error("Invalid Git fork metadata");
-    const { head, refs } = JSON.parse(td.decode(bytes.subarray(4, 4 + length)));
-    const pack = refs.length ? unpackResponse(bytes.subarray(4 + length)) : null;
-    return { head, refs, pack };
+    if (response.headers.get("Content-Type") !== SNAPSHOT) {
+      void response.body?.cancel().catch(() => {});
+      throw new Error("Invalid Git fork response");
+    }
+    const pack = new CopyReader(response.body);
+    try {
+      const prefix = await pack.take(4);
+      const length = new DataView(prefix.buffer).getUint32(0);
+      if (length > MAX_ADVERTISEMENT) throw new HttpError(422);
+      const { head, refs } = JSON.parse(td.decode(await pack.take(length)));
+      if (!Array.isArray(refs) || refs.length > MAX_COPY_REFS) throw new HttpError(422);
+      return { head, refs, pack };
+    } catch (error) {
+      await pack.cancel();
+      throw error;
+    }
   }
 
-  async #import(value) {
+  async #import(value, requestSignal) {
     const source = importUrl(value);
     const refsUrl = providerEndpoint(source, "info/refs");
     refsUrl.searchParams.set("service", UPLOAD);
-    const signal = AbortSignal.timeout(20_000);
+    const signal = AbortSignal.any([requestSignal, AbortSignal.timeout(IMPORT_TIMEOUT_MS)]);
     try {
       const advertisement = await fetch(refsUrl, {
         redirect: "manual",
@@ -531,8 +695,11 @@ export class GitRepository extends RepoCell {
         signal,
       });
       providerReply(response, `application/x-${UPLOAD}-result`);
-      const pack = unpackResponse(await readBytes(response.body, this.#maxPush + 8));
-      return { head, refs, pack };
+      if (Number(response.headers.get("Content-Length")) > this.#maxPush + NAK.length) {
+        void response.body?.cancel().catch(() => {});
+        throw new HttpError(422);
+      }
+      return { head, refs, pack: new CopyReader(response.body) };
     } catch (error) {
       if (error instanceof HttpError && error.status === 404) throw error;
       throw new HttpError(422);
@@ -540,18 +707,24 @@ export class GitRepository extends RepoCell {
   }
 
   async #ingestCopy(refs, pack) {
-    if (!pack) return;
-    if (pack.length > this.#maxPush) throw new HttpError(422);
+    if (!refs.length) return;
     try {
-      const { packId } = await this.store.packs.ingest(pack, null, {
+      const length = td.decode(await pack.take(4));
+      if (length !== "0007" && length !== "0008") throw new HttpError(422);
+      const acknowledgement = td.decode(await pack.take(length === "0008" ? 4 : 3));
+      if (acknowledgement !== "NAK\n" && acknowledgement !== "NAK") throw new HttpError(422);
+      const magic = await pack.take(4);
+      if (td.decode(magic) !== "PACK") throw new HttpError(422);
+      const { packId } = await this.store.packs.ingest(magic, pack, {
         maxBytes: this.#maxPush,
-        cache: new ObjCache(16 * MIB),
+        cache: new ObjCache(Number(this.env.INGEST_CACHE_MB) * MIB),
         collisionDetect: this.env.SHA1DC === "1",
         flush: () => this.ctx.storage.sync(),
       });
       // Ref names were already accepted at the source. Use the engine's push
       // validation here to check connectivity under its own ref-name rules.
-      const commands = refs.map(({ target }, index) => ({ ref: `refs/shard-copy/${index}`, old: ZERO_OID, next: target }));
+      const targets = [...new Set(refs.map(({ target }) => target))];
+      const commands = targets.map((target, index) => ({ ref: `refs/shard-copy/${index}`, old: ZERO_OID, next: target }));
       const plan = await validatePush(this.store, commands, null, packId);
       if (plan.decisions.some(decision => decision.reject) ||
           refs.some(({ name, target }) => name.startsWith(HEADS) && this.store.typeAndSize(target)?.type !== "commit")) {
@@ -804,38 +977,26 @@ export class GitRepository extends RepoCell {
     if (encoding && encoding !== "gzip" && encoding !== "identity") return empty(415);
     if (!request.body) return empty(400);
     const input = encoding === "gzip" ? request.body.pipeThrough(new DecompressionStream("gzip")) : request.body;
-    const reader = input.getReader();
     const limit = this.#maxPush;
     let size = 0;
     let oversized = false;
-    const bounded = new ReadableStream({
-      async pull(controller) {
-        try {
-          const next = await reader.read();
-          if (next.done) {
-            reader.releaseLock();
-            controller.close();
-          } else if ((size += next.value.length) > limit) {
-            oversized = true;
-            controller.error(new Error("request body exceeds maximum size"));
-            await reader.cancel().catch(() => {});
-            reader.releaseLock();
-          } else {
-            controller.enqueue(next.value);
+    const bounded = ReadableStream.from((async function* () {
+      for await (const chunk of input) {
+        if ((size += chunk.length) > limit) {
+          oversized = true;
+          throw new Error("request body exceeds maximum size");
+        }
+        // RepoCell collects the command prefix before handing off to its pack
+        // reader. Keep any pack bytes its prefix parser sees within one chunk.
+        if (chunk.length <= PACK_CHUNK) {
+          if (chunk.length) yield chunk;
+        } else {
+          for (let offset = 0; offset < chunk.length; offset += PACK_CHUNK) {
+            yield chunk.subarray(offset, offset + PACK_CHUNK);
           }
-        } catch (error) {
-          reader.releaseLock();
-          controller.error(error);
         }
-      },
-      async cancel(reason) {
-        try {
-          await reader.cancel(reason);
-        } finally {
-          reader.releaseLock();
-        }
-      },
-    });
+      }
+    })());
     let push;
     try {
       push = await shard_receive_request(bounded, "");

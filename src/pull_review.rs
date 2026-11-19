@@ -143,7 +143,7 @@ async fn mutate(ctx: RouteContext<AppState>, operation: Operation) -> Result<Res
         return conflict();
     }
     let handles = Repositories::open(&state.env, &repo, source).await?;
-    let Comparison::Complete(files) = pull_diff::compare(&handles.target, handles.source(), diff_base, head).await? else {
+    let Comparison::Complete(files) = pull_diff::compare(&state.env, &handles.target, handles.source(), diff_base, head).await? else {
         return conflict();
     };
     if let (Some(path), Some(side), Some(line)) = (&path, side, line) {

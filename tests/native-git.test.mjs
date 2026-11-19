@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createCipheriv, randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -621,7 +621,13 @@ test("default Free deployment serves and persists repositories without paid bind
     const localGit = (...args) => git(null, "-C", worktree, ...args);
     const readme = "# SQLite-backed Git\n";
     await writeFile(join(worktree, "README.md"), readme);
-    await localGit("add", "README.md");
+    // A predictable incompressible pack above the old 8 MiB limit.
+    const noise = createCipheriv("aes-256-ctr", Buffer.alloc(32, 1), Buffer.alloc(16));
+    const largeFiles = ["data-a.bin", "data-b.bin", "data-c.bin"];
+    for (const path of largeFiles) {
+      await writeFile(join(worktree, path), noise.update(Buffer.alloc(4 * 1024 * 1024)));
+    }
+    await localGit("add", "README.md", ...largeFiles);
     await localGit("commit", "-m", "Seed the repository");
     const original = await localGit("rev-parse", "HEAD");
     await assert.rejects(git(readToken, "-C", worktree, "push", remote, "main"), { code: 128 });
@@ -701,6 +707,8 @@ test("default Free deployment serves and persists repositories without paid bind
     ]);
     assert.equal(await git(null, "-C", defaultClone, "symbolic-ref", "HEAD"), "refs/heads/web/notes");
     assert.equal(await git(null, "-C", defaultClone, "rev-parse", "HEAD"), original);
+    assert.deepEqual(await readFile(join(clone, largeFiles[0])), await readFile(join(worktree, largeFiles[0])));
+    await git(null, "-C", clone, "fsck", "--full");
     assert.equal(await readFile(join(clone, "README.md"), "utf8"), readme);
     assert.equal(await readFile(join(clone, "notes.txt"), "utf8"), "Review the stored notes.\n");
   } finally {

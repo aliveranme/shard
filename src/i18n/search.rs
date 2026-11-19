@@ -9,7 +9,6 @@ catalog! {
         Reference => "Branch, tag or commit", "分支、标签或提交";
         PathCoverage => "Search is case-sensitive and matches full file paths at the selected Git revision.", "区分大小写，在所选 Git 版本中搜索完整文件路径。";
         CodeCoverage => "Search is case-sensitive and shows the first matching line in each UTF-8 text file up to 64 KiB.", "区分大小写，显示每个不超过 64 KiB 的 UTF-8 文本文件中首个匹配的行。";
-        CommitCoverage => "Search is case-sensitive and covers commit messages and ID prefixes in the latest 24 first-parent commits.", "区分大小写，在第一父提交链最近的 24 次提交中搜索提交消息和提交 ID 前缀。";
         SearchedCommit => "Searched commit", "搜索所用的提交";
         PartialResults => "Partial results", "部分结果";
         ScanLimit => "The repository scan reached its limit. Some paths or files were skipped.", "已达到仓库扫描上限。部分路径或文件已跳过。";
@@ -25,5 +24,14 @@ catalog! {
         InvalidQuery => "Enter a single line of up to 256 bytes.", "请输入不超过 256 字节的单行文本。";
         AssigneeUsername => "Assignee username", "负责人的用户名";
         Line => "Line", "行号";
+    }
+}
+
+impl super::Locale {
+    pub fn commit_search_coverage(self, commits: &usize) -> String {
+        match self {
+            Self::En => format!("Search is case-sensitive and covers commit messages and ID prefixes in the latest {commits} first-parent commits."),
+            Self::ZhHans => format!("区分大小写，在第一父提交链最近的 {commits} 次提交中搜索提交消息和提交 ID 前缀。"),
+        }
     }
 }

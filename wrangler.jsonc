@@ -16,7 +16,7 @@
   "vars": {
     "GIT_BACKEND": "durable",
     "SHARD_LIMIT_PROFILE": "free",
-    "MAX_PUSH_MB": "8",
+    "MAX_PUSH_MB": "32",
     "SHA1DC": "1"
   },
   // "send_email": [{ "name": "EMAIL", "allowed_sender_addresses": ["shard@example.com"] }],
@@ -49,6 +49,7 @@
     "artifacts": {
       "name": "shard",
       "vars": { "GIT_BACKEND": "artifacts", "SHARD_LIMIT_PROFILE": "paid" },
+      "limits": { "cpu_ms": 300000 },
       "durable_objects": { "bindings": [] },
       "migrations": [],
       "artifacts": [{ "binding": "ARTIFACTS", "namespace": "shard" }],
@@ -64,6 +65,7 @@
     },
     "native": {
       "name": "shard-native",
+      // On Workers Paid, set SHARD_LIMIT_PROFILE to paid to opt into the larger Shard workload.
       "vars": {
         "GIT_BACKEND": "native",
         "SHARD_LIMIT_PROFILE": "free",
@@ -91,6 +93,7 @@
     "managed": {
       "name": "shard-managed",
       "vars": { "GIT_BACKEND": "artifacts", "SHARD_LIMIT_PROFILE": "paid" },
+      // One Workflow LFS page can copy up to 8,192 multipart ranges.
       "limits": { "cpu_ms": 300000, "subrequests": 20000 },
       "artifacts": [{ "binding": "ARTIFACTS", "namespace": "shard-managed" }],
       "d1_databases": [{ "binding": "DB", "database_name": "shard-managed", "migrations_dir": "migrations" }],
