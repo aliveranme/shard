@@ -7,14 +7,16 @@ import { parseArgs } from "node:util";
 
 const require = createRequire(import.meta.url);
 const nilUuid = "00000000-0000-0000-0000-000000000000";
+const shaPattern = /^[0-9a-f]{40}$/;
+const uuidPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const env = { ...process.env, CI: "true", WRANGLER_SEND_METRICS: "false" };
 // Each command selects an explicit target from the same configuration.
 delete env.CLOUDFLARE_ENV;
 delete env.WRANGLER_CI_OVERRIDE_NAME;
 
-function node(args, capture = false, childEnv = env) {
+function node(args, capture = false, childEnv = env, stderr = "inherit") {
   return execFileSync(process.execPath, args, {
-    env: childEnv, stdio: capture ? ["ignore", "pipe", "inherit"] : "inherit", encoding: "utf8",
+    env: childEnv, stdio: capture ? ["ignore", "pipe", stderr] : "inherit", encoding: "utf8",
     maxBuffer: 4 * 1024 * 1024, timeout: capture ? 30_000 : undefined,
   });
 }
@@ -40,10 +42,11 @@ function target(name, config) {
   };
 }
 
-async function verifyRelease(wrangler, flags, deployment, tag) {
+async function verifyRelease(wrangler, flags, deployment, tag, versionId) {
   const id = `release-${tag}-${randomUUID().slice(0, 8)}`;
   const json = (args) => JSON.parse(node([wrangler, ...args, ...flags, "--json"], true));
-  const start = json(["workflows", "trigger", deployment.workflow, JSON.stringify({ tag }), "--id", id]);
+  const params = JSON.stringify({ tag, ...(versionId && { versionId }) });
+  const start = json(["workflows", "trigger", deployment.workflow, params, "--id", id]);
   if (start.id !== id) throw new Error(`Unexpected verification instance for ${deployment.worker}.`);
   console.log(`Verifying ${deployment.worker} in ${deployment.workflow}/${id}`);
   const deadline = Date.now() + 3 * 60_000;
@@ -62,6 +65,111 @@ async function verifyRelease(wrangler, flags, deployment, tag) {
     await setTimeout(4_000);
   } while (Date.now() < deadline);
   throw new Error(`Timed out verifying ${deployment.worker}. Inspect ${id} in Workflows.`);
+}
+
+function parseWranglerJson(output, command) {
+  try {
+    return JSON.parse(output);
+  } catch (error) {
+    throw new Error(`Invalid JSON from Wrangler ${command}.`, { cause: error });
+  }
+}
+
+function deploymentHistory(wrangler, flags) {
+  let output;
+  try {
+    output = node([wrangler, "deployments", "list", ...flags, "--json"], true, env, "pipe");
+  } catch (error) {
+    // A Worker that has never been uploaded may be absent from the deployments API.
+    if (error.status > 0 && /\[code: 10007\]/.test(error.stderr)) return [];
+    throw new Error(`Could not read production Worker deployments. ${error.message}`, { cause: error });
+  }
+  // Wrangler 4.164 emits an array ordered by created_on, oldest first.
+  const deployments = parseWranglerJson(output, "deployments list");
+  if (!Array.isArray(deployments) || deployments.some((entry, index) =>
+    typeof entry?.id !== "string" || !uuidPattern.test(entry.id) || typeof entry.created_on !== "string" ||
+    !Number.isFinite(Date.parse(entry.created_on)) || (index > 0 && deployments[index - 1].created_on > entry.created_on) ||
+    !Array.isArray(entry.versions) || !entry.versions.length ||
+    entry.versions.some((version) => typeof version?.version_id !== "string" || !uuidPattern.test(version.version_id) ||
+      !Number.isFinite(version.percentage) || version.percentage < 0 || version.percentage > 100))) {
+    throw new Error("Unexpected Wrangler deployments list JSON schema.");
+  }
+  return deployments;
+}
+
+function fullTrafficVersion(deployment) {
+  const versions = deployment?.versions;
+  return versions?.length === 1 && versions[0].percentage === 100 ? versions[0].version_id : undefined;
+}
+
+function readVersion(wrangler, flags, id) {
+  const version = parseWranglerJson(node([wrangler, "versions", "view", id, ...flags, "--json"], true), "versions view");
+  const annotations = version?.annotations;
+  if (version?.id !== id || (annotations != null && (typeof annotations !== "object" || Array.isArray(annotations))) ||
+      ["workers/tag", "workers/message"].some((key) => Object.hasOwn(annotations ?? {}, key) && typeof annotations[key] !== "string")) {
+    throw new Error(`Unexpected Wrangler versions view JSON schema for ${id}.`);
+  }
+  return version;
+}
+
+async function recoverProduction(wrangler, flags, production, previous, tag, releaseId) {
+  const history = deploymentHistory(wrangler, flags);
+  const active = history.at(-1);
+  if (active?.id === previous?.id) {
+    return "Production activation did not change. No Worker rollback was needed.";
+  }
+  const releaseMessage = `Shard CD release ${releaseId}`;
+  const belongsToRelease = (deployment) => {
+    const id = fullTrafficVersion(deployment);
+    const deploymentAnnotations = deployment?.annotations;
+    // The script upload API activates the version immediately. The separate deployments API copies the message.
+    if (!id || (deploymentAnnotations?.["workers/triggered_by"] !== "upload" &&
+        deploymentAnnotations?.["workers/message"] !== releaseMessage)) return false;
+    const { annotations } = readVersion(wrangler, flags, id);
+    return annotations?.["workers/tag"] === tag && annotations["workers/message"] === releaseMessage;
+  };
+  if (!belongsToRelease(active)) {
+    return "Production has an unrelated deployment. Its active Worker version was left in place.";
+  }
+  if (!previous) throw new Error("There is no previous active Worker version to restore.");
+  const versionId = fullTrafficVersion(previous);
+  if (!versionId) throw new Error("The previous deployment split traffic. Automatic rollback requires one previous active Worker version.");
+  const snapshotIndex = history.findIndex(({ id }) => id === previous.id);
+  // An upload retry may create more than one deployment. Never cross another publisher's deployment.
+  if (snapshotIndex < 0 || history.slice(snapshotIndex + 1).some((entry, index) =>
+    entry.created_on <= history[snapshotIndex + index].created_on || (entry !== active && !belongsToRelease(entry)))) {
+    return "Production deployment history changed since the snapshot. Its active Worker version was left in place.";
+  }
+
+  const version = readVersion(wrangler, flags, versionId);
+  const previousTag = version.annotations?.["workers/tag"];
+  const bindings = version.resources?.bindings;
+  const supportsVerification = shaPattern.test(previousTag) && Array.isArray(bindings) && bindings.some((binding) =>
+    binding?.type === "workflow" && binding.name === "RELEASE_VERIFICATION_WORKFLOW" &&
+    binding.workflow_name === production.workflow && (!binding.script_name || binding.script_name === production.worker));
+  // Cloudflare's rollback API has no expected-active option. Refresh immediately before writing.
+  if (deploymentHistory(wrangler, flags).at(-1)?.id !== active.id) {
+    return "Production changed while preparing rollback. Its active Worker version was left in place.";
+  }
+  const message = `Shard CD rollback ${releaseId}`;
+  console.error(`Rolling back ${production.worker} to Worker version ${versionId}.`);
+  node([wrangler, "rollback", versionId, "--yes", "--message", message, ...flags]);
+  const restored = deploymentHistory(wrangler, flags).at(-1);
+  if (restored?.id === active.id || fullTrafficVersion(restored) !== versionId || restored.annotations?.["workers/message"] !== message) {
+    throw new Error(`Could not confirm rollback to Worker version ${versionId}.`);
+  }
+  if (!supportsVerification) {
+    return `Restored Worker version ${versionId}. Its SHA tag and release Workflow binding could not both be confirmed for verification.`;
+  }
+  try {
+    await verifyRelease(wrangler, flags, production, previousTag, versionId);
+    if (deploymentHistory(wrangler, flags).at(-1)?.id !== restored.id) {
+      throw new Error("Production deployment changed during verification.");
+    }
+  } catch (error) {
+    throw new Error(`Restored Worker version ${versionId}, but rollback verification failed. ${error.message}`, { cause: error });
+  }
+  return `Restored and verified Worker version ${versionId} (${previousTag}).`;
 }
 
 async function main() {
@@ -105,7 +213,7 @@ async function main() {
     throw new Error("Workers Builds must run the release command on the configured production branch.");
   }
   const tag = execFileSync("git", ["rev-parse", "--verify", "HEAD"], { encoding: "utf8" }).trim();
-  if (!/^[0-9a-f]{40}$/.test(tag) || env.WORKERS_CI === "1" && env.WORKERS_CI_COMMIT_SHA !== tag) {
+  if (!shaPattern.test(tag) || env.WORKERS_CI === "1" && env.WORKERS_CI_COMMIT_SHA !== tag) {
     throw new Error("The checkout SHA differs from the Workers Builds revision.");
   }
   const wrangler = join(dirname(require.resolve("wrangler/package.json")), "bin", "wrangler.js");
@@ -118,10 +226,26 @@ async function main() {
       throw new Error("The staging and production DB bindings resolve to the same D1 database.");
     }
   }
-  for (const deployment of [staging, production]) {
-    console.log(`Deploying ${tag} to ${deployment.worker}`);
-    deploy(deployment, ["--tag", tag]);
-    await verifyRelease(wrangler, flags(deployment), deployment, tag);
+  console.log(`Deploying ${tag} to ${staging.worker}`);
+  deploy(staging, ["--tag", tag]);
+  await verifyRelease(wrangler, flags(staging), staging, tag);
+
+  const productionFlags = flags(production);
+  const previous = deploymentHistory(wrangler, productionFlags).at(-1);
+  const releaseId = randomUUID();
+  try {
+    console.log(`Deploying ${tag} to ${production.worker}`);
+    deploy(production, ["--tag", tag, "--message", `Shard CD release ${releaseId}`]);
+    await verifyRelease(wrangler, productionFlags, production, tag);
+  } catch (error) {
+    console.error(`Production release failed. ${error.message}`);
+    console.error("Any D1 migrations applied by this release remain in place.");
+    try {
+      console.error(await recoverProduction(wrangler, productionFlags, production, previous, tag, releaseId));
+    } catch (recoveryError) {
+      console.error(`Production recovery failed. ${recoveryError.message}`);
+    }
+    process.exitCode = 1;
   }
 }
 

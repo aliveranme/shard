@@ -234,12 +234,23 @@ CI builds the Worker, runs the isolated regressions, and starts the Git bridge
 image to check its health and authentication. CD deploys the checkout SHA to
 staging, then waits for the release Workflow to verify the version tag, D1
 schema, R2 access, CSS, and Git bridge readiness. Once staging passes, CD
-deploys the same SHA to production and verifies it there after activation. If
-that check fails, the release command reports the Workflow instance to inspect.
+deploys the same SHA to production and verifies it after activation. If the
+publish or probe fails after this release activates its version, CD rolls
+back to the previous single version when the deployment history still belongs
+to this run. It checks the restored UUID and runs the previous version's probe
+when that version has a SHA tag and the release Workflow binding.
 Workers Builds reports the build and deploy result on the linked commit.
 After deploying with the Paid preset, this staged release path retains its
 dashboard-managed LFS settings through `keep_vars`. Use matching R2 settings
 and secrets in both environments when staging multipart uploads.
+
+Serialize writes to each production Worker during CD. Cloudflare's rollback
+API has no conditional active-deployment check, so another publisher can race
+the last check. A first release and a previous split deployment require
+operator recovery. D1 migrations stay applied, so keep them compatible with
+the previous Worker. A restarted Durable Object container uses the restored
+Worker version's named image. Running containers keep their startup images.
+[Worker rollback](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/) · [Named container images](https://developers.cloudflare.com/containers/guides/image-management/#roll-out-a-named-image-update)
 
 Workers Builds must be connected to the production Worker named in the
 configuration. Staging uses its own Worker identity and bindings. Production

@@ -164,13 +164,14 @@ function deploy() {
     env: { type: "string", short: "e" },
     "secrets-file": { type: "string" },
     tag: { type: "string" },
+    message: { type: "string" },
     paid: { type: "boolean" },
     "dry-run": { type: "boolean" },
     outdir: { type: "string" },
     help: { type: "boolean", short: "h" },
   } });
   if (values.help) {
-    console.log("npm run deploy -- [--paid] [--config PATH] [--env NAME] [--secrets-file PATH] [--tag TAG] [--dry-run] [--outdir PATH]");
+    console.log("npm run deploy -- [--paid] [--config PATH] [--env NAME] [--secrets-file PATH] [--tag TAG] [--message MESSAGE] [--dry-run] [--outdir PATH]");
     return;
   }
 
@@ -210,6 +211,7 @@ function deploy() {
   }
   if (values.outdir) deployArgs.push("--outdir", resolve(values.outdir));
   if (values.tag) deployArgs.push("--tag", values.tag);
+  if (values.message) deployArgs.push("--message", values.message);
 
   let deploymentConfig = resolve(configPath);
   function run(args, { capture = false, ci = false } = {}) {

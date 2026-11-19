@@ -81,7 +81,7 @@ The [deployment capacity guide](docs/deployment-capacity.md) covers Dashboard se
 - The RustSec audit reported `basic-toml` and `chrono` as unmaintained transitive dependencies of the current locked graph.
 - R2 Git appends durable pack entries on ref publication. The list of keys shares a 4 MiB workspace metadata budget with refs. Workspaces link each pack and index, so pack count affects read cost and can reach the metadata cap independently of repository byte size. [Pack manifest](worker/git-r2-repository.mjs#L173) · [Workspace hydration](scripts/git-r2-origin.mjs#L62)
 - The R2 Git recovery path needs a consistent D1 export, Durable Object revision with refs and pack keys, and the corresponding R2 Git and LFS objects. A Git mirror covers objects reachable from its exported refs. Saved PR revisions can also require older objects. [Current restore guide](README.md#backup-and-restore)
-- Managed CD verifies production after activation. A failed publish or production probe can leave the Worker active on the new version while container rollout is incomplete. D1 migrations also precede Worker upload. [Release script](scripts/cd.mjs#L121) · [Container rollouts](https://developers.cloudflare.com/containers/guides/deploy/)
+- Managed CD rolls back an owned production activation to its exact prior single Worker version and rechecks the prior Workflow when available. D1 migrations stay applied. Production publishers require serialization because the Cloudflare rollback API has no conditional update. [Release script](scripts/cd.mjs) · [Cloudflare rollback limitations](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/)
 
 ## Verification log
 
@@ -172,6 +172,7 @@ The [deployment capacity guide](docs/deployment-capacity.md) covers Dashboard se
 | 2026-11-19 | Release browser review | Chromium rendered repository, issues, pull requests, refs, and account settings at 320px without horizontal overflow. The new token form displayed the password label and revealed the secret only on creation. Keyboard focus, skip-to-content, dark mode, reduced-motion preference, and the mobile navigation menu were exercised. |
 | 2026-11-19 | Public v0.3.0 Release package | Verified the downloaded archive against the published SHA-256. Installed the archived Node dependencies and passed Wrangler dry runs for Free and Paid R2 Git. The Paid dry run built the R2 Git Docker image. |
 | 2026-11-19 | Git LFS regressions | Three tests passed. A Paid multipart Batch accepted the exact default and an explicit R2-sized cap. The Worker rejected larger requests and preserved downloads after reducing the cap. |
+| 2026-11-19 | Managed CD rollback fixture | All 29 checks passed. The loopback fixture exercised failed post-activation uploads and probes, exact prior-version restoration, newer-deploy protection, first releases, and failed verification after rollback. |
 
 ## How to update
 

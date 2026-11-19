@@ -155,7 +155,11 @@ Workers Builds runs the isolated regressions and smokes the Git image. The
 release script gives staging and production separate Workers and bindings.
 It runs each environment's D1 migrations, deploys the checkout SHA, and waits
 for that SHA to pass the release Workflow. A staging failure blocks the
-production step. [Managed deployment](README.md#deploy-with-managed-cloudflare-services)
+production step. On a production failure, CD restores the previous single
+Worker version if its own release still controls the active deployment. The
+prior version's Workflow can verify access to the migrated schema. Use
+backward-compatible migrations during the rollback window and serialize
+production deployments. [Managed deployment](README.md#deploy-with-managed-cloudflare-services)
 
 ## Migrate GitHub Actions jobs to Cloudflare
 
@@ -163,7 +167,7 @@ production step. [Managed deployment](README.md#deploy-with-managed-cloudflare-s
 | --- | --- | --- |
 | Push and PR build and test in `ci.yml` | Workers Builds checks out the revision and runs the pinned setup, Wasm checks and isolated regressions. Use a distinct non-production build command for PRs. | Compare results and required checks for passing and failing commits, including fork PRs. Preview jobs get no production bindings or credentials. |
 | Docker build and smoke | Build and exercise `containers/git-merge.Dockerfile` in the release build. Wrangler publishes the image to Workers Containers, where the Durable Object starts it. | Verify runner Docker support, image identity, authenticated Git merge, ref leases and cold-start readiness on staging. |
-| Deploy and verify each release | Workers Builds runs `npm run cd` on the protected branch. Wrangler applies D1 migrations and deploys the checkout SHA. Workflows check the deployed revision, D1, R2, Static Assets and bridge before and after promotion. | A failed or stale staging result blocks promotion. A production verification failure records the affected deployment and Workflow instance. |
+| Deploy and verify each release | Workers Builds runs `npm run cd` on the protected branch. Wrangler applies D1 migrations and deploys the checkout SHA. Workflows check the deployed revision, D1, R2, Static Assets and bridge before and after promotion. | A failed or stale staging result blocks promotion. If a failed production release owns the active deployment, CD restores the recorded predecessor and verifies it when its Workflow is available. |
 | Build a prebuilt package and publish a release on `v*` tags | A release build packages the same tested checkout and records its checksum. A release Workflow can publish through the GitHub Releases API with a scoped GitHub App token after it receives a verified tag and artifact. | Check tag/SHA equality, prerelease handling, checksum, duplicate delivery, and draft-to-published behavior. Keep the tag workflow until the event source, builder and publisher pass these checks. |
 
 1. Run Workers Builds checks alongside GitHub CI. Compare success, failure and
