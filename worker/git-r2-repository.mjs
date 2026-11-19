@@ -1512,12 +1512,6 @@ export class R2GitRepository extends DurableObject {
       }
       const repository = this.#repository();
       if (smart && action === "info/refs" && request.method === "GET" &&
-          url.searchParams.get("service") === "git-receive-pack") {
-        // Git fetches this advertisement before it builds and posts the pack.
-        // Start the container now so its cold start overlaps that work.
-        this.ctx.waitUntil(this.#warmContainer().catch(() => {}));
-      }
-      if (smart && action === "info/refs" && request.method === "GET" &&
           url.searchParams.get("service") === "git-receive-pack" && this.#directReads) {
         try {
           return await this.#directReceiveAdvertisement(repository);

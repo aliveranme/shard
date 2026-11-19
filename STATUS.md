@@ -3,7 +3,7 @@
 Living record of what works, what is missing, and how it was verified.
 Update this file whenever a milestone lands or a limitation changes.
 
-**Snapshot:** 2026-11-19 · Shard 0.3.1 · local verification
+**Snapshot:** 2026-11-20 · Shard 0.3.1 · local verification
 
 | Item | Value |
 |---|---|
@@ -183,8 +183,9 @@ The [Chinese Cloudflare Dashboard manual](docs/configuration.zh-CN.md) documents
 | 2026-11-19 | Registration policy and administrator bootstrap | Deployed `shard-max` with `SHARD_REGISTRATION=closed`: the signup page showed the closed message without a form, guest navigation omitted signup, and `POST /user/sign_up` returned 403. `npm run admin -- grant aliveranme` set `is_admin=1` and `list` showed the account. `mise run check` and `mise run lint` passed. |
 | 2026-11-19 | R2 Git direct reads and browser cache | `tests/r2-pack.test.mjs` read every base and delta object from a real pack. Live repo page fell from 27–29 s to 1.0–1.2 s; raw file 11.5 s to 1.0 s; blob 12.4 s to 0.6 s; commits 6.7 s to 0.7 s. A fresh repository with the direct ref advertisement served its refs page in 0.7 s. README media returned `Cache-Control: public, max-age=86400`; CSS and fonts returned `max-age=3600` and `604800`. A fresh repository showed 6 B/7 B tree sizes. |
 | 2026-11-19 | Worker upload-pack | A fresh R2 repository cloned without a container: v1 clone 8 s, v2 clone 5 s, both passed `git fsck --full`; an incremental v2 fetch took 4 s and a depth-1 clone was shallow and passed fsck. |
-| 2026-11-20 | Raw pack reuse and push prewarm | `tests/r2-pack.test.mjs` verified indexed raw ranges against a real pack. A fresh 1 MiB repository cloned in 5–7 s with v1 and v2 and passed fsck. A warm DO still took about 8 s for a small push; the receive-pack advertisement now starts the container in the background but does not make push instantaneous. |
+| 2026-11-20 | Raw pack reuse and push prewarm | `tests/r2-pack.test.mjs` verified indexed raw ranges against a real pack. A fresh 1 MiB repository cloned in 5–7 s with v1 and v2 and passed fsck. A warm DO still took about 8 s for a small push. This prewarm was later removed; direct pushes no longer start a container. |
 | 2026-11-20 | Direct receive-pack fast path | A fresh 256 KiB repository pushed twice without the container: 6 s and 5 s, then cloned and passed `git fsck --full`. A fresh 1 MiB repository's first push took 7 s after the direct receive advertisement; a subsequent thin push took 9 s and both published successfully. The parser rebuilt valid v2 indexes and completed thin bases from R2. Large pushes and invalid object graphs fall back to the container. |
+| 2026-11-20 | Receive advertisement without prewarm | Removed the unconditional container start from `info/refs?service=git-receive-pack`. A fresh private repository pushed directly in 7 s with zero live R2 container instances before and after; the push published without starting one. Only a fallback or a merge, comparison, import or compaction starts a container now. |
 
 ## How to update
 

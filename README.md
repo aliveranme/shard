@@ -6,7 +6,7 @@ fetch, and push over HTTPS. The web interface supports English and Simplified Ch
 
 [![Deploy to Cloudflare Free](https://deploy.workers.cloudflare.com/button)][cloudflare-deploy] · [Deploy Paid with R2 multipart uploads](#deploy-paid-with-r2-multipart-uploads)
 
-[Run locally](#local-development) · [First push](#first-repository) · [Deploy guide](#deploy-to-cloudflare) · [简体中文](#简体中文)
+[Run locally](#local-development) · [First push](#first-repository) · [Deploy guide](#deploy-to-cloudflare) · [Project overview (中文)](docs/overview.zh-CN.md) · [简体中文](#简体中文)
 
 [![Shard pull request with a versioned comparison, changed files, and a review comment linked to an added line](assets/readme/pull-request.webp)](assets/readme/pull-request.webp)
 
@@ -106,12 +106,13 @@ The default deployment gives each repository a SQLite Durable Object for Git
 objects and refs. Paid deployments can use Cloudflare Artifacts. The `native`
 environment is retained for existing deployments that already run a Git server
 with persistent disk; it is not the project's recommended direction.
-The `r2` environment runs native Git in Cloudflare Containers, stores immutable
-Git packs and indexes in private R2, and publishes refs transactionally in
-Durable Objects.
+The `r2` environment stores immutable Git packs and indexes in private R2 and
+publishes refs transactionally in Durable Objects. Web reads, clone, fetch and
+small pushes run in the Worker; a Cloudflare Container handles only fallback
+pushes, merges, comparisons, imports and compaction.
 Any environment with a private `LFS_OBJECTS` R2 binding can store Git LFS bytes.
 
-[Storage design](PLAN.md#optional-git-backends) · [Verified behavior and staging status](STATUS.md)
+[Project overview (中文)](docs/overview.zh-CN.md) · [Storage design](PLAN.md#optional-git-backends) · [Verified behavior and staging status](STATUS.md)
 
 ## Deploy to Cloudflare
 
@@ -451,7 +452,8 @@ Web reads resolve commits, trees, blobs, files and first-parent history
 directly from the R2 pack and index files. Clone and fetch generate their pack
 through the Worker from those same packs. Small pushes, including thin packs,
 are validated and published by the Worker; large pushes, merges, comparisons,
-imports and pack compaction still use the container. Set
+imports and pack compaction still use the container. A push completed by the
+Worker does not start a container; a fallback starts one on demand. Set
 `SHARD_R2_DIRECT_READS=0` to fall back to the container for every read. The
 Durable Object persists its container session token, and
 `SHARD_GIT_R2_IDLE_MS` keeps an active container for 10 minutes by default.
@@ -678,6 +680,8 @@ in D1 so Cron can reconcile them after a disconnect.
 
 Shard 是部署在 Cloudflare 上的自托管 Git 平台，适用于个人项目和小团队。D1 保存账户、权限、议题和审查记录。默认 Free 部署使用 SQLite Durable Objects，也可选择 Artifacts、Cloudflare 托管的 R2 Git 或自有原生 Git 源站。界面语言可在页脚或账号设置中切换。
 
+[完整项目说明](docs/overview.zh-CN.md) 介绍架构、Git 数据路径、安全模型、部署选择、容量边界和当前状态。
+
 [Cloudflare Dashboard 中文配置手册](docs/configuration.zh-CN.md) 按面板逐项说明部署参数、私有仓库自动更新、各环境的资源绑定、变量与密钥、域名和升级验证。[资源限制与扩容空间](docs/deployment-capacity.md) 详列 Git 与 LFS 的容量、分片和并发边界。
 
 点击 **Deploy to Cloudflare**，在「设置您的应用程序」中选择 Git 帐户，勾选「创建专用 Git 存储库」，确认 Worker 和 D1 数据库后部署。Cloudflare 会绑定新仓库，之后推送到该仓库的生产分支就会自动更新同一个 Worker，并在原 D1 数据库上应用迁移。[Free 一键部署字段与步骤](docs/configuration.zh-CN.md#free-一键部署与自动更新)
@@ -688,11 +692,9 @@ Shard 是部署在 Cloudflare 上的自托管 Git 平台，适用于个人项目
 
 Paid 环境可运行 `npm run deploy:paid -- --secrets-file .env.deploy.paid`，默认启用 R2 分片上传。已有 Artifacts 实例通过 `--env artifacts` 升级并保留原来的资源绑定。已有自管 Git 源站可使用 `--env native`（兼容保留，不是新部署方向）。[Paid 部署说明](#deploy-paid-with-r2-multipart-uploads) · [兼容原生 Git 部署](#legacy-deploy-with-a-native-git-origin)
 
-大仓新部署应使用 `npm run deploy:paid -- --env r2 --secrets-file .env.deploy.r2`。R2 保存普通 Git 的 pack 和索引，clone/fetch 由 Worker 直接生成传输包，安装 `git-remote-shard` 可将超过域名限额的 push 分片直传 R2。[R2 Git 部署与续传](#large-repositories-on-cloudflare-r2)
+大仓新部署应使用 `npm run deploy:paid -- --env r2 --secrets-file .env.deploy.r2`。R2 保存普通 Git 的 pack 和索引，clone/fetch 与小型 push 由 Worker 直接处理；大 push、合并、比较、导入和 compaction 才按需启动容器。标准 HTTPS 支持 clone、fetch 和域名限额内的 push，安装 `git-remote-shard` 可将超过限额的 push 分片直传 R2，并从已接收的分片恢复。[R2 Git 部署与续传](#large-repositories-on-cloudflare-r2)
 
 已有原生 Git 源站仍可运行 `npm run deploy:paid -- --env native --secrets-file .env.deploy.paid`，为源站配置 DNS only 的 HTTPS 域名和持久盘；该路径仅用于兼容已有部署。
-
-无需 VPS 的大仓可运行 `npm run deploy:paid -- --env r2 --secrets-file .env.deploy.r2`。R2 保存普通 Git 的 pack 和索引，容器按需运行 Git。标准 HTTPS 支持 clone、fetch 和域名限额内的 push，安装 `git-remote-shard` 可将大推送分片直传 R2，并从 R2 已接收的分片恢复。[R2 Git 部署与续传](#large-repositories-on-cloudflare-r2)
 
 选择 `managed-staging` 和 `managed` 可用 Durable Objects 协调受保护分支的合并、用 Workflows 续跑仓库复制，并通过 Containers 执行需要原生 Git 的 Artifacts 合并。Workers Builds 使用 `npm run ci -- --container` 验证代码与镜像，再通过 `npm run cd` 部署 staging。发布 Workflow 验证通过后，同一提交才会部署到生产并再次验证。[托管 CI/CD 配置](#deploy-with-managed-cloudflare-services)
 
@@ -1213,6 +1215,7 @@ at 03:00 UTC removes expired sessions, tokens, login throttle windows, and email
 ## Layout
 
 - Worker routes, permissions, and Git backends live in [src/](src/).
+- The project overview is in [docs/overview.zh-CN.md](docs/overview.zh-CN.md).
 - Server-rendered HTML and styles live in [templates/](templates/) and [static/](static/).
 - D1 schema changes live in [migrations/](migrations/).
 - The build bootstrap and native Git origin live in [scripts/](scripts/).
