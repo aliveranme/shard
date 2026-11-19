@@ -363,11 +363,17 @@ Paid can use the `paid` profile to increase its scheduled batch sizes.
 The default Git backend keeps one SQLite Durable Object per repository and
 sets `MAX_PUSH_MB=8` for the compressed Git push. Forks and imports must each
 fit one packed snapshot within this limit. Expanded objects also consume
-Worker memory and Durable Object storage. Free accounts have 1 GB per SQLite
-Durable Object and 5 GB total. The Web UI can merge same-repository
-fast-forwards. For a divergent or cross-repository change targeting a protected
-branch, merge locally on top of the current target tip. Push the result to a
-topic branch in the target repository and open a fast-forward pull request.
+Worker memory and Durable Object storage.
+
+Cloudflare's limits table lists 10 GB per SQLite Durable Object and 5 GB
+total per Workers Free account. Its storage-full FAQ lists a Free-specific
+limit of 1 GB per object.
+[SQLite limits table](https://developers.cloudflare.com/durable-objects/platform/limits/#sqlite-backed-durable-objects-general-limits) · [Storage-full FAQ](https://developers.cloudflare.com/durable-objects/platform/limits/#what-happens-when-a-durable-object-exceeds-its-storage-limit)
+
+The Web UI supports same-repository fast-forward merges. For a divergent or
+cross-repository change targeting a protected branch, merge locally on top of
+the current target tip. Push the result to a topic branch in the target
+repository and open a fast-forward pull request.
 
 Free imports accept credential-free HTTPS Git URLs on `github.com`,
 `gitlab.com` and `codeberg.org`. Use the native origin for imports that
