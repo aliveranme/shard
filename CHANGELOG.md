@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- R2 Git web reads resolve commits, trees, blobs, files and first-parent history directly from R2 pack indexes. The container remains for writes, merges, comparisons and Smart HTTP.
+- The R2 Durable Object persists its container token across restarts and keeps an idle container for 10 minutes by default (`SHARD_GIT_R2_IDLE_MS`).
+- README images are cached by visibility, and `static/_headers` gives fonts, images and CSS browser cache lifetimes.
 - `SHARD_REGISTRATION=closed` disables signup while existing accounts keep signing in. Guest navigation and the signup page follow the setting.
 - Added `npm run admin -- grant|revoke|list` for administrator bootstrap and review through D1, with `--replace`, `--config`, `--env` and `--local`.
 - `npm run deploy:paid` preserves an explicitly configured `SHARD_LFS_UPLOAD_MODE`; the Paid preset still defaults to `r2-multipart`.

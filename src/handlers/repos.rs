@@ -388,7 +388,11 @@ async fn file_response(req: Request, ctx: RouteContext<AppState>, inline_image: 
     headers.set("X-Content-Type-Options", "nosniff")?;
     if inline_image {
         headers.set("Content-Disposition", "inline")?;
-        headers.set("Cache-Control", "private, no-store")?;
+        headers.set("Cache-Control", if repo.is_private() {
+            "private, max-age=86400"
+        } else {
+            "public, max-age=86400, stale-while-revalidate=604800"
+        })?;
         headers.set("Cross-Origin-Resource-Policy", "same-origin")?;
         headers.set("Referrer-Policy", "no-referrer")?;
         headers.set("Content-Security-Policy", "sandbox; default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'")?;

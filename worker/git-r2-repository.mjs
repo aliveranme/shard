@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { PackIndex, parseCommit, parseTagTarget, parseTree, readPackedObject } from "./git-r2-pack.mjs";
 import { gitR2S3 } from "../src/lfs_s3.js";
 import { shard_receive_report, shard_receive_request } from "../src/git_wire.js";
 
@@ -31,6 +32,11 @@ const RETIRED_PACK_MS = 24 * 60 * 60_000;
 const STARTUP_MS = 45_000;
 const PORT = 8793;
 const NO_STORE = { "Cache-Control": "no-store" };
+const DIRECT_ACTIONS = new Set(["blob", "commit", "commit-raw", "file", "log", "tree"]);
+const MAX_DIRECT_INDEX = 32 * MiB;
+const MAX_DIRECT_FILE = 32 * MiB;
+const MAX_DIRECT_COMMIT = 256 * 1024;
+const MAX_DIRECT_CACHE = MiB;
 const REPORT_TYPE = "application/x-git-receive-pack-result";
 const INGEST_TYPE = "application/x-git-receive-pack-request";
 
@@ -157,12 +163,18 @@ export class R2GitRepository extends DurableObject {
   #compacting = false;
   #ready;
   #sessionToken;
+  #directReads;
+  #indexes = new Map();
 
   constructor(ctx, env) {
     super(ctx, env);
     this.#sql = ctx.storage.sql;
     this.#bucket = env.GIT_PACKS;
+    this.#directReads = env.SHARD_R2_DIRECT_READS !== "0";
     this.#sql.exec(`
+      CREATE TABLE IF NOT EXISTS object_cache (
+        oid TEXT PRIMARY KEY, type INTEGER NOT NULL, size INTEGER NOT NULL, data BLOB NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS repository (
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1), id TEXT NOT NULL,
         revision INTEGER NOT NULL, head TEXT NOT NULL, refs TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0
@@ -460,6 +472,10 @@ export class R2GitRepository extends DurableObject {
 
   async #startContainer() {
     const instance = this.ctx.container;
+    const stored = await this.ctx.storage.get("container-token");
+    if (instance.running && !this.#sessionToken && typeof stored === "string") {
+      this.#sessionToken = stored;
+    }
     if (instance.running && !this.#sessionToken) await instance.destroy();
     if (!instance.running) {
       const token = crypto.randomUUID();
@@ -478,8 +494,11 @@ export class R2GitRepository extends DurableObject {
         },
       });
       this.#sessionToken = token;
+      await this.ctx.storage.put("container-token", token);
     }
-    await instance.setInactivityTimeout(2 * 60_000);
+    const configuredIdle = Number(this.env.SHARD_GIT_R2_IDLE_MS ?? 10 * 60_000);
+    const idle = Number.isSafeInteger(configuredIdle) && configuredIdle >= 60_000 ? configuredIdle : 10 * 60_000;
+    await instance.setInactivityTimeout(idle);
     const port = instance.getTcpPort(PORT);
     const end = Date.now() + STARTUP_MS;
     do {
@@ -490,12 +509,17 @@ export class R2GitRepository extends DurableObject {
           if (health.protocol === 1) return { port, token: this.#sessionToken };
         } else {
           await response.body?.cancel();
+          if (response.status === 401 || response.status === 403) break;
         }
       } catch {
         // The container port can be listening before the read-only mount is ready.
       }
       await scheduler.wait(200);
     } while (Date.now() < end);
+    // A stale persisted token cannot authenticate to a recreated process.
+    this.#sessionToken = undefined;
+    await this.ctx.storage.delete("container-token");
+    await instance.destroy();
     throw new GitHttpError(503, "Git container did not become ready");
   }
 
@@ -655,11 +679,238 @@ export class R2GitRepository extends DurableObject {
       const incoming = await this.#removePage(`git-incoming/${id}/`);
       if (!packs || !incoming || this.#one("SELECT id FROM uploads LIMIT 1")) return empty(202);
       this.ctx.storage.transactionSync(() => {
+        this.#sql.exec("DELETE FROM object_cache;");
         this.#sql.exec("DELETE FROM work; DELETE FROM packs; DELETE FROM retired_packs;");
         this.#sql.exec("UPDATE repository SET head = '', refs = '[]' WHERE singleton = 1");
       });
       return empty(204);
     });
+  }
+
+  async #packIndex(key) {
+    const cached = this.#indexes.get(key);
+    if (cached) return cached;
+    const object = await this.#bucket.get(`${key}.idx`);
+    if (!object || object.size > MAX_DIRECT_INDEX) throw new Error("Git pack index is unavailable");
+    const index = new PackIndex(new Uint8Array(await object.arrayBuffer()), MAX_DIRECT_INDEX);
+    this.#indexes.set(key, index);
+    return index;
+  }
+
+  async #packRange(key, offset, length) {
+    const object = await this.#bucket.get(`${key}.pack`, { range: { offset, length } });
+    if (!object) throw new Error("Git pack is unavailable");
+    return new Uint8Array(await object.arrayBuffer());
+  }
+
+  #cachedObject(oid) {
+    const row = this.#one("SELECT type, size, data FROM object_cache WHERE oid = ?", oid);
+    if (!row) return null;
+    const data = row.data instanceof Uint8Array ? row.data : new Uint8Array(row.data);
+    return { type: row.type, data };
+  }
+
+  #cacheObject(oid, object) {
+    if (object.data.length > MAX_DIRECT_CACHE) return;
+    const data = object.data;
+    const stored = data.byteOffset === 0 && data.byteLength === data.buffer.byteLength
+      ? data.buffer
+      : data.slice().buffer;
+    this.#sql.exec("INSERT OR REPLACE INTO object_cache (oid, type, size, data) VALUES (?, ?, ?, ?)",
+      oid, object.type, data.length, stored);
+  }
+
+  async #readObject(oid, depth = 0, packs) {
+    if (!OID.test(oid) || depth > 64) return null;
+    const cached = this.#cachedObject(oid);
+    if (cached) return cached;
+    const keys = packs ?? this.#repository().packs;
+    for (const key of keys) {
+      let index;
+      try {
+        index = await this.#packIndex(key);
+      } catch {
+        continue;
+      }
+      const object = await readPackedObject(index, oid, {
+        readRange: (offset, length) => this.#packRange(key, offset, length),
+        readBase: (base, nextDepth) => this.#readObject(base, nextDepth, keys),
+        maxBytes: MAX_DIRECT_FILE,
+      });
+      if (object) {
+        this.#cacheObject(oid, object);
+        return object;
+      }
+    }
+    return null;
+  }
+
+  async #resolveCommit(repository, reference, packs) {
+    const peeled = (reference || repository.head).replace(/\^\{[^}]*\}$/, "");
+    let oid = OID.test(peeled) ? peeled : null;
+    if (!oid) {
+      const candidates = peeled.startsWith("refs/")
+        ? [peeled]
+        : [`refs/heads/${peeled}`, `refs/tags/${peeled}`];
+      const found = repository.refs.find((ref) => candidates.includes(ref.name));
+      if (found) oid = found.oid;
+    }
+    if (!oid) return null;
+    const seen = new Set();
+    for (let depth = 0; depth < 8; depth++) {
+      if (seen.has(oid)) return null;
+      seen.add(oid);
+      const object = await this.#readObject(oid, 0, packs);
+      if (!object) return null;
+      if (object.type === 1) return { oid, object, commit: parseCommit(oid, object.data) };
+      if (object.type !== 4) return null;
+      oid = parseTagTarget(object.data);
+    }
+    return null;
+  }
+
+  async #directRead(repository, action, url) {
+    const query = url.searchParams;
+    const value = (name) => {
+      const values = query.getAll(name);
+      if (values.length !== 1 || !values[0] || values[0].includes("\0")) {
+        throw new GitHttpError(422, "Invalid Git query");
+      }
+      return values[0];
+    };
+    const limit = (optional = false) => {
+      if (!query.has("limit") && optional) return null;
+      const text = value("limit");
+      if (!/^\d+$/.test(text)) throw new GitHttpError(422, "Invalid Git query");
+      const number = Number(text);
+      if (!Number.isSafeInteger(number)) throw new GitHttpError(422, "Invalid Git query");
+      return number;
+    };
+    const headers = new Headers(NO_STORE);
+    const binary = (data, extra = {}) => {
+      for (const [name, value] of Object.entries(extra)) headers.set(name, value);
+      return new Response(data, { headers });
+    };
+    const packs = repository.packs;
+
+    if (action === "commit") {
+      const oid = value("oid");
+      const object = await this.#readObject(oid, 0, packs);
+      if (!object || object.type !== 1) throw new GitHttpError(404, "Git object not found");
+      return json(parseCommit(oid, object.data));
+    }
+    if (action === "commit-raw") {
+      const oid = value("oid");
+      const object = await this.#readObject(oid, 0, packs);
+      if (!object || object.type !== 1) throw new GitHttpError(404, "Git object not found");
+      if (object.data.length > MAX_DIRECT_COMMIT) throw new GitHttpError(413, "Git commit is too large");
+      return binary(object.data, { "Content-Type": "application/octet-stream", "Content-Length": String(object.data.length) });
+    }
+    if (action === "tree") {
+      const oid = value("oid");
+      const maximum = limit();
+      const object = await this.#readObject(oid, 0, packs);
+      if (!object || object.type !== 2) throw new GitHttpError(404, "Git object not found");
+      const entries = parseTree(object.data);
+      if (entries.length > maximum) throw new GitHttpError(413, "Git tree is too large");
+      if (entries.length <= 256) {
+        for (const entry of entries) {
+          if (!["100644", "100755", "120000"].includes(entry.mode)) continue;
+          const blob = await this.#readObject(entry.hash, 0, packs);
+          if (blob?.type === 3) entry.size = blob.data.length;
+        }
+      }
+      return json(entries);
+    }
+    if (action === "blob") {
+      const oid = value("oid");
+      const maximum = limit();
+      const object = await this.#readObject(oid, 0, packs);
+      if (!object || object.type !== 3) throw new GitHttpError(404, "Git object not found");
+      if (object.data.length > maximum) throw new GitHttpError(413, "Git blob is too large");
+      return binary(object.data, { "Content-Type": "application/octet-stream", "Content-Length": String(object.data.length) });
+    }
+    if (action === "file") {
+      const reference = value("ref");
+      const path = value("path");
+      if (!path || path.startsWith("/") || path.endsWith("/") || path.split("/").some((part) => !part || part === "." || part === "..")) {
+        throw new GitHttpError(404, "Git file not found");
+      }
+      const resolved = await this.#resolveCommit(repository, reference, packs);
+      if (!resolved) throw new GitHttpError(404, "Git file not found");
+      let tree = resolved.commit.tree;
+      let entry;
+      for (const part of path.split("/")) {
+        const object = await this.#readObject(tree, 0, packs);
+        if (!object || object.type !== 2) throw new GitHttpError(404, "Git file not found");
+        entry = parseTree(object.data).find((candidate) => candidate.name === part);
+        if (!entry) throw new GitHttpError(404, "Git file not found");
+        tree = entry.hash;
+      }
+      const object = await this.#readObject(tree, 0, packs);
+      if (!object || object.type !== 3) throw new GitHttpError(404, "Git file not found");
+      const maximum = limit(true);
+      if (maximum === null && object.data.length > MAX_DIRECT_FILE) return null;
+      const length = maximum === null ? object.data.length : Math.min(maximum, object.data.length);
+      return binary(object.data.subarray(0, length), {
+        "Content-Type": "application/octet-stream",
+        "Content-Length": String(length),
+        "X-Shard-Object-Size": String(object.data.length),
+      });
+    }
+    if (action === "log") {
+      const reference = value("ref");
+      const maximum = Math.min(limit(), 1000);
+      const resolved = await this.#resolveCommit(repository, reference, packs);
+      if (!resolved) return json([]);
+      const commits = [];
+      let oid = resolved.oid;
+      while (oid && commits.length < maximum) {
+        const object = await this.#readObject(oid, 0, packs);
+        if (!object || object.type !== 1) break;
+        const commit = parseCommit(oid, object.data);
+        commits.push(commit);
+        oid = commit.parents[0];
+      }
+      return json(commits);
+    }
+    return null;
+  }
+
+  async #directAdvertisement(repository) {
+    const encoder = new TextEncoder();
+    const packet = (text) => {
+      const length = encoder.encode(text).byteLength + 4;
+      if (length > 0xffff) throw new GitHttpError(413, "Git advertisement is too large");
+      return length.toString(16).padStart(4, "0") + text;
+    };
+    const head = repository.refs.find((ref) => ref.name === repository.head);
+    let body = packet("# service=git-upload-pack\n") + "0000";
+    if (head) {
+      body += packet(`${head.oid} HEAD\0` +
+        `multi_ack_detailed side-band-64k thin-pack ofs-delta deepen-since deepen-not ` +
+        `agent=shard/0.3.1 symref=HEAD:${repository.head} object-format=sha1\n`);
+    }
+    const refs = [];
+    for (const ref of repository.refs) {
+      refs.push(packet(`${ref.oid} ${ref.name}\n`));
+      if (ref.name.startsWith("refs/tags/")) {
+        let oid = ref.oid;
+        let peeled = null;
+        for (let depth = 0; depth < 8; depth++) {
+          const object = await this.#readObject(oid, 0, repository.packs);
+          if (!object || object.type !== 4) break;
+          oid = parseTagTarget(object.data);
+          peeled = oid;
+        }
+        if (peeled) refs.push(packet(`${peeled} ${ref.name}^{}\n`));
+      }
+    }
+    body += refs.join("") + "0000";
+    return new Response(body, { headers: {
+      "Cache-Control": "no-store",
+      "Content-Type": "application/x-git-upload-pack-advertisement",
+    } });
   }
 
   async #read(repository, url, request, includeSource) {
@@ -1005,6 +1256,33 @@ export class R2GitRepository extends DurableObject {
         return await this.#standard(repository, url.pathname, request);
       } else if (command && ["ref", "head", "merge"].includes(action) && request.method === "POST" && !url.search) {
         return await this.#mutate(repository, url.pathname, request);
+      } else if (smart && action === "info/refs" && request.method === "GET" &&
+        url.searchParams.get("service") === "git-upload-pack" &&
+        !(request.headers.get("git-protocol") ?? "").toLowerCase().includes("version=2") &&
+        this.#directReads) {
+        try {
+          return await this.#directAdvertisement(repository);
+        } catch (error) {
+          if (error instanceof GitHttpError) throw error;
+          console.error("R2 direct advertisement failed", error?.message);
+        }
+        return await this.#read(repository, url, request, false);
+      } else if (!smart && request.method === "GET" && this.#directReads && DIRECT_ACTIONS.has(action)) {
+        try {
+          const direct = await this.#directRead(repository, action, url);
+          if (direct) {
+            const headers = new Headers(direct.headers);
+            headers.set("X-Shard-R2-Read", "direct");
+            return new Response(direct.body, { status: direct.status, statusText: direct.statusText, headers });
+          }
+        } catch (error) {
+          if (error instanceof GitHttpError) throw error;
+          console.error("R2 direct read failed", error?.message);
+        }
+        const response = await this.#read(repository, url, request, false);
+        const headers = new Headers(response.headers);
+        headers.set("X-Shard-R2-Read", "container");
+        return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
       } else if (request.method === "GET" || smart && action === "git-upload-pack" && request.method === "POST") {
         return await this.#read(repository, url, request, command && ["merge-base", "compare"].includes(action));
       }

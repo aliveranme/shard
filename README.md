@@ -317,7 +317,7 @@ configure the build process separately.
 
 | Type | Settings |
 | --- | --- |
-| Text | `PUBLIC_ORIGIN`, `EMAIL_FROM`, `NATIVE_GIT_ORIGIN`, `NATIVE_GIT_DIRECT_ORIGIN`, `SHARD_REGISTRATION`, `SHARD_LIMIT_PROFILE`, `SHARD_LFS_UPLOAD_MODE`, `SHARD_LFS_MAX_BYTES`, `SHARD_LFS_R2_ENDPOINT`, `SHARD_LFS_R2_BUCKET`, `WEBHOOK_ENDPOINT` and `WEBHOOK_REPO` for the legacy integration |
+| Text | `PUBLIC_ORIGIN`, `EMAIL_FROM`, `NATIVE_GIT_ORIGIN`, `NATIVE_GIT_DIRECT_ORIGIN`, `SHARD_REGISTRATION`, `SHARD_LIMIT_PROFILE`, `SHARD_LFS_UPLOAD_MODE`, `SHARD_LFS_MAX_BYTES`, `SHARD_LFS_R2_ENDPOINT`, `SHARD_LFS_R2_BUCKET`, `SHARD_R2_DIRECT_READS`, `SHARD_GIT_R2_IDLE_MS`, `WEBHOOK_ENDPOINT` and `WEBHOOK_REPO` for the legacy integration |
 | Secret | `NATIVE_GIT_TOKEN`, `SHARD_LFS_R2_ACCESS_KEY_ID`, `SHARD_LFS_R2_SECRET_ACCESS_KEY`, `WEBHOOK_ENCRYPTION_KEY`, `WEBHOOK_SECRET` for the legacy integration |
 
 The shipped `keep_vars: true` preserves dashboard variables across Wrangler
@@ -440,6 +440,13 @@ The `r2` environment keeps regular Git objects on Cloudflare. Containers run
 native Git in disposable workspaces and read existing immutable packs from a
 read-only R2 mount. A repository's Durable Object publishes the pack list and
 refs in one transaction. Forks copy immutable packs to independent R2 keys.
+
+Web reads resolve commits, trees, blobs, files and first-parent history
+directly from the R2 pack and index files. The container handles writes,
+merges, comparisons and Smart HTTP pack transfer. Set
+`SHARD_R2_DIRECT_READS=0` to fall back to the container for every read. The
+Durable Object persists its container session token, and
+`SHARD_GIT_R2_IDLE_MS` keeps an active container for 10 minutes by default.
 
 When at least eight packs are present, background maintenance can combine up
 to 16 small pack/index pairs within a 256 MiB input budget. Git keeps all their
