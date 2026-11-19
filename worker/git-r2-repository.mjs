@@ -4,13 +4,13 @@ import { shard_receive_report, shard_receive_request } from "../src/git_wire.js"
 
 const CONTROL = /^\/v1\/repos\/(shard-[A-Za-z0-9._-]{1,122})(?:\/(log|commit|commit-raw|tree|blob|file|ref|head|merge|merge-base|compare|integrated))?$/;
 const SMART = /^\/v1\/git\/(shard-[A-Za-z0-9._-]{1,122})\.git\/(info\/refs|git-upload-pack|git-receive-pack)$/;
-const STORAGE = /^\/v1\/r2\/(shard-[A-Za-z0-9._-]{1,122})\/(snapshot|multipart|publish)$/;
+const STORAGE = /^\/v1\/r2\/(shard-[A-Za-z0-9._-]{1,122})\/(snapshot|multipart|publish|recovery)$/;
 const ID = /^shard-[A-Za-z0-9._-]{1,122}$/;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const ACTOR = /^[1-9][0-9]{0,18}$/;
 const OID = /^[a-f0-9]{40}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
-const REF = /^refs\/[^\x00-\x20\x7f]{1,4096}$/;
+const UTF8 = new TextEncoder();
 const ZERO = "0".repeat(40);
 const MiB = 1024 ** 2;
 const MAX_INPUT = (5 * 1024 - 5) * 1024 ** 3;
@@ -21,6 +21,13 @@ const COMMAND_LIMIT = 8 * 1024;
 const SESSION_MS = 6 * 24 * 60 * 60_000;
 const WORK_MS = 60 * 60_000;
 const JOB_MS = WORK_MS + 5 * 60_000;
+const COMPACT_AFTER = 15_000;
+const COMPACT_RETRY_AFTER = 5 * 60_000;
+const COMPACT_TIMEOUT = 2 * 60_000;
+const COMPACT_MIN_PACKS = 8;
+const COMPACT_MAX_PACKS = 16;
+const COMPACT_MAX_BYTES = 256 * MiB;
+const RETIRED_PACK_MS = 24 * 60 * 60_000;
 const STARTUP_MS = 45_000;
 const PORT = 8793;
 const NO_STORE = { "Cache-Control": "no-store" };
@@ -97,13 +104,26 @@ function partLength(upload, number) {
     ? Math.min(upload.part_bytes, upload.size - start) : 0;
 }
 
-function validSnapshot(snapshot, prefix) {
-  return typeof snapshot.head === "string" && snapshot.head.startsWith("refs/heads/") && REF.test(snapshot.head)
+function validRef(name) {
+  return typeof name === "string" && name.startsWith("refs/") && name.isWellFormed() && UTF8.encode(name).byteLength <= 4096 &&
+    !/[\x00-\x20\x7f~^:?*\[\\]/.test(name) && !name.includes("..") && !name.includes("@{") && !name.endsWith(".") &&
+    name.split("/").every(part => part && !part.startsWith(".") && !part.endsWith(".lock"));
+}
+
+function validSnapshot(snapshot, validPack) {
+  return validRef(snapshot.head) && snapshot.head.startsWith("refs/heads/")
     && Array.isArray(snapshot.refs) && Array.isArray(snapshot.packs)
-    && snapshot.refs.every(ref => typeof ref?.name === "string" && REF.test(ref.name) && OID.test(ref.oid) && ref.oid !== ZERO)
+    && snapshot.refs.every(ref => validRef(ref?.name) && OID.test(ref.oid) && ref.oid !== ZERO)
     && new Set(snapshot.refs.map(ref => ref.name)).size === snapshot.refs.length
     && new Set(snapshot.packs).size === snapshot.packs.length
-    && snapshot.packs.every(key => typeof key === "string" && key.startsWith(prefix) && /^pack-[a-f0-9]{40}$/.test(key.slice(prefix.length)));
+    && snapshot.packs.every(key => typeof key === "string" && validPack(key));
+}
+
+function packKeyFor(key, id) {
+  const prefix = packPrefix(id);
+  if (!key.startsWith(prefix)) return false;
+  const [job, name, ...extra] = key.slice(prefix.length).split("/");
+  return !extra.length && UUID.test(job) && /^pack-[a-f0-9]{40}$/.test(name);
 }
 
 function changedRefs(before, after, updates, reported) {
@@ -134,6 +154,7 @@ export class R2GitRepository extends DurableObject {
   #s3;
   #writer = false;
   #active = 0;
+  #compacting = false;
   #ready;
   #sessionToken;
 
@@ -146,7 +167,8 @@ export class R2GitRepository extends DurableObject {
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1), id TEXT NOT NULL,
         revision INTEGER NOT NULL, head TEXT NOT NULL, refs TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0
       );
-      CREATE TABLE IF NOT EXISTS packs (oid TEXT PRIMARY KEY, key TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS packs (oid TEXT PRIMARY KEY, key TEXT NOT NULL, bytes INTEGER);
+      CREATE TABLE IF NOT EXISTS retired_packs (key TEXT PRIMARY KEY, expires INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS uploads (
         id TEXT PRIMARY KEY, actor TEXT NOT NULL, digest TEXT NOT NULL, size INTEGER NOT NULL,
         part_bytes INTEGER NOT NULL, expires INTEGER NOT NULL, upload TEXT, report BLOB,
@@ -160,6 +182,11 @@ export class R2GitRepository extends DurableObject {
       );
       CREATE INDEX IF NOT EXISTS work_upload ON work(upload, revision);
     `);
+    if (![...this.#sql.exec("PRAGMA table_info(packs)")].some(column => column.name === "bytes")) {
+      this.#sql.exec("ALTER TABLE packs ADD COLUMN bytes INTEGER");
+    }
+    this.#sql.exec("CREATE INDEX IF NOT EXISTS packs_by_size ON packs (bytes, oid)");
+    this.#sql.exec("CREATE INDEX IF NOT EXISTS retired_packs_by_expiry ON retired_packs (expires)");
   }
 
   #one(query, ...params) {
@@ -184,20 +211,22 @@ export class R2GitRepository extends DurableObject {
   #refsFor(snapshot, publishedBytes = 0) {
     const refs = JSON.stringify(snapshot.refs);
     const paths = snapshot.packs.reduce((bytes, key) => bytes + key.length + 3, publishedBytes);
-    if (new TextEncoder().encode(refs + snapshot.head).byteLength + paths + 512 > MAX_INFO) {
+    if (UTF8.encode(refs + JSON.stringify(snapshot.head)).byteLength + paths + 512 > MAX_INFO) {
       throw new GitHttpError(413, "Git refs and pack manifest exceed the workspace metadata limit");
     }
     return refs;
   }
 
-  #insert(id, snapshot) {
-    this.#sql.exec("INSERT INTO repository (singleton, id, revision, head, refs) VALUES (1, ?, 1, ?, ?)",
-      id, snapshot.head, this.#refsFor(snapshot));
-    this.#addPacks(snapshot.packs);
+  #insert(id, snapshot, revision = 1) {
+    this.#sql.exec("INSERT INTO repository (singleton, id, revision, head, refs) VALUES (1, ?, ?, ?, ?)",
+      id, revision, snapshot.head, this.#refsFor(snapshot));
+    this.#addPacks(snapshot.packs, snapshot.packSizes);
   }
 
-  #addPacks(packs) {
-    for (const key of packs) this.#sql.exec("INSERT INTO packs (oid, key) VALUES (?, ?)", key.slice(-40), key);
+  #addPacks(packs, sizes = []) {
+    for (const [index, key] of packs.entries()) {
+      this.#sql.exec("INSERT INTO packs (oid, key, bytes) VALUES (?, ?, ?)", key.slice(-40), key, sizes[index] ?? null);
+    }
   }
 
   #update(before, after) {
@@ -206,7 +235,53 @@ export class R2GitRepository extends DurableObject {
     const { length } = this.#one("SELECT COALESCE(SUM(length(key) + 3), 0) AS length FROM packs");
     this.#sql.exec("UPDATE repository SET revision = revision + 1, head = ?, refs = ? WHERE singleton = 1",
       after.head, this.#refsFor(after, length));
-    this.#addPacks(after.packs);
+    this.#addPacks(after.packs, after.packSizes);
+  }
+
+  async #restore(id, request) {
+    return this.#lock(async () => {
+      const manifest = await control(request.body, MAX_INFO);
+      if (manifest.format !== 1 || manifest.id !== id || !Number.isSafeInteger(manifest.revision) ||
+          manifest.revision < 1 || manifest.revision === Number.MAX_SAFE_INTEGER ||
+          !validSnapshot(manifest, key => packKeyFor(key, id))) return empty(422);
+      if (new Set(manifest.packs.map(key => key.slice(-40))).size !== manifest.packs.length ||
+          (manifest.refs.length && !manifest.packs.length)) return empty(422);
+      const existing = this.#current();
+      if (existing) {
+        if (existing.deleted) return empty(409);
+        const current = this.#repository();
+        const keys = new Set(current.packs);
+        if (current.revision === manifest.revision && current.head === manifest.head &&
+            JSON.stringify(current.refs) === JSON.stringify(manifest.refs) && keys.size === manifest.packs.length &&
+            manifest.packs.every(key => keys.has(key))) return empty(204);
+        return empty(409);
+      }
+
+      // Validate every pack/index pair; a failed preflight leaves the object empty.
+      const packSizes = {};
+      const indexSizes = {};
+      const expected = new Set(manifest.packs);
+      let needed = expected.size * 2;
+      let cursor;
+      while (needed) {
+        const page = await this.#bucket.list({ prefix: packPrefix(id), limit: 1000, cursor });
+        for (const { key, size } of page.objects) {
+          const base = key.slice(0, key.lastIndexOf("."));
+          if (!expected.has(base)) continue;
+          if (key.endsWith(".pack") && size >= 32) { packSizes[base] = size; needed--; }
+          if (key.endsWith(".idx") && size > 0) { indexSizes[base] = size; needed--; }
+        }
+        if (!page.truncated) break;
+        cursor = page.cursor;
+      }
+      if (needed) {
+        return json({ message: "Restore the Git pack and index objects before importing the manifest" }, 422);
+      }
+      const packBytes = manifest.packs.map(key => packSizes[key] + indexSizes[key]);
+      this.ctx.storage.transactionSync(() => this.#insert(id, { ...manifest, packSizes: packBytes }, manifest.revision));
+      this.ctx.waitUntil(this.#arm());
+      return empty(201);
+    });
   }
 
   #inputLimit() {
@@ -229,12 +304,13 @@ export class R2GitRepository extends DurableObject {
     }
   }
 
-  async #arm() {
+  async #arm(compactDelay = COMPACT_AFTER) {
     const { next } = this.#one(`SELECT MIN(expires) AS next FROM (
-      SELECT expires FROM uploads UNION ALL SELECT expires FROM work
+      SELECT expires FROM uploads UNION ALL SELECT expires FROM work UNION ALL SELECT expires FROM retired_packs
     )`);
-    if (next === null) return;
-    const due = Math.max(next, Date.now() + 1_000);
+    const compact = !this.#compacting && this.#compactionDue() ? Date.now() + compactDelay : Infinity;
+    if (next === null && compact === Infinity) return;
+    const due = Math.max(Math.min(next ?? Infinity, compact), Date.now() + 1_000);
     const existing = await this.ctx.storage.getAlarm();
     if (existing === null || due < existing) await this.ctx.storage.setAlarm(due);
   }
@@ -273,6 +349,83 @@ export class R2GitRepository extends DurableObject {
     this.#sql.exec("DELETE FROM uploads WHERE id = ?", id);
   }
 
+  #preparedWrite(revision) {
+    return this.#one("SELECT 1 FROM work WHERE revision = ? AND published = 0 AND report IS NOT NULL AND expires > ? LIMIT 1",
+      revision, Date.now());
+  }
+
+  #compactionDue() {
+    const { count } = this.#one("SELECT COUNT(*) AS count FROM (SELECT 1 FROM packs LIMIT ?)", COMPACT_MIN_PACKS);
+    const repo = this.#current();
+    if (count < COMPACT_MIN_PACKS || repo?.deleted !== 0 || this.#preparedWrite(repo.revision)) return false;
+    const { small } = this.#one("SELECT COUNT(*) AS small FROM (SELECT 1 FROM packs WHERE bytes IS NULL OR bytes <= ? LIMIT 2)",
+      COMPACT_MAX_BYTES / 2);
+    return small === 2;
+  }
+
+  async #compactPacks() {
+    if (this.#compacting || this.#writer || !this.#compactionDue()) return;
+    this.#compacting = true;
+    try {
+      const repository = this.#current();
+      for (const { key } of [...this.#sql.exec("SELECT key FROM packs WHERE bytes IS NULL LIMIT 32")]) {
+        const [pack, index] = await Promise.all([this.#bucket.head(`${key}.pack`), this.#bucket.head(`${key}.idx`)]);
+        if (!pack || !index) throw new Error("Published Git pack or index is unavailable");
+        this.#sql.exec("UPDATE packs SET bytes = ? WHERE key = ?", pack.size + index.size, key);
+      }
+      const keys = [];
+      let bytes = 0;
+      const rows = this.#sql.exec("SELECT key, bytes FROM packs WHERE bytes <= ? ORDER BY bytes, oid LIMIT ?",
+        COMPACT_MAX_BYTES / 2, COMPACT_MAX_PACKS);
+      for (const pack of rows) {
+        bytes += pack.bytes;
+        if (bytes > COMPACT_MAX_BYTES) break;
+        keys.push(pack.key);
+      }
+      if (keys.length < 2) return;
+
+      const { id, revision, head } = repository;
+      const job = await this.#reserve(id, revision);
+      let workspace;
+      let persisted = false;
+      try {
+        workspace = await this.#workspace(job, [{ id, head, refs: [], packs: keys }]);
+        const compacted = await workspace.fetch(`/compact/${id}`, { method: "POST", payload: { packs: keys }, timeout: COMPACT_TIMEOUT });
+        await compacted.body?.cancel();
+        if (!compacted.ok) throw new Error(`Git pack compaction failed (HTTP ${compacted.status})`);
+        const snapshot = await this.#capture(workspace, { id, packs: [] }, job, COMPACT_TIMEOUT);
+        if (snapshot.packs.length !== 1) throw new Error("Git compaction did not produce one pack");
+        const [output] = snapshot.packs;
+
+        // A prepared push already validated against this revision. Let it publish first.
+        const live = this.#current();
+        if (this.#writer || !live || live.deleted || live.revision !== revision || this.#preparedWrite(revision)) return;
+        const existing = this.#one("SELECT key FROM packs WHERE oid = ?", output.slice(-40));
+        // Reuse an identical active pack when Git produces one.
+        const keep = existing?.key;
+        this.ctx.storage.transactionSync(() => {
+          const expires = Date.now() + RETIRED_PACK_MS;
+          for (const key of keys) {
+            if (key === keep) continue;
+            this.#sql.exec("DELETE FROM packs WHERE oid = ?", key.slice(-40));
+            this.#sql.exec("INSERT INTO retired_packs (key, expires) VALUES (?, ?)", key, expires);
+          }
+          if (!keep) {
+            this.#addPacks(snapshot.packs, snapshot.packSizes);
+            this.#sql.exec("DELETE FROM work WHERE id = ?", job);
+          }
+          this.#sql.exec("UPDATE repository SET revision = revision + 1 WHERE singleton = 1");
+        });
+        persisted = !keep;
+      } finally {
+        await workspace?.close();
+        if (!persisted) await this.#dropWork({ id: job, repo: id, published: false });
+      }
+    } finally {
+      this.#compacting = false;
+    }
+  }
+
   async alarm() {
     if (this.#writer) {
       await this.ctx.storage.setAlarm(Date.now() + 30_000);
@@ -289,8 +442,20 @@ export class R2GitRepository extends DurableObject {
           await this.#dropUpload(upload.id, upload.report === null ? upload.upload : null, repo.id);
         }
       }
-      await this.#arm();
+      const retired = [...this.#sql.exec("SELECT key FROM retired_packs WHERE expires <= ? ORDER BY expires LIMIT 32", now)];
+      if (retired.length) {
+        await this.#bucket.delete(retired.flatMap(({ key }) => [`${key}.pack`, `${key}.idx`]));
+        for (const { key } of retired) this.#sql.exec("DELETE FROM retired_packs WHERE key = ?", key);
+      }
     });
+    let delay = COMPACT_AFTER;
+    try {
+      await this.#compactPacks();
+    } catch (error) {
+      delay = COMPACT_RETRY_AFTER;
+      console.error("R2 Git pack compaction failed", error?.message);
+    }
+    await this.#arm(delay);
   }
 
   async #startContainer() {
@@ -392,17 +557,21 @@ export class R2GitRepository extends DurableObject {
     return control(response.body, MAX_INFO, 502);
   }
 
-  async #capture(workspace, repository, job) {
+  async #capture(workspace, repository, job, timeout) {
     const id = repository.id;
-    const response = await workspace.fetch(`/capture/${id}`, { method: "POST" });
+    const response = await workspace.fetch(`/capture/${id}`, { method: "POST", timeout });
     if (!response.ok) {
       await response.body?.cancel();
       throw new GitHttpError(response.status === 413 ? 413 : 502, "Could not persist Git objects");
     }
     const captured = await control(response.body, MAX_INFO, 502);
-    if (!validSnapshot(captured, packPrefix(id, job))) throw new Error("Invalid Git container snapshot");
+    const prefix = packPrefix(id, job);
+    if (!validSnapshot(captured, key => key.startsWith(prefix) && /^pack-[a-f0-9]{40}$/.test(key.slice(prefix.length)))) {
+      throw new Error("Invalid Git container snapshot");
+    }
     const old = new Set(repository.packs.map(key => key.slice(-40)));
     const unique = [];
+    const packSizes = [];
     for (const key of captured.packs) {
       const oid = key.slice(-40);
       if (old.has(oid)) {
@@ -412,9 +581,11 @@ export class R2GitRepository extends DurableObject {
         if (!pack || !idx || pack.size < 32 || idx.size === 0) throw new Error("Git container did not persist a pack and index");
         old.add(oid);
         unique.push(key);
+        packSizes.push(pack.size + idx.size);
       }
     }
     captured.packs = unique;
+    captured.packSizes = packSizes;
     return captured;
   }
 
@@ -433,16 +604,22 @@ export class R2GitRepository extends DurableObject {
       if (payload.kind === "fork") {
         if (typeof payload.source !== "string" || payload.source === id || payload.credential !== undefined) return empty(422);
         const source = await this.#snapshot(payload.source);
-        next = { ...source, id, packs: [] };
+        const deadline = Date.now() + WORK_MS;
+        next = { ...source, id, packs: [], packSizes: [] };
         for (const key of source.packs) {
           const target = `${packPrefix(id, job)}pack-${key.slice(-40)}`;
+          let bytes = 0;
           for (const extension of [".pack", ".idx"]) {
             const object = await this.#bucket.head(key + extension);
-            if (!object || !await this.#signer().copy(key + extension, target + extension, object)) {
+            const remaining = deadline - Date.now();
+            if (remaining <= 0) throw new GitHttpError(504, "Git fork exceeded its copy time limit");
+            if (!object || !await this.#signer().copy(key + extension, target + extension, object, Math.min(remaining, WORK_MS / 2))) {
               throw new GitHttpError(502, "Could not copy an existing Git pack");
             }
+            bytes += object.size;
           }
           next.packs.push(target);
+          next.packSizes.push(bytes);
         }
       } else {
         const workspace = await this.#workspace(job, []);
@@ -460,13 +637,14 @@ export class R2GitRepository extends DurableObject {
         this.#insert(id, next);
         this.#sql.exec("DELETE FROM work WHERE id = ?", job);
       });
+      this.ctx.waitUntil(this.#arm());
       return json(this.#metadata(next), 201);
     });
   }
 
   async #delete(id) {
     return this.#lock(async () => {
-      if (this.#active) return empty(202);
+      if (this.#active || this.#compacting) return empty(202);
       this.#sql.exec("INSERT INTO repository (singleton, id, revision, head, refs, deleted) VALUES (1, ?, 0, '', '[]', 1) "
         + "ON CONFLICT (singleton) DO UPDATE SET deleted = 1", id);
       const uploads = [...this.#sql.exec("SELECT id, upload, report FROM uploads LIMIT 16")];
@@ -477,7 +655,7 @@ export class R2GitRepository extends DurableObject {
       const incoming = await this.#removePage(`git-incoming/${id}/`);
       if (!packs || !incoming || this.#one("SELECT id FROM uploads LIMIT 1")) return empty(202);
       this.ctx.storage.transactionSync(() => {
-        this.#sql.exec("DELETE FROM work; DELETE FROM packs;");
+        this.#sql.exec("DELETE FROM work; DELETE FROM packs; DELETE FROM retired_packs;");
         this.#sql.exec("UPDATE repository SET head = '', refs = '[]' WHERE singleton = 1");
       });
       return empty(204);
@@ -545,6 +723,7 @@ export class R2GitRepository extends DurableObject {
           this.#update(repository.revision, candidate);
           this.#sql.exec("DELETE FROM work WHERE id = ?", job);
         });
+        this.ctx.waitUntil(this.#arm());
         return new Response(reply, { status: response.status, headers: response.headers });
       } finally {
         await workspace.close();
@@ -660,6 +839,7 @@ export class R2GitRepository extends DurableObject {
       this.#sql.exec("UPDATE work SET published = 1, candidate = NULL WHERE id = ?", job.id);
       if (upload) this.#sql.exec("UPDATE uploads SET report = ? WHERE id = ?", job.report, upload.id);
     });
+    this.ctx.waitUntil(this.#arm());
     if (upload) this.ctx.waitUntil(this.#deleteStaged(job.repo, upload.id));
     return result(job.report);
   }
@@ -809,6 +989,11 @@ export class R2GitRepository extends DurableObject {
       }
       if (internal) {
         if (action === "snapshot" && request.method === "GET") return json(this.#repository());
+        if (action === "recovery") {
+          if (request.method === "GET") return json({ format: 1, ...this.#repository() });
+          if (request.method === "PUT") return await this.#restore(id, request);
+          return empty(404);
+        }
         const repo = this.#current();
         if (!repo || repo.deleted) return empty(404);
         if (action === "publish" && request.method === "POST") return await this.#publish(request);

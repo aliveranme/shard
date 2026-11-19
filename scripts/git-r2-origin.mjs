@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { once } from "node:events";
 import { createReadStream } from "node:fs";
-import { appendFile, mkdir, mkdtemp, readdir, realpath, rm, rmdir, statfs, symlink, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readdir, realpath, rm, rmdir, stat, statfs, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -17,7 +17,7 @@ const PORT = 8793;
 const ID = "shard-[A-Za-z0-9._-]{1,245}";
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 const WORKSPACE_ROUTE = new RegExp(`^/v1/workspaces/(${UUID})(/.*)?$`);
-const CONTROL_ROUTE = new RegExp(`^/(receive|capture)/(${ID})$`);
+const CONTROL_ROUTE = new RegExp(`^/(receive|capture|compact)/(${ID})$`);
 const REPO_ID = new RegExp(`^${ID}$`);
 const PACK_KEY = new RegExp(`^git-packs/(${ID})/${UUID}/pack-[0-9a-f]{40}$`);
 const INCOMING_KEY = new RegExp(`^git-incoming/(${ID})/${UUID}$`);
@@ -25,6 +25,7 @@ const PACK_FILE = /^pack-[0-9a-f]{40}\.pack$/;
 const OID = /^(?!0{40}$)[0-9a-f]{40}$/;
 const MAX_CONTROL_BYTES = 4 * 1024 * 1024;
 const MAX_REPOSITORIES = 8;
+const MAX_COMPACT_BYTES = 256 * 1024 * 1024;
 const FUSE_SUPER_MAGIC = 0x65735546;
 const UTF8 = new TextDecoder("utf-8", { fatal: true });
 
@@ -84,6 +85,31 @@ async function hydrateRepo(cwd, mount, { id, head, refs, packs }, signal) {
     }
   }
   await writeFile(join(repo, "objects", "info", "alternates"), `${alternate}\n`);
+}
+
+async function compact(workspace, id, mount, req, signal) {
+  const { packs } = await readBody(req, MAX_CONTROL_BYTES);
+  if (!Array.isArray(packs) || packs.length < 2 || packs.length > 16 ||
+      packs.some(key => typeof key !== "string" || PACK_KEY.exec(key)?.[1] !== id)) throw new HttpError(422);
+  const cwd = workspace.directory;
+  const repo = join(cwd, `${id}.git`);
+  const disk = await statfs(repo);
+  if (disk.bavail * disk.bsize < 2 * MAX_COMPACT_BYTES) throw new HttpError(507);
+
+  let bytes = 0;
+  for (const key of packs) {
+    for (const suffix of [".pack", ".idx"]) {
+      const file = await stat(join(mount, key + suffix));
+      bytes += file.size;
+      if (!file.isFile() || bytes > MAX_COMPACT_BYTES) throw new HttpError(413);
+    }
+  }
+  // stdin-packs includes every object, including commits no current ref reaches.
+  const input = packs.map(key => `${basename(key)}.pack\n`).join("");
+  const base = join(repo, "objects", "pack", "pack");
+  const output = await gitOutput("pack-objects", ["--stdin-packs", "--window=0", "--delta-base-offset", base],
+    { cwd, repo, input, signal, maxBytes: 128 });
+  if (!OID.test(UTF8.decode(output).trim())) throw new Error("Git pack compaction produced no pack");
 }
 
 async function capture(workspace, job, id, upload, signal) {
@@ -253,6 +279,10 @@ export async function createR2GitOrigin({ directory, mount, token, importHosts, 
       if (control) {
         const [, action, id] = control;
         if (action === "receive") return await receiveStaged(workspace, id, mount, req, res, signal);
+        if (action === "compact") {
+          await compact(workspace, id, mount, req, signal);
+          return sendStatus(res, 204);
+        }
         const body = await capture(workspace, job, id, upload, signal);
         res.setHeader("Content-Type", "application/json; charset=utf-8");
         res.end(body);

@@ -123,6 +123,8 @@ mise exec -- npm run deploy:paid -- --env r2 --secrets-file .env.deploy.r2
 
 标准 Git HTTPS 可直接使用。大 push 安装发布包中的 `git-remote-shard`，为 checkout 设置带 `shard::` 前缀的 push URL。分片传到私有 R2 暂存对象，续传列出 R2 已收到的分片。会话和最终 Git 回执保留六天。使用 `git remote-shard --list` 和 `--resume` 配合原 HTTPS 地址，恢复原来暂存的请求。分别给 `git-incoming/` 和 `lfs-incoming/` 设置七天过期和中止未完成分片上传规则。[完整命令和续传说明](../README.md#large-repositories-on-cloudflare-r2)
 
+迁移或灾难恢复时一起保存 D1、DO 的 refs 和 pack 清单、Git pack 索引及 LFS 对象。仓库有至少 8 个 pack 时，后台可在 256 MiB 预算内整理较小的 pack 和索引。旧对象会保留 24 小时，以便已有读请求完成。[R2 Git 配套备份与恢复](../README.md#r2-git-backup-and-restore)
+
 ### 共用的 LFS 配置
 
 `proxy` 只需私有的 `LFS_OBJECTS` 绑定。手工启用 `r2-direct` 或 `r2-multipart` 时还要设置 `SHARD_LFS_UPLOAD_MODE`、`SHARD_LFS_R2_BUCKET`、`SHARD_LFS_R2_ENDPOINT` 和上文的两项 R2 Secret。桶名与绑定一致，endpoint 与桶的账号、辖区一致。给 `lfs-incoming/` 设置 7 天过期和中止未完成 multipart 的规则。`r2-multipart` 的上传客户端需要在各 Git checkout 配置随项目分发的 `scripts/git-lfs-r2-multipart.mjs`。三种模式的下载都使用标准 Git LFS。[LFS 变量、生命周期规则和客户端命令](../README.md#git-lfs-upload-modes)

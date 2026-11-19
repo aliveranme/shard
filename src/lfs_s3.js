@@ -326,8 +326,7 @@ export function gitR2S3(env) {
         marker = next;
       }
     },
-    async copy(from, to, source) {
-      const timeout = 30 * 60_000;
+    async copy(from, to, source, timeout) {
       const signal = AbortSignal.timeout(timeout);
       const copySource = objectPath(bucket, from);
       if (source.size > maxPartBytes) {

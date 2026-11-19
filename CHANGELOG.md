@@ -4,6 +4,7 @@
 
 - Paid LFS multipart defaults to R2's single-PUT size. Raising the limit above it requires an explicit `SHARD_LFS_MAX_BYTES` value. Existing published objects remain readable.
 - Managed CD restores the previous active Worker version after an owned production publish or verification fails. It confirms the restored version and runs its release Workflow when available.
+- R2 Git compacts small packs in the background and preserves objects used by historical reviews. The recovery helper exports and restores Durable Object manifests alongside D1 and R2 backups.
 
 ## 0.3.0
 

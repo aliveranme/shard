@@ -38,6 +38,10 @@ permission checks.
 refs and pack manifests atomically after a disposable Git container verifies
 the input and persists the new objects. Standard HTTPS and the resumable Git
 remote helper use the same receive and publication path.
+Bounded compaction rewrites complete pack contents and swaps the manifest
+against the current revision. Replaced pairs have a 24-hour grace period.
+R2 recovery pairs the manifest with D1 and both private buckets so historical
+review objects survive a restore. [R2 Git recovery](README.md#r2-git-backup-and-restore)
 [Deployment guide](README.md#deploy-to-cloudflare)
 [Deployment configurations and capacity analysis](docs/deployment-capacity.md)
 

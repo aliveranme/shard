@@ -2,14 +2,16 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { once } from "node:events";
-import { chmod, copyFile, mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, copyFile, cp, mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { test } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { experimental_readRawConfig, unstable_startWorker } from "wrangler";
+import recoveryWorker from "../worker/git-r2-recovery.mjs";
 
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -21,6 +23,16 @@ async function expect(response, status) {
   const body = await response.text();
   assert.equal(response.status, status, body.slice(0, 1024));
   return body;
+}
+
+async function waitFor(operation, timeout = 60_000) {
+  const deadline = Date.now() + timeout;
+  do {
+    const value = await operation();
+    if (value) return value;
+    await delay(400);
+  } while (Date.now() < deadline);
+  assert.fail("Timed out waiting for Git storage maintenance");
 }
 
 // Miniflare implements signed UploadPart and completion but returns 501 for
@@ -131,7 +143,7 @@ function browser(base) {
   };
 }
 
-test("R2 Git resumes signed multipart uploads across restarts and serves stock Git", {
+test("R2 Git resumes multipart, compacts live packs, and restores historical reviews and forks", {
   skip: !process.env.SHARD_TEST_R2_CONTAINER && "requires a local FUSE-enabled Docker engine",
   timeout: 420_000,
 }, async (t) => {
@@ -180,9 +192,9 @@ test("R2 Git resumes signed multipart uploads across restarts and serves stock G
     ].join("\n"));
     await exec(process.execPath, [wrangler, "d1", "migrations", "apply", "DB", "--local", "--persist-to", persistence,
       "--config", configPath], { cwd: root, env, timeout: 60_000 });
-    const start = async (port = 0) => {
+    const start = async (port = 0, data = persistence) => {
       worker = await unstable_startWorker({ config: configPath, dev: {
-        remote: false, watch: false, enableContainers: true, persist: persistence,
+        remote: false, watch: false, enableContainers: true, persist: data,
         containerBuildId: randomBytes(4).toString("hex"),
         routeRequestsByRoutes: true, inferOriginFromRoutes: false,
         server: { hostname: "127.0.0.1", port }, inspector: false, logLevel: "log",
@@ -392,6 +404,155 @@ test("R2 Git resumes signed multipart uploads across restarts and serves stock G
     await assert.rejects(stat(failedSpoolPath), { code: "ENOENT" });
     assert.equal(JSON.parse(await expect(await post({ ...badStart, lookup: true }), 200)), null);
     assert.equal((await git("ls-remote", "origin", tag)).stdout.trim(), `${tagOid}\t${tag}`);
+
+    await git("switch", "-c", "discarded-review");
+    await writeFile(join(work, "recovery.txt"), "A historical line retained after compaction.\n");
+    await git("add", "recovery.txt");
+    await git("commit", "-m", "Review this distinct Git object");
+    const oldCommit = (await git("rev-parse", "HEAD")).stdout.trim();
+    await git("push", remote, "discarded-review");
+    const pull = await view(`${created.location}/pulls/new`, { title: "Preserve review history",
+      base_branch: "main", head_branch: "discarded-review" });
+    assert.equal(pull.status, 302, pull.text);
+    const review = await view(`${pull.location}/reviews`, { decision: "line_comment", comparison_version: "1",
+      path: "recovery.txt", line: "new:1", body: "Pin the object outside all current refs." });
+    assert.equal(review.status, 302, review.text);
+    const reviewBody = (await view(review.location)).text;
+    const historical = [...reviewBody.matchAll(/href="([^\"]+)"/g)]
+      .map(([, link]) => link.replaceAll("&amp;", "&"))
+      .find(link => link.includes("review=") && link.includes("file=recovery.txt"));
+    assert.ok(historical);
+    const historyPath = new URL(historical, baseUrl + pull.location);
+    const checkHistory = async () => {
+      const contents = await view(historyPath.pathname + historyPath.search);
+      assert.equal(contents.status, 200);
+      assert.match(contents.text, /A historical line retained after compaction/);
+      assert.match(contents.text, new RegExp(oldCommit));
+    };
+    await git("switch", "main");
+    await git("push", remote, ":refs/heads/discarded-review");
+
+    const operatorToken = randomBytes(32).toString("hex");
+    const recovery = async (path, options = {}, credential = operatorToken) => recoveryWorker.fetch(
+      new Request(`http://127.0.0.1${path}`, { ...options, headers: { Authorization: `Bearer ${credential}` } }), {
+        DB: await mf.getD1Database("DB"), GIT_R2_REPOS: await mf.getDurableObjectNamespace("GIT_R2_REPOS"),
+        SHARD_R2_RECOVERY_TOKEN: operatorToken,
+      });
+    const manifestPath = `/repositories/${id}`;
+    const readManifest = async () => JSON.parse(await expect(await recovery(manifestPath), 200));
+    await expect(await recovery(manifestPath, {}, "invalid-token"), 401);
+    await expect(await recovery("/repositories/shard-missing"), 404);
+    let beforeCompact = await readManifest();
+    for (let index = 0; beforeCompact.packs.length < 8 && index < 10; index++) {
+      await writeFile(join(work, "notes.txt"), `Pack generation ${index}\n`);
+      await git("add", "notes.txt");
+      await git("commit", "-m", `Small push ${index}`);
+      await git("push", remote, "main");
+      beforeCompact = await readManifest();
+    }
+    assert.ok(beforeCompact.packs.length >= 8);
+    const latest = (await git("rev-parse", "HEAD")).stdout.trim();
+    const concurrentRef = "refs/heads/during-compaction";
+    const raced = Promise.withResolvers();
+    relay.afterNextIndex(async () => {
+      try {
+        assert.deepEqual(await readManifest(), beforeCompact);
+        await git("push", remote, `${latest}:${concurrentRef}`);
+        raced.resolve();
+      } catch (error) {
+        raced.reject(error);
+        throw error;
+      }
+    });
+    let raceTimer;
+    try {
+      await Promise.race([raced.promise, new Promise((_, reject) => {
+        raceTimer = setTimeout(() => reject(new Error("Pack compaction did not start")), 60_000);
+      })]);
+    } finally {
+      clearTimeout(raceTimer);
+    }
+    const compacted = await waitFor(async () => {
+      const current = await readManifest();
+      return current.packs.length < beforeCompact.packs.length ? current : null;
+    });
+    assert.ok(compacted.refs.some(ref => ref.name === concurrentRef && ref.oid === latest));
+    assert.ok(!compacted.refs.some(ref => ref.oid === oldCommit));
+    assert.ok(compacted.packs.some(key => !beforeCompact.packs.includes(key)));
+    for (const key of beforeCompact.packs) assert.ok(await bucket.head(`${key}.idx`));
+    await checkHistory();
+
+    const lfsBytes = Buffer.from("The original bytes and the fork have separate LFS keys.\n");
+    const object = { oid: createHash("sha256").update(lfsBytes).digest("hex"), size: lfsBytes.length };
+    const lfs = async (repo, operation) => {
+      const response = await fetch(`${repo}/info/lfs/objects/batch`, {
+        method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/vnd.git-lfs+json" },
+        body: JSON.stringify({ operation, transfers: ["basic"], objects: [object] }),
+      });
+      return JSON.parse(await expect(response, 200)).objects[0].actions[operation];
+    };
+    const upload = await lfs(remote, "upload");
+    await expect(await fetch(upload.href, { method: "PUT", headers: { ...upload.header, Authorization: `Bearer ${token}` },
+      body: lfsBytes }), 200);
+    const forkPath = "/owner/large-fork";
+    let fork = await view(`${created.location}/fork`, { name: "large-fork" });
+    assert.equal(fork.status, 302, fork.text);
+    if (fork.location !== forkPath) {
+      const job = fork.location;
+      assert.match(job, /^\/user\/settings\/repository-copies\/\d+$/);
+      fork = await waitFor(async () => {
+        const status = await view(job);
+        return status.status === 202 ? null : status;
+      });
+    }
+    assert.equal(fork.location, forkPath, fork.text);
+
+    const { repositories } = JSON.parse(await expect(await recovery("/repositories"), 200));
+    assert.equal(repositories.length, 2);
+    const manifests = new Map();
+    for (const storageId of repositories) {
+      const path = `/repositories/${storageId}`;
+      manifests.set(path, JSON.parse(await expect(await recovery(path), 200)));
+    }
+    const restoreManifest = (path, manifest) => recovery(path, { method: "PUT", body: JSON.stringify(manifest) });
+    await expect(await restoreManifest(manifestPath, { ...compacted, revision: compacted.revision - 1 }), 409);
+    await worker.dispose();
+
+    const restored = join(temporary, "restored");
+    await mkdir(join(restored, "v3"), { recursive: true });
+    for (const service of ["d1", "r2"]) {
+      await cp(join(persistence, "v3", service), join(restored, "v3", service), { recursive: true });
+    }
+    await start(port, restored);
+    const restoredBucket = await mf.getR2Bucket("GIT_PACKS");
+    const sourceManifest = manifests.get(manifestPath);
+    await expect(await restoreManifest(manifestPath, { ...sourceManifest, head: "refs/heads/.bad" }), 422);
+    await expect(await recovery(manifestPath), 404);
+    const missingIndex = `${sourceManifest.packs[0]}.idx`;
+    const indexBytes = await (await restoredBucket.get(missingIndex)).arrayBuffer();
+    await restoredBucket.delete(missingIndex);
+    await expect(await restoreManifest(manifestPath, sourceManifest), 422);
+    await expect(await recovery(manifestPath), 404);
+    await restoredBucket.put(missingIndex, indexBytes);
+    for (const [path, manifest] of manifests) {
+      await expect(await restoreManifest(path, manifest), 201);
+      await expect(await restoreManifest(path, manifest), 204);
+      assert.deepEqual(JSON.parse(await expect(await recovery(path), 200)), manifest);
+    }
+    await checkHistory();
+
+    for (const path of [created.location, forkPath]) {
+      const address = `${baseUrl}${path}.git`;
+      await expect(await fetch(`${address}/info/refs?service=git-upload-pack`), 401);
+      const destination = join(temporary, `restored-${path.split("/").at(-1)}`);
+      await git("--config-env=http.extraHeader=SHARD_TEST_GIT_AUTH", "clone", address, destination);
+      assert.equal((await git("-C", destination, "rev-parse", "HEAD")).stdout.trim(), latest);
+      await git("-C", destination, "fsck", "--full");
+      const download = await lfs(address, "download");
+      const reply = await fetch(download.href, { headers: { Authorization: `Bearer ${readToken}` } });
+      assert.equal(reply.status, 200);
+      assert.deepEqual(Buffer.from(await reply.arrayBuffer()), lfsBytes);
+    }
   } catch (error) {
     t.diagnostic(`R2 relay errors: ${relay.errors.join(", ") || "none"}`);
     throw error;

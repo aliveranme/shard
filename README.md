@@ -413,6 +413,13 @@ native Git in disposable workspaces and read existing immutable packs from a
 read-only R2 mount. A repository's Durable Object publishes the pack list and
 refs in one transaction. Forks copy immutable packs to independent R2 keys.
 
+When at least eight packs are present, background maintenance can combine up
+to 16 small pack/index pairs within a 256 MiB input budget. Git keeps all their
+objects, including commits outside current refs. The Durable Object switches
+the manifest only after the new pair is stored and the repository revision
+still matches. Replaced objects stay in R2 for 24 hours for older readers.
+Large packs still count toward the workspace limit. [R2 Git backup](#r2-git-backup-and-restore)
+
 1. Enable Workers Paid and Containers. In `env.r2`, set a separate Worker, D1
    database, and private R2 buckets `GIT_PACKS` and `LFS_OBJECTS`. Build the
    image using Docker.
@@ -1018,6 +1025,113 @@ repository and a fork with LFS and verify that saved PR revisions also open
 before resuming traffic. [R2 with rclone](https://developers.cloudflare.com/r2/examples/rclone/)
 
 [D1 export and import](https://developers.cloudflare.com/d1/best-practices/import-export-data/) · [D1 Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/)
+
+### R2 Git backup and restore
+
+Back up D1, each R2 Git repository's manifest, and both R2 buckets from the
+same quiet period. Pause ingress writes and drain scheduled cleanup and copy
+jobs. Use a new private backup directory and save the D1 SQL export with
+`wrangler d1 export DB --remote --env r2 --output "$SHARD_BACKUP/shard.sql"`.
+Use the `lfs/` backup commands above.
+
+Run the [recovery Worker](worker/git-r2-recovery.mjs) in a loopback Wrangler
+remote development session. It binds to the deployed Shard Worker in the
+same account. Keep the helper configuration and `.dev.vars` in a private
+directory. Copy `worker/git-r2-recovery.mjs` there and use the following
+configuration. Replace the database ID, database name and Worker script name
+with your source instance's values.
+
+```jsonc
+{
+  "name": "shard-r2-recovery",
+  "main": "git-r2-recovery.mjs",
+  "compatibility_date": "2026-11-17",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "d1_databases": [{ "binding": "DB", "database_name": "shard-r2", "database_id": "YOUR_D1_UUID" }],
+  "durable_objects": {
+    "bindings": [{ "name": "GIT_R2_REPOS", "class_name": "R2GitRepository", "script_name": "shard-r2" }]
+  }
+}
+```
+
+Set `SHARD_RECOVERY_DIR` to that directory. Generate a fresh 64-character
+hex token in its `.dev.vars` as `SHARD_R2_RECOVERY_TOKEN`. Start Wrangler
+from the checkout or prebuilt package with its installed dependencies.
+
+```sh
+umask 077
+printf 'SHARD_R2_RECOVERY_TOKEN=%s\n' "$(openssl rand -hex 32)" > "$SHARD_RECOVERY_DIR/.dev.vars"
+npx --no-install wrangler dev --remote --config "$SHARD_RECOVERY_DIR/wrangler.jsonc" --ip 127.0.0.1 --port 8794
+```
+
+From another Bash shell with `jq`, set `SHARD_BACKUP` to the private backup
+directory and `SHARD_GIT_SOURCE` to the Git pack bucket's `rclone` remote.
+Export all pages of repository IDs and save their exact `.pack` and `.idx`
+keys. Background compaction can retire old keys after 24 hours. Check that
+every referenced key was copied before accepting the backup.
+
+```sh
+umask 077
+shard_recovery_origin=http://127.0.0.1:8794
+shard_recovery_token=$(cut -d= -f2 < "$SHARD_RECOVERY_DIR/.dev.vars")
+shard_recovery() {
+  printf 'Authorization: Bearer %s\n' "$shard_recovery_token" |
+    curl --fail-with-body --silent --show-error --header @- "$@"
+}
+mkdir -p "$SHARD_BACKUP/manifests" "$SHARD_BACKUP/r2-git" || exit 1
+: > "$SHARD_BACKUP/git-keys.txt"
+after=
+while :; do
+  page=$(shard_recovery "$shard_recovery_origin/repositories?after=$after") || exit 1
+  for id in $(jq -r '.repositories[]' <<< "$page"); do
+    manifest="$SHARD_BACKUP/manifests/$id.json"
+    shard_recovery "$shard_recovery_origin/repositories/$id" > "$manifest" || exit 1
+    jq -r '.packs[] | "\(.).pack", "\(.).idx"' "$manifest" >> "$SHARD_BACKUP/git-keys.txt" || exit 1
+  done
+  after=$(jq -r '.next // empty' <<< "$page") || exit 1
+  [ -n "$after" ] || break
+done
+rclone copy "$SHARD_GIT_SOURCE" "$SHARD_BACKUP/r2-git" --files-from "$SHARD_BACKUP/git-keys.txt" --immutable || exit 1
+while IFS= read -r key; do
+  [ -s "$SHARD_BACKUP/r2-git/$key" ] || { printf 'Missing Git backup object %s\n' "$key" >&2; exit 1; }
+done < "$SHARD_BACKUP/git-keys.txt"
+rclone check "$SHARD_GIT_SOURCE" "$SHARD_BACKUP/r2-git" --files-from "$SHARD_BACKUP/git-keys.txt" --one-way --download
+```
+
+For recovery, import the SQL dump into an empty D1 database and restore the
+LFS objects to their original keys. Set up a recovery instance of the same
+Shard release with its own Worker name, empty Durable Object namespace and
+private buckets. Set its `DB` UUID explicitly and fill in the [R2 Git variables and secrets](docs/deployment-capacity.md#cloudflare-dashboard-从-git-部署).
+Import with `wrangler d1 execute DB --remote --env r2 --file "$SHARD_BACKUP/shard.sql"`
+against the destination configuration. Then publish the same Worker release
+using `wrangler deploy --env r2` with the restored database and bucket bindings.
+Verify the restore before opening traffic. Restart the helper with the
+destination D1 and Worker names before importing any manifests.
+
+Set `SHARD_GIT_RESTORE` to the destination pack bucket's `rclone` remote.
+Copy and check the pack objects, then import each manifest. A first import
+returns HTTP 201. Repeating the same manifest returns 204. A mismatched
+existing repository returns 409 and a missing pair returns 422.
+
+```sh
+rclone copy "$SHARD_BACKUP/r2-git" "$SHARD_GIT_RESTORE" --immutable || exit 1
+rclone check "$SHARD_BACKUP/r2-git" "$SHARD_GIT_RESTORE" --one-way --download || exit 1
+for manifest in "$SHARD_BACKUP"/manifests/shard-*.json; do
+  [ -f "$manifest" ] || continue
+  id=$(basename "$manifest" .json)
+  shard_recovery -X PUT --data-binary "@$manifest" "$shard_recovery_origin/repositories/$id" || exit 1
+done
+```
+
+Before opening traffic, compare advertised refs and HEAD, clone the private
+repository and a fork, and run `git fsck --full`. Check a saved review for a
+branch that was deleted and download an LFS object from both repositories.
+Stop the Wrangler helper when the rehearsal is complete. The backup represents
+published repository data at its recovery point. Restart unfinished Git or
+LFS uploads against the restored instance.
+[Wrangler remote development](https://developers.cloudflare.com/workers/local-development/bindings-per-env/#remote-development) · [Durable Object environment bindings](https://developers.cloudflare.com/durable-objects/reference/environments/)
 
 Worker responses include `X-Request-ID` for log correlation. Daily maintenance
 at 03:00 UTC removes expired sessions, tokens, login throttle windows, and email links.
