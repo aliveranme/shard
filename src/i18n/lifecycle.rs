@@ -30,12 +30,12 @@ catalog! {
         InvalidName => "Start the repository name with a letter or digit and use only letters, digits, dots, dashes, or underscores.", "仓库名称必须以字母或数字开头，并且只能包含字母、数字、点、连字符或下划线。";
         SourceUrl => "HTTPS Git URL", "HTTPS Git 地址";
         InvalidSource => "Enter an HTTPS Git URL on a public hostname with a repository path. Leave credentials, query parameters, and fragments out of the URL.", "请输入使用公网主机名并含仓库路径的 HTTPS Git 地址。请勿在地址中填写凭据、查询参数或片段。";
-        ImportCredentialHelp => "Optional. Use a username and password or an access token with the Bearer scheme. Authenticated imports use native Git storage and start as private repositories.", "选填。使用用户名和密码，或使用 Bearer 方式的访问令牌。需要认证的导入使用原生 Git 存储，仓库初始为私有。";
+        ImportCredentialHelp => "Optional. Use a username and password or an access token with the Bearer scheme. Authenticated imports start as private repositories.", "选填。使用用户名和密码，或使用 Bearer 方式的访问令牌。需要认证的导入初始为私有仓库。";
         SourceUsername => "Source username", "源仓库用户名";
         SourcePassword => "Source password or token", "源仓库密码或令牌";
         SourceToken => "Source Bearer token", "源仓库 Bearer 令牌";
         InvalidImportCredential => "Enter both a valid username and password, or one valid Bearer token. Authenticated imports require HTTPS port 443.", "请输入有效的用户名和密码，或单独填写有效的 Bearer 令牌。需要认证的导入必须使用 HTTPS 的 443 端口。";
-        ImportNativeRequired => "Authenticated imports require a configured native Git origin.", "需要认证的导入要求已配置原生 Git 源站。";
+        ImportNativeRequired => "Authenticated imports require configured Cloudflare R2 or a native Git origin.", "需要认证的导入要求已配置 Cloudflare R2 或原生 Git 源站。";
         Copies => "Repository copies", "仓库副本";
         CopiesEmpty => "You have no pending or failed copies.", "你没有待完成或失败的复制任务。";
         CopyStatus => "Repository copy status", "仓库复制状态";

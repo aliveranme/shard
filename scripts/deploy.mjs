@@ -14,9 +14,10 @@ const r2BucketPattern = /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/;
 const r2Jurisdictions = new Set(["eu", "fedramp", "us"]);
 const maxR2ObjectBytes = (5 * 1024 - 5) * 1024 ** 3;
 const r2SecretNames = ["SHARD_LFS_R2_ACCESS_KEY_ID", "SHARD_LFS_R2_SECRET_ACCESS_KEY"];
+const gitSecretNames = ["SHARD_GIT_R2_ACCESS_KEY_ID", "SHARD_GIT_R2_SECRET_ACCESS_KEY"];
 
-function readPaidSecrets(file, vars) {
-  if (!file) throw new Error("Provide --secrets-file with the R2 Object Read & Write credentials for LFS_OBJECTS.");
+function readPaidSecrets(file, vars, required) {
+  if (!file) throw new Error("Provide --secrets-file with the bucket-scoped R2 credentials for this environment.");
   let secrets;
   try {
     const contents = readFileSync(file, "utf8").trimStart();
@@ -28,12 +29,12 @@ function readPaidSecrets(file, vars) {
       Object.values(secrets).some((value) => value !== null && typeof value !== "string")) {
     throw new Error("--secrets-file must contain named string values.");
   }
-  for (const name of r2SecretNames) {
+  for (const name of required) {
     if (!Object.hasOwn(secrets, name) || typeof secrets[name] !== "string" || !/^[!-~]+$/.test(secrets[name])) {
       throw new Error(`Provide a nonempty ${name} in --secrets-file.`);
     }
   }
-  const reserved = ["DB", "ARTIFACTS", "LFS_OBJECTS", "SHARD_LFS_MAX_BYTES", ...Object.keys(vars)];
+  const reserved = ["DB", "ARTIFACTS", "LFS_OBJECTS", "GIT_PACKS", "GIT_R2_REPOS", "SHARD_GIT_R2_CONTAINER_ENDPOINT", "SHARD_LFS_MAX_BYTES", ...Object.keys(vars)];
   if (reserved.some((name) => Object.hasOwn(secrets, name) && secrets[name] !== null)) {
     throw new Error("--secrets-file must not redefine paid preset bindings or selected Worker variables.");
   }
@@ -42,7 +43,8 @@ function readPaidSecrets(file, vars) {
 
 function configurePaid(rawConfig, target, lfsBinding, dryRun) {
   const artifacts = target.artifacts?.some(({ binding, namespace }) => binding === "ARTIFACTS" && namespace);
-  if (!artifacts && target.vars?.GIT_BACKEND !== "native") {
+  const r2Git = target.vars?.GIT_BACKEND === "r2";
+  if (!artifacts && !r2Git && target.vars?.GIT_BACKEND !== "native") {
     throw new Error("Configure an Artifacts namespace bound as ARTIFACTS in the paid environment.");
   }
   const bucket = lfsBinding?.bucket_name;
@@ -56,6 +58,25 @@ function configurePaid(rawConfig, target, lfsBinding, dryRun) {
   const vars = target.vars ??= {};
   if (r2SecretNames.some((name) => Object.hasOwn(vars, name))) {
     throw new Error("Supply the LFS credentials through --secrets-file as Worker secrets.");
+  }
+  const gitBinding = r2Git ? target.r2_buckets?.find(({ binding }) => binding === "GIT_PACKS") : null;
+  if (r2Git) {
+    const name = gitBinding?.bucket_name;
+    if (typeof name !== "string" || !r2BucketPattern.test(name) || name === bucket) {
+      throw new Error("Bind a separate private Git pack bucket as GIT_PACKS in the R2 Git environment.");
+    }
+    if (gitBinding.jurisdiction !== undefined && !r2Jurisdictions.has(gitBinding.jurisdiction)) {
+      throw new Error("Set the GIT_PACKS jurisdiction to eu, fedramp or us, or omit it for the standard R2 endpoint.");
+    }
+    if (gitSecretNames.some((key) => Object.hasOwn(vars, key)) || vars.SHARD_GIT_R2_CONTAINER_ENDPOINT !== undefined && !dryRun) {
+      throw new Error("Use Worker secrets for the Git pack R2 credentials and omit the local container endpoint for deployment.");
+    }
+    const max = vars.SHARD_GIT_R2_MAX_PUSH_BYTES;
+    if (max !== undefined && (!/^\d+$/.test(String(max)) || Number(max) < 4 || Number(max) > maxR2ObjectBytes)) {
+      throw new Error(`SHARD_GIT_R2_MAX_PUSH_BYTES must be a whole number between 4 and ${maxR2ObjectBytes}.`);
+    }
+    if (max !== undefined) vars.SHARD_GIT_R2_MAX_PUSH_BYTES = String(max);
+    vars.SHARD_GIT_R2_BUCKET = name;
   }
   const maxBytes = vars.SHARD_LFS_MAX_BYTES;
   if (maxBytes !== undefined) {
@@ -88,6 +109,15 @@ function configurePaid(rawConfig, target, lfsBinding, dryRun) {
     throw new Error("SHARD_LFS_R2_ENDPOINT must match the account and jurisdiction of the LFS_OBJECTS binding.");
   }
   vars.SHARD_LFS_R2_ENDPOINT = endpoint;
+  if (gitBinding) {
+    const r2Jurisdiction = gitBinding.jurisdiction;
+    const gitEndpoint = `https://${account}${r2Jurisdiction ? `.${r2Jurisdiction}` : ""}.r2.cloudflarestorage.com`;
+    if (vars.SHARD_GIT_R2_ENDPOINT !== undefined &&
+        ![gitEndpoint, `${gitEndpoint}/`].includes(vars.SHARD_GIT_R2_ENDPOINT)) {
+      throw new Error("SHARD_GIT_R2_ENDPOINT must match the account and jurisdiction of the GIT_PACKS binding.");
+    }
+    vars.SHARD_GIT_R2_ENDPOINT = gitEndpoint;
+  }
   if (artifacts) vars.SHARD_GIT_ARTIFACTS_ORIGINS = `https://${account}.artifacts.cloudflare.net`;
 }
 
@@ -149,8 +179,8 @@ function deploy() {
   const paid = values.paid;
   const dryRun = values["dry-run"];
   const environment = values.env ?? process.env.CLOUDFLARE_ENV ?? (paid ? "managed" : undefined);
-  if (paid && !["managed", "managed-staging", "native"].includes(environment)) {
-    throw new Error("--paid selects managed, managed-staging or native.");
+  if (paid && !["managed", "managed-staging", "native", "r2"].includes(environment)) {
+    throw new Error("--paid selects managed, managed-staging, native or r2.");
   }
   const { rawConfig, configPath } = experimental_readRawConfig({ config: values.config, env: environment });
   if (!configPath) throw new Error("Provide a Wrangler configuration with --config.");
@@ -228,7 +258,8 @@ function deploy() {
   let paidSecrets;
   if (paid) {
     configurePaid(rawConfig, target, lfsBinding, dryRun);
-    if (!dryRun) paidSecrets = readPaidSecrets(secretsFile, target.vars);
+    if (!dryRun) paidSecrets = readPaidSecrets(secretsFile, target.vars,
+      target.vars.GIT_BACKEND === "r2" ? [...r2SecretNames, ...gitSecretNames] : r2SecretNames);
   }
 
   // Wrangler prefers a configured account ID, but Workers Builds can only release to its own account.

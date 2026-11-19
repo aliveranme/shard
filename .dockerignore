@@ -1,5 +1,7 @@
 **
 !scripts/
 !scripts/git-origin.mjs
+!scripts/git-r2-origin.mjs
 !containers/
 !containers/git-merge.Dockerfile
+!containers/git-r2.Dockerfile

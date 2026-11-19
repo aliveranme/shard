@@ -197,7 +197,7 @@ test("paid preflight rejects invalid inputs before invoking Wrangler", async (t)
     ["empty key", { secrets: JSON.stringify({ ...credentials, [secretName]: " " }) }, new RegExp(secretName)],
     ["malformed JSON", { secrets: `{${credentials[secretName]}` }, /Could not read --secrets-file/],
     ["conflicting secret", { secrets: JSON.stringify({ ...credentials, SHARD_LFS_UPLOAD_MODE: "proxy" }) }, /must not redefine/],
-    ["invalid environment", { args: ["--paid", "--env", "artifacts"] }, /managed, managed-staging or native/],
+    ["invalid environment", { args: ["--paid", "--env", "artifacts"] }, /--paid selects/],
     ["missing bucket", { configure: (raw) => { raw.env.managed.r2_buckets = []; } }, /LFS_OBJECTS/],
     ["different bucket", { configure: (raw) => { raw.env.managed.vars.SHARD_LFS_R2_BUCKET = "wrong-bucket"; } }, /must match the LFS_OBJECTS bucket/],
     ["different jurisdiction", { configure: (raw) => { raw.env.managed.vars.SHARD_LFS_R2_ENDPOINT = `https://${account}.eu.r2.cloudflarestorage.com`; } }, /must match.*jurisdiction/],
@@ -223,6 +223,27 @@ test("paid dry run needs no account or secrets and runs only the bundle check", 
   assert.ok(deploy.args.includes("--outdir"));
   assert.equal(deploy.config.env.managed.vars.SHARD_LFS_UPLOAD_MODE, "r2-multipart");
   assert.equal(deploy.config.env.managed.vars.SHARD_LFS_R2_ENDPOINT, undefined);
+});
+
+test("the R2 Git preset derives independent Git and LFS bucket endpoints", (t) => {
+  const result = exercise(t, {
+    args: ["--paid", "--env", "r2"],
+    secrets: JSON.stringify({ ...credentials, SHARD_GIT_R2_ACCESS_KEY_ID: "git-fixture-access", SHARD_GIT_R2_SECRET_ACCESS_KEY: "git-fixture-secret" }),
+    configure(raw) {
+      const config = managed("r2");
+      delete config.artifacts;
+      config.vars.GIT_BACKEND = "r2";
+      config.r2_buckets.push({ binding: "GIT_PACKS", bucket_name: "r2-packs", jurisdiction: "eu" });
+      raw.env.r2 = config;
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.commands, ["d1 migrations", "deploy"]);
+  const { vars } = result.calls.at(-1).config.env.r2;
+  assert.equal(vars.SHARD_GIT_R2_BUCKET, "r2-packs");
+  assert.equal(vars.SHARD_GIT_R2_ENDPOINT, `https://${account}.eu.r2.cloudflarestorage.com`);
+  assert.equal(vars.SHARD_LFS_R2_ENDPOINT, `https://${account}.r2.cloudflarestorage.com`);
+  assert.equal(vars.SHARD_LFS_UPLOAD_MODE, "r2-multipart");
 });
 
 test("the native Paid preset enables R2 multipart without Artifacts", (t) => {

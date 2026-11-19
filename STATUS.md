@@ -9,9 +9,9 @@ Update this file whenever a milestone lands or a limitation changes.
 |---|---|
 | Runtime | Rust 1.100.0, `worker` 0.9.0, `worker-build` 0.9.0 |
 | Tooling | Node 26.13.1, Wrangler 4.164.0, mise |
-| Storage | D1 with SQLite Durable Objects by default, Cloudflare Artifacts in Paid environments, or an authenticated native Git origin. LFS is available with a private R2 binding. |
+| Storage | D1 with SQLite Durable Objects by default. Named environments use Cloudflare Artifacts, an authenticated native Git origin, or private R2 packs with Durable Object refs and Cloudflare Containers. LFS has its own R2 binding. |
 | UI | Server-rendered Askama templates using `static/css/theme.css` and `static/css/shard.css` |
-| Deployment | The Free badge uses the default deploy command. `--env artifacts` targets the original Artifacts Worker. `deploy:paid` configures R2 multipart in managed or native mode. Managed CD verifies staged releases with a Workflow. |
+| Deployment | The Free badge uses the default deploy command. `--env artifacts` targets the original Artifacts Worker. `deploy:paid` configures R2 multipart LFS. `--env r2` selects Cloudflare-hosted Git with a separate pack bucket and resumable Git pushes. Managed CD verifies staged releases with a Workflow. |
 | Source | [aliveranme/shard](https://github.com/aliveranme/shard) |
 
 ## Verified locally
@@ -32,6 +32,7 @@ Update this file whenever a milestone lands or a limitation changes.
 | Git LFS | All Git backends use repository and token permissions. The Free config leaves R2 optional. With R2 bound, proxy uploads default to 100 MB. Standard Git LFS can use a presigned R2 PUT. The packaged multipart adapter resumes from recorded parts and verifies the whole object before publication. Forks use independent R2 keys. |
 | Native Git origin | The native environment supports Git push, clone, fetch, ref browsing, raw downloads, pull request diffs and access revocation. Forked refs and files stay readable after source deletion. Same-origin PRs use commit-pinned merge-base, file comparison and ancestry requests. Authenticated origin controls set HEAD, update refs against an expected tip, merge reviewed commits and import private HTTPS repositories. |
 | Direct native Git | The Worker resolves the repository and rechecks write access and branch rules before Git updates refs. A local private push stored a pack over 128 MiB on the origin volume. A clone preserved the commit and blob and passed `git fsck --full`. |
+| Cloudflare R2 Git | Private repositories support stock Git over HTTPS and signed multipart pushes through `git-remote-shard`. Native Git validates staged input. The Durable Object publishes pack references, branch refs and the retry receipt in one transaction. |
 | Code browsing | Branch and tag inventory, branch-scoped trees and files, cursor-paginated first-parent history, parent links, and commit-pinned source TAR downloads. Text previews read at most 256 KiB. README links and images use the displayed commit, and raw downloads stream full files. |
 | Pull requests | Common-ancestor diffs support source and target branches in distinct repositories. Accepted branch pushes schedule refreshes. Reviews retain the saved comparison and line. Protected branches require the configured approvals and checks. The queue advanced an Artifacts branch by fast-forward and created a two-parent merge from a fork on the native origin. |
 | Issues and search | Issue lists filter by state, label, assignee, milestone and discussion text. Repository search finds paths, text and commit messages on a saved snapshot and reports scan limits. |
@@ -50,6 +51,7 @@ Update this file whenever a milestone lands or a limitation changes.
 | Area | Requirement |
 |---|---|
 | Deployment | Verify the Free badge's account provisioning and quotas on hosted Workers Free. Exercise managed releases and Artifacts in isolated Workers Paid staging. Verify direct native Git on an HTTPS origin with persistent disk at the intended production transfer sizes. |
+| Hosted R2 Git | Exercise signed `ListParts`, FUSE range reads and container restarts against a private Cloudflare staging bucket. Measure the intended push sizes, clone latency and pack index costs on the selected container type. |
 | Large LFS uploads | Verify presigned S3 uploads with a hosted private R2 bucket. Objects above the single-PUT ceiling require a hosted check of whole-object hashing, conditional multipart publication, fork copy throughput and the Worker CPU budget. |
 | Email | An onboarded sending domain, an `EMAIL` binding, and an available mailbox to verify real delivery. |
 | Web merges | The Free Git UI advances same-repository fast-forwards. For other Free and mixed-backend merges, integrate through Git. Verify the managed Git container against hosted Artifacts for divergent and cross-repository merges. |
@@ -157,6 +159,8 @@ The [deployment capacity guide](docs/deployment-capacity.md) records the four co
 | 2026-11-19 | Real GnuPG and Chromium | An Ed25519 signing subkey produced a commit that passed `git verify-commit` and Shard verification. GPG settings saved the primary fingerprint. The Simplified Chinese commit page fit desktop and 320px widths with reduced motion. |
 | 2026-11-19 | Local LFS direct and multipart regressions | The standard Git LFS client kept signed PUT staging private. The multipart client resumed a recorded part and rejected an incorrect whole-object checksum. |
 | 2026-11-19 | Native direct Git and Paid deploy preflight | A 128 MiB incompressible file pushed in one private Git request and cloned with matching object IDs and a clean `git fsck`. Protected branches and revoked access prevented ref updates. LFS upload and download worked through the native URL. Wrangler resolved native Paid bindings and multipart LFS in a dry run. |
+| 2026-11-19 | R2 Git in Docker with Miniflare | Stock Git pushed to a private repo. A 129 MiB incompressible file push resumed after a lost part response and a Worker restart, uploading each part once. Branch protection enabled during pack capture blocked publication. A retry reused the staged data. The final Git report replayed byte for byte, and a cold clone preserved commit and blob IDs and passed `git fsck --full`. The relay supplies Miniflare's missing `ListParts` and normalizes quoted ETags for its completion parser. |
+| 2026-11-19 | R2 Git deployment preflight | `mise run check` passed. The Paid preset derived Git and LFS S3 endpoints for separate buckets. A populated D1 migration preserved existing Artifacts and native repository records and their cleanup paths. |
 
 ## How to update
 

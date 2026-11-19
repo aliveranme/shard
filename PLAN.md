@@ -34,6 +34,10 @@ deployment. `managed` and `managed-staging` add the Git bridge and background
 execution services on Workers Paid. `native` uses an authenticated origin and
 persistent disk. It can advertise a direct Git hostname while retaining forge
 permission checks.
+`r2` keeps pack files and indexes in R2. Its SQLite Durable Object commits
+refs and pack manifests atomically after a disposable Git container verifies
+the input and persists the new objects. Standard HTTPS and the resumable Git
+remote helper use the same receive and publication path.
 [Deployment guide](README.md#deploy-to-cloudflare)
 [Deployment configurations and capacity analysis](docs/deployment-capacity.md)
 
@@ -116,7 +120,7 @@ Workflow history expires. [Workflows](https://developers.cloudflare.com/workflow
 Each copy Workflow uses the committed `repo_copies.id` for its instance ID and
 payload. A step observes the destination Git storage and advances a bounded
 LFS page with the existing D1 lease and cursor. Publication rechecks access.
-Authenticated imports keep their credentials at the native origin. D1 stores
+The native origin or R2 Git container uses import credentials for the initial fetch. D1 stores
 the visible outcome. The cron recovers missed starts and resumes jobs whose
 Workflow is missing or has ended. [Copy reconciliation](src/repo_lifecycle.rs)
 

@@ -282,3 +282,65 @@ export async function lfsCopy(endpoint, bucket, accessKeyId, secretAccessKey, so
   await checkSource(client, sourceUrl, bytes, sourceEtag, signal);
   return copyMultipart(client, destination, sourceUrl, copySource, bytes, sourceEtag, signal, timeout);
 }
+
+// Git uploads reconcile against R2 itself, including parts whose PUT response was lost.
+export function gitR2S3(env) {
+  const endpoint = env.SHARD_GIT_R2_ENDPOINT;
+  const bucket = env.SHARD_GIT_R2_BUCKET;
+  const access = env.SHARD_GIT_R2_ACCESS_KEY_ID;
+  const secret = env.SHARD_GIT_R2_SECRET_ACCESS_KEY;
+  if (![endpoint, bucket, access, secret].every(value => typeof value === "string" && value)) {
+    throw new Error("Git pack R2 credentials are unavailable");
+  }
+  const client = s3Client(endpoint, access, secret);
+  const object = key => atObject(client, objectPath(bucket, key));
+  return {
+    signPart(key, uploadId, partNumber, size) {
+      return lfsPresign(endpoint, bucket, access, secret, key, uploadId, partNumber, size, "");
+    },
+    async parts(key, uploadId) {
+      const parts = [];
+      const signal = AbortSignal.timeout(25_000);
+      const url = withQuery(object(key), { uploadId, "max-parts": "1000" });
+      let marker = 0;
+      for (;;) {
+        if (marker) url.searchParams.set("part-number-marker", String(marker));
+        const page = await s3Request(client, "ListParts", url, { method: "GET", signal, xmlRoot: "ListPartsResult" });
+        let last = marker;
+        for (let element = page.firstChild; element; element = element.nextSibling) {
+          if (element.localName !== "Part") continue;
+          const partNumber = decimal(field(element, "PartNumber"));
+          const size = decimal(field(element, "Size"));
+          const etag = quotedEtag(field(element, "ETag")).slice(1, -1);
+          if (!within(partNumber, last + 1, maxParts) || !within(size, 1, maxPartBytes) || etag.length > 256) {
+            throw new Error("R2 returned an invalid upload part");
+          }
+          parts.push({ partNumber, size, etag });
+          last = partNumber;
+        }
+        if (field(page, "IsTruncated") === "false") return parts;
+        const next = decimal(field(page, "NextPartNumberMarker"));
+        if (field(page, "IsTruncated") !== "true" || next !== last || !within(next, marker + 1, maxParts - 1)) {
+          throw new Error("R2 returned an invalid part listing cursor");
+        }
+        marker = next;
+      }
+    },
+    async copy(from, to, source) {
+      const timeout = 30 * 60_000;
+      const signal = AbortSignal.timeout(timeout);
+      const copySource = objectPath(bucket, from);
+      if (source.size > maxPartBytes) {
+        return copyMultipart(client, object(to), object(from), copySource, source.size, source.httpEtag, signal, timeout);
+      }
+      const reply = await s3Request(client, "CopyObject", object(to), {
+        method: "PUT",
+        headers: { "x-amz-copy-source": copySource, "x-amz-copy-source-if-match": source.httpEtag },
+        signal,
+        xmlRoot: "CopyObjectResult",
+      });
+      quotedEtag(field(reply, "ETag"));
+      return true;
+    },
+  };
+}

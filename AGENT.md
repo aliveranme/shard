@@ -13,6 +13,7 @@ Shard is a Rust Git forge on Cloudflare Workers. D1 stores forge metadata. SQLit
 - `src/artifacts.rs`: the Artifacts binding adapter. The binding has no merge, branch enumeration or object-write API.
 - `src/native_git.rs` and `scripts/git-origin.mjs`: authenticated native Git transport and bare-repository management.
 - `worker/git-repository.mjs`: SQLite Durable Object for Free Git storage. It serves the Git protocol and the internal object and ref API.
+- `worker/git-r2-repository.mjs`: R2 pack publication, refs and resumable receive sessions. `scripts/git-r2-origin.mjs` runs native Git over read-only pack views in disposable workspaces.
 - `src/templates.rs` and `templates/`: typed page models and autoescaped HTML. Only render sanitized Markdown as safe HTML.
 - `src/i18n/` defines typed interface messages. Add user-facing UI text, accessibility labels, and browser errors to the matching catalog with both translations. Keep interpolated phrases whole.
 - `migrations/`: append forward-only D1 migrations; never rewrite an applied migration.
@@ -35,14 +36,14 @@ Use the pinned mise toolchain. Standard commands:
 - `mise run lint` runs Clippy for the wasm Worker. `mise run fmt` runs rustfmt.
 - `mise run build`: produce the Worker bundle.
 - `mise run dev`: run the local simulator at `http://localhost:8787`.
-- `mise run test` runs isolated HTTP and real Git regressions for all three storage modes.
+- `mise run test` runs isolated HTTP and real Git regressions. Set `SHARD_TEST_R2_CONTAINER=1` to include the R2 Git test on a local FUSE-enabled Docker engine.
 - `mise run deploy` and `npm run deploy` resolve the target `DB` binding,
   apply migrations, and publish the Worker. The shipped `keep_vars` preserves
   dashboard-managed Worker variables.
 - `npm run deploy:paid -- --secrets-file .env.deploy.paid` selects the managed
   Paid environment and enables R2 multipart uploads. Pass `--env native` to
-  `deploy:paid` for the direct native Git setup. Use `--env artifacts` with
-  the regular deploy command to upgrade the original Artifacts instance.
+  the direct native Git setup and `--env r2` for R2-hosted Git with a separate pack bucket. Use
+  `--env artifacts` with the regular deploy command to upgrade the original Artifacts instance.
 - Managed Workers Builds use `npm run ci -- --container` for build, tests and
   image smoke checks, then `npm run cd` for staged release verification.
   See [README.md](README.md#deploy-with-managed-cloudflare-services).

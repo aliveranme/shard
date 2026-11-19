@@ -6,6 +6,7 @@
 
 - Account settings accept GPG public keys. Commit details verify OpenPGP signatures, show the signing certificate fingerprint, and separately indicate verified committer email.
 - The Paid native preset can advertise a direct Git hostname backed by persistent disk. Git pushes can exceed the Artifacts and Worker ingress limits while Shard checks access and branch protection. The preset enables R2 multipart LFS uploads.
+- The `r2` Paid environment runs native Git in Cloudflare Containers with durable R2 pack storage and transactional refs. The packaged `git-remote-shard` helper supports multipart push, resume across process restarts, and replay of completed Git results.
 
 ### Changed
 

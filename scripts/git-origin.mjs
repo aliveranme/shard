@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { createHash, timingSafeEqual } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { constants as fsConstants, createReadStream, createWriteStream } from "node:fs";
 import { once } from "node:events";
 import { access, appendFile, chmod, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { createServer, STATUS_CODES } from "node:http";
@@ -8,6 +8,7 @@ import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const WINDOWS = process.platform === "win32";
@@ -49,7 +50,19 @@ const REPO_CONFIG = `
 	pruneExpire = never
 `;
 
-class HttpError extends Error {
+export const WORKSPACE_REPO_CONFIG = `${REPO_CONFIG}
+[receive]
+	unpackLimit = 1
+[core]
+	bigFileThreshold = 64m
+	packedGitWindowSize = 32m
+	packedGitLimit = 128m
+[pack]
+	threads = 1
+	windowMemory = 32m
+`;
+
+export class HttpError extends Error {
   constructor(status) {
     super(STATUS_CODES[status]);
     this.status = status;
@@ -125,7 +138,7 @@ function repoCommand(repo, command, args) {
   return ["--no-pager", `--git-dir=${repo}`, command, ...args];
 }
 
-async function gitOutput(command, args, options) {
+export async function gitOutput(command, args, options) {
   const { repo, input, missing, keepMissing, capturePrefix, maxBytes = MAX_METADATA_BYTES } = options;
   const argv = repo ? repoCommand(repo, command, args) : ["--no-pager", command, ...args];
   const git = startGit(command, argv, { ...options, pipeInput: input !== undefined });
@@ -148,7 +161,7 @@ async function gitOutput(command, args, options) {
   }
 }
 
-function sendJson(res, status, payload) {
+export function sendJson(res, status, payload) {
   res.statusCode = status;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.end(JSON.stringify(payload));
@@ -163,7 +176,7 @@ function sendComparison(res, payload) {
   res.end(body);
 }
 
-function sendStatus(res, status) {
+export function sendStatus(res, status) {
   if (status === 202 || status === 204) {
     res.statusCode = status;
     res.end();
@@ -172,13 +185,13 @@ function sendStatus(res, status) {
   }
 }
 
-async function readBody(req) {
-  if (Number(req.headers["content-length"]) > MAX_BODY_BYTES) throw new HttpError(413);
+export async function readBody(req, maxBytes = MAX_BODY_BYTES) {
+  if (Number(req.headers["content-length"]) > maxBytes) throw new HttpError(413);
   const chunks = [];
   let length = 0;
   for await (const chunk of req.iterator({ destroyOnReturn: false })) {
     length += chunk.length;
-    if (length > MAX_BODY_BYTES) throw new HttpError(413);
+    if (length > maxBytes) throw new HttpError(413);
     chunks.push(chunk);
   }
   try {
@@ -425,6 +438,28 @@ async function updateRef(reference, newOid, oldOid, options) {
     }
     throw error;
   }
+}
+
+async function workspaceHead(options) {
+  const symbolic = await headRef(options);
+  if (symbolic) return symbolic;
+  // A mirror can have a detached HEAD. Keep its tip without overwriting a branch.
+  const oid = await resolveRevision("HEAD", options);
+  let branch = "refs/heads/main";
+  if (oid) {
+    const existing = await gitOutput("for-each-ref", [
+      "--count=1", "--format=%(refname)", `--points-at=${oid}`, "refs/heads/",
+    ], options);
+    if (existing.length) {
+      branch = existing.toString("utf8").replace(/\r?\n$/, "");
+    } else {
+      const conflicting = await gitOutput("for-each-ref", ["--count=1", "--", branch], options);
+      if (conflicting.length) branch = `refs/heads/shard-import-${randomUUID()}`;
+      await updateRef(branch, oid, ZERO_OID, options);
+    }
+  }
+  await gitOutput("symbolic-ref", ["HEAD", branch], options);
+  return branch;
 }
 
 async function mergeCommit(baseOid, headOid, options, canWriteTree) {
@@ -740,10 +775,29 @@ async function smartHttp(req, res, id, action, service, options) {
       await git.check();
       throw new Error("Missing Git CGI headers");
     }
-    setCgiHeaders(res, cgiResponse.headers);
-    await writeChunk(res, cgiResponse.body, options.signal);
-    for await (const chunk of stdout) await writeChunk(res, chunk, options.signal);
-    await git.check();
+    const { stagedReceive } = options;
+    if (stagedReceive) {
+      // Hold the native report until the complete staged input has been verified.
+      async function* report() {
+        yield cgiResponse.body;
+        yield* stdout;
+      }
+      await pipeline(report(), createWriteStream(stagedReceive.report, { flags: "wx", mode: 0o600 }), {
+        signal: options.signal,
+      });
+      finishPushInput();
+      await stagedReceive.check();
+      await git.check();
+      setCgiHeaders(res, cgiResponse.headers);
+      for await (const chunk of createReadStream(stagedReceive.report, { signal: options.signal })) {
+        await writeChunk(res, chunk, options.signal);
+      }
+    } else {
+      setCgiHeaders(res, cgiResponse.headers);
+      await writeChunk(res, cgiResponse.body, options.signal);
+      for await (const chunk of stdout) await writeChunk(res, chunk, options.signal);
+      await git.check();
+    }
     res.end();
   } finally {
     if (receiveBody) {
@@ -872,7 +926,7 @@ async function runPushHook(stage) {
 
 export async function createGitOrigin({
   directory, token, importHosts = DEFAULT_IMPORT_HOSTS, artifactsOrigins = [], bridgeOnly = false,
-  forgeOrigin, trustProxy = false,
+  forgeOrigin, trustProxy = false, workspaceOnly = false,
 }) {
   if (!bridgeOnly && (typeof directory !== "string" || !directory)) throw new TypeError("A Git directory is required");
   if (typeof token !== "string" || !/^[\x21-\x7e]+$/.test(token)) throw new TypeError("A Git token is required");
@@ -1013,8 +1067,9 @@ export async function createGitOrigin({
         } else {
           await mirror(remote, staging, repo, "https", authorization);
         }
-        await appendFile(join(repo, "config"), REPO_CONFIG);
-        const result = metadata(id, await headRef({ cwd, repo }));
+        await appendFile(join(repo, "config"), workspaceOnly ? WORKSPACE_REPO_CONFIG : REPO_CONFIG);
+        const repoOptions = { cwd, repo };
+        const result = metadata(id, await (workspaceOnly ? workspaceHead(repoOptions) : headRef(repoOptions)));
         await rename(repo, target);
         return result;
       });
@@ -1208,14 +1263,13 @@ export async function createGitOrigin({
     }));
   }
 
-  async function handle(req, res, signal) {
+  async function handle(req, res, signal, { url = req.url ?? "", stagedReceive } = {}) {
     if (bridgeOnly) {
       if (req.method === "GET" && req.url === "/healthz") {
         return sendJson(res, 200, { protocol: 1, mergeEnabled: allowedOrigins.size > 0 });
       }
       if (req.method !== "POST" || req.url !== "/v1/artifacts/merge") throw new HttpError(404);
     }
-    const url = req.url ?? "";
     const delimiter = url.indexOf("?");
     const path = delimiter < 0 ? url : url.slice(0, delimiter);
     const query = new URLSearchParams(delimiter < 0 ? "" : url.slice(delimiter + 1));
@@ -1258,7 +1312,9 @@ export async function createGitOrigin({
         }
       } else if (action !== "info/refs" && req.method === "POST" && query.size === 0) {
         if (action === "git-receive-pack") {
-          return withWrite(id, signal, () => smartHttp(req, res, id, action, action, { cwd, signal, command: httpBackend }));
+          return withWrite(id, signal, () => smartHttp(req, res, id, action, action, {
+            cwd, signal, command: httpBackend, stagedReceive,
+          }));
         }
         return withRepo(id, () => smartHttp(req, res, id, action, action, { cwd, signal, command: httpBackend }));
       }
@@ -1266,14 +1322,15 @@ export async function createGitOrigin({
     throw new HttpError(404);
   }
 
-  const serverOptions = forge ? { requestTimeout: 0, headersTimeout: 60_000 } : {};
-  return createServer(serverOptions, (req, res) => {
+  async function requestHandler(req, res, route) {
     const cancellation = new AbortController();
     req.on("error", () => cancellation.abort());
     res.on("error", () => cancellation.abort());
     res.once("close", () => { if (!res.writableFinished) cancellation.abort(); });
     res.setHeader("Cache-Control", "no-store");
-    void handle(req, res, cancellation.signal).catch((error) => {
+    try {
+      await handle(req, res, cancellation.signal, route);
+    } catch (error) {
       if (cancellation.signal.aborted) return;
       const expected = error instanceof HttpError;
       if (!expected) {
@@ -1287,8 +1344,13 @@ export async function createGitOrigin({
         res.removeHeader("X-Shard-Object-Size");
         sendStatus(res, expected ? error.status : 502);
       }
-    }).finally(() => req.resume());
-  });
+    } finally {
+      req.resume();
+    }
+  }
+  if (workspaceOnly) return requestHandler;
+  const serverOptions = forge ? { requestTimeout: 0, headersTimeout: 60_000 } : {};
+  return createServer(serverOptions, requestHandler);
 }
 
 async function main() {

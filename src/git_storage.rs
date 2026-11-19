@@ -17,6 +17,7 @@ pub(crate) enum GitBackend {
     Artifacts,
     Native,
     Durable,
+    R2,
 }
 
 impl GitBackend {
@@ -25,7 +26,8 @@ impl GitBackend {
             None | Some("artifacts") => Ok(Self::Artifacts),
             Some("native") => Ok(Self::Native),
             Some("durable") => Ok(Self::Durable),
-            Some(_) => Err(Error::RustError("GIT_BACKEND must be artifacts, native or durable".into())),
+            Some("r2") => Ok(Self::R2),
+            Some(_) => Err(Error::RustError("GIT_BACKEND must be artifacts, native, durable or r2".into())),
         }
     }
 
@@ -34,6 +36,7 @@ impl GitBackend {
             Self::Artifacts => "artifacts",
             Self::Native => "native",
             Self::Durable => "durable",
+            Self::R2 => "r2",
         }
     }
 
@@ -42,6 +45,7 @@ impl GitBackend {
             Self::Artifacts => RepoText::ArtifactsStorage,
             Self::Native => RepoText::NativeGitStorage,
             Self::Durable => RepoText::DurableGitStorage,
+            Self::R2 => RepoText::R2GitStorage,
         }
     }
 }
@@ -164,6 +168,7 @@ impl GitStorage {
             GitBackend::Artifacts => Artifacts::from_env(env).map(Self::Artifacts),
             GitBackend::Native => GitService::from_env(env).map(Self::Service),
             GitBackend::Durable => GitService::durable(env).map(Self::Service),
+            GitBackend::R2 => GitService::r2(env).map(Self::Service),
         }
     }
 
@@ -314,7 +319,7 @@ impl RepoHandle {
     ) -> std::result::Result<String, WriteError> {
         match (self, source) {
             (Self::Service(repo), None) if !repo.is_durable() => repo.merge(reference, base, head, None).await,
-            (Self::Service(repo), Some((Self::Service(source), id))) if !repo.is_durable() && !source.is_durable() => {
+            (Self::Service(repo), Some((Self::Service(source), id))) if repo.shares_comparison_backend(source) => {
                 repo.merge(reference, base, head, Some(id)).await
             }
             (_, None) if fast_forward => {

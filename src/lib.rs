@@ -198,6 +198,7 @@ fn routes(router: Router<AppState>) -> Router<AppState> {
             handlers::git::receive_pack,
         )
         .post_async("/:owner/:repo/shard-git-control", handlers::git::direct_control)
+        .post_async("/:owner/:repo/shard-upload", handlers::git::multipart_upload)
         .post_async("/:owner/:repo/info/lfs/objects/batch", lfs::batch)
         .put_async("/:owner/:repo/info/lfs/objects/:repo_id/:oid/:size", lfs::upload)
         .get_async("/:owner/:repo/info/lfs/objects/:repo_id/:oid/:size", lfs::download)

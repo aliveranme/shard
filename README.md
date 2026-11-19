@@ -89,6 +89,9 @@ objects and refs. Paid deployments can use Cloudflare Artifacts, and the
 `native` environment uses an authenticated Git server with persistent disk.
 It can expose a direct Git hostname for large transfers while the Worker
 continues to authorize clone, fetch and push.
+The `r2` environment runs native Git in Cloudflare Containers, stores immutable
+Git packs and indexes in private R2, and publishes refs transactionally in
+Durable Objects.
 Any environment with a private `LFS_OBJECTS` R2 binding can store Git LFS bytes.
 
 [Storage design](PLAN.md#optional-git-backends) · [Verified behavior and staging status](STATUS.md)
@@ -103,6 +106,7 @@ push over HTTPS, open pull requests, and use issues and reviews immediately.
 | --- | --- | --- | --- | --- |
 | Default (`shard-free`) | One SQLite Durable Object per repository, 32 MiB per push | Same-repository fast-forward | Optional R2 | Workers Free, D1, Static Assets, Rate Limiting, Cron |
 | `npm run deploy:paid` (`managed` or `managed-staging`) | Artifacts, 64 MiB per push | Same-repository and cross-repository Artifacts merges through the Git container | R2 multipart | Workers Paid, Artifacts, Containers, Workflows, private R2, scoped S3 credentials |
+| `npm run deploy:paid -- --env r2` (`shard-r2`) | R2 pack storage. Standard HTTPS within the domain limit and resumable multipart through `git-remote-shard` | Same-backend merges through the Git container | R2 multipart | Workers Paid, Containers, Durable Objects, Workflows, D1 and two private R2 buckets with scoped credentials |
 | `--env artifacts` (`shard`) | Artifacts, 64 MiB per push | Same-repository fast-forward. Configure an external Git bridge for other Artifacts merges | R2 proxy by default | Workers Paid and R2. Preserves the original Artifacts instance's bindings |
 | `--env native` (`shard-native`, hybrid) | Bare repositories on a Git server you operate. A direct Git hostname can route pack transfers to that server. | Full same-origin merges with Git 2.38+ | R2 proxy or multipart via `deploy:paid` | Workers Free or Paid, D1 and R2 on Cloudflare. Supply an HTTPS Git origin and persistent storage. |
 
@@ -391,6 +395,91 @@ new repositories in `env.native`. Existing Artifacts repositories retain
 their recorded backend and Artifacts limits.
 [Cloudflare upload limits](https://developers.cloudflare.com/workers/platform/limits/#request-and-response-limits) · [DNS proxy status](https://developers.cloudflare.com/dns/proxy-status/) · [Git receive configuration](https://git-scm.com/docs/git-config#Documentation/git-config.txt-receivemaxInputSize)
 
+### Large repositories on Cloudflare R2
+
+The `r2` environment keeps regular Git objects on Cloudflare. Containers run
+native Git in disposable workspaces and read existing immutable packs from a
+read-only R2 mount. A repository's Durable Object publishes the pack list and
+refs in one transaction. Forks copy immutable packs to independent R2 keys.
+
+1. Enable Workers Paid and Containers. In `env.r2`, set a separate Worker, D1
+   database, and private R2 buckets `GIT_PACKS` and `LFS_OBJECTS`. Build the
+   image using Docker.
+2. Set `CLOUDFLARE_ACCOUNT_ID`. Put `SHARD_GIT_R2_ACCESS_KEY_ID` and
+   `SHARD_GIT_R2_SECRET_ACCESS_KEY` in `.env.deploy.r2` with Object Read & Write
+   scoped to `GIT_PACKS`. Add `SHARD_LFS_R2_ACCESS_KEY_ID` and
+   `SHARD_LFS_R2_SECRET_ACCESS_KEY` scoped to `LFS_OBJECTS`.
+3. Apply a seven-day expiration and incomplete multipart abort rule to
+   `git-incoming/` in `GIT_PACKS` and the separate `lfs-incoming/` lifecycle
+   rule to `LFS_OBJECTS`. Keep `git-packs/` available for repository reads.
+4. Deploy the R2 Git environment.
+
+   ```sh
+   mise exec -- npm run deploy:paid -- --env r2 --secrets-file .env.deploy.r2
+   ```
+
+New repositories use R2 Git. Existing repository records keep their recorded
+storage backend. To migrate a repository, mirror its Git refs to a new R2 Git
+repository and transfer its Git LFS objects with the LFS client.
+
+Standard Git clone, fetch and push use the HTTPS URL from the repository page.
+For pushes exceeding the domain's request body limit, install the Shard Git
+remote helper from the source checkout or prebuilt release package, then set a
+separate push URL.
+
+```sh
+npm install -g .
+git remote set-url --push origin 'shard::https://forge.example.com/owner/repo.git'
+git push origin main
+```
+
+For a checkout that uses Git LFS, set its LFS push URL to the HTTPS endpoint
+and configure the [LFS multipart adapter](#git-lfs-upload-modes).
+
+```sh
+git config remote.origin.lfspushurl 'https://forge.example.com/owner/repo.git/info/lfs'
+```
+
+The helper uses Git credentials for the HTTPS URL and sends pack parts to
+signed R2 URLs. Shard lists the parts already in R2 and verifies the entire
+assembled request before publishing. The server retains upload sessions and
+the final Git report for six days from session creation. Resume from the
+original checkout, where the helper saves the exact receive-pack request.
+
+```sh
+git remote-shard --list https://forge.example.com/owner/repo.git
+git remote-shard --resume <spool-id> https://forge.example.com/owner/repo.git
+```
+
+Use `--abort` with the same arguments to cancel an unfinished server upload
+and remove its local spool. Use `--discard` to remove only the local spool.
+Keep enough space in the checkout's Git common directory for one push spool.
+The server checks current write access, branch protection and the expected ref
+state during publication. A stale ref result requires a fresh `git push`.
+
+`SHARD_GIT_R2_MAX_PUSH_BYTES` defaults to 2 GiB for the receive-pack request,
+with 32 MiB multipart parts that grow when needed to fit R2's part count.
+Standard HTTPS also follows the Cloudflare zone's request body limit. The
+`SHARD_GIT_R2_INSTANCE` variable selects the container type and defaults to
+`standard-4`. Size it for Git's working files and incoming packs. Refs and
+pack metadata have a per-workspace control budget of 4 MiB. Git pack bytes
+stay in R2 across container restarts. Account for pack index and range-read
+costs when sizing an instance.
+[Workers limits](https://developers.cloudflare.com/workers/platform/limits/#request-and-response-limits) · [Container sizes](https://developers.cloudflare.com/containers/platform/limits/) · [R2 limits](https://developers.cloudflare.com/r2/platform/limits/)
+
+Run the R2 Git integration test on Linux, WSL2 or macOS with a local
+FUSE-enabled Docker engine. Build the Worker first.
+
+```sh
+mise run build
+SHARD_TEST_R2_CONTAINER=1 mise exec -- node --test tests/r2-git.test.mjs
+```
+
+The test relay defaults to `host.docker.internal` for container requests.
+Set `SHARD_TEST_R2_RELAY_HOST` to the Docker bridge gateway if the runner is
+reachable through that address.
+[Local Container development](https://developers.cloudflare.com/containers/guides/local-dev/#fuse-support)
+
 ### Web merges on Artifacts
 
 Artifacts supports same-repository fast-forwards through Git HTTPS. Managed
@@ -519,9 +608,9 @@ in D1 so Cron can reconcile them after a disconnect.
 
 ## 简体中文
 
-Shard 是部署在 Cloudflare 上的自托管 Git 平台，适用于个人项目和小团队。D1 保存账户、权限、议题和审查记录。默认 Free 部署使用 SQLite Durable Objects 存放 Git 数据，也可选择 Paid Artifacts 或自有原生 Git 源站。界面语言可在页脚或账号设置中切换。
+Shard 是部署在 Cloudflare 上的自托管 Git 平台，适用于个人项目和小团队。D1 保存账户、权限、议题和审查记录。默认 Free 部署使用 SQLite Durable Objects，也可选择 Artifacts、Cloudflare 托管的 R2 Git 或自有原生 Git 源站。界面语言可在页脚或账号设置中切换。
 
-[部署配置、资源限制与扩容空间](docs/deployment-capacity.md) 汇总四种方案的配置步骤、平台配额、实际验证与扩容路径。
+[部署配置、资源限制与扩容空间](docs/deployment-capacity.md) 汇总各方案的配置步骤、平台配额、实际验证与扩容路径。
 
 点击 **Deploy to Cloudflare**，选择账户并确认 Worker 和 D1 数据库。构建完成后即可注册、创建仓库和推送 Git。命令行可在登录 Wrangler 后执行 `mise run deploy`。默认配置的 Git LFS 可通过绑定私有 `LFS_OBJECTS` R2 存储桶启用。[Free 部署指南](#deploy-to-cloudflare)
 
@@ -532,6 +621,8 @@ Shard 是部署在 Cloudflare 上的自托管 Git 平台，适用于个人项目
 Paid 环境可运行 `npm run deploy:paid -- --secrets-file .env.deploy.paid`，默认启用 R2 分片上传。已有 Artifacts 实例通过 `--env artifacts` 升级并保留原来的资源绑定。自管 Git 服务器可使用 `--env native`。[Paid 部署说明](#deploy-paid-with-r2-multipart-uploads) · [原生 Git 部署说明](#deploy-with-a-native-git-origin)
 
 大仓可运行 `npm run deploy:paid -- --env native --secrets-file .env.deploy.paid`，为原生 Git 源站配置 DNS only 的 HTTPS 域名和持久盘。标准 Git 直接向源站传输 pack，Worker 仍检查私库访问、写入令牌和分支保护。LFS 分片直接上传到 R2。[Paid 大仓部署](#large-repositories-on-workers-paid)
+
+无需 VPS 的大仓可运行 `npm run deploy:paid -- --env r2 --secrets-file .env.deploy.r2`。R2 保存普通 Git 的 pack 和索引，容器按需运行 Git。标准 HTTPS 支持 clone、fetch 和域名限额内的 push，安装 `git-remote-shard` 可将大推送分片直传 R2，并从 R2 已接收的分片恢复。[R2 Git 部署与续传](#large-repositories-on-cloudflare-r2)
 
 选择 `managed-staging` 和 `managed` 可用 Durable Objects 协调受保护分支的合并、用 Workflows 续跑仓库复制，并通过 Containers 执行需要原生 Git 的 Artifacts 合并。Workers Builds 使用 `npm run ci -- --container` 验证代码与镜像，再通过 `npm run cd` 部署 staging。发布 Workflow 验证通过后，同一提交才会部署到生产并再次验证。[托管 CI/CD 配置](#deploy-with-managed-cloudflare-services)
 

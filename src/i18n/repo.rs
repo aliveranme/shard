@@ -56,6 +56,7 @@ catalog! {
         ArtifactsStorage => "Cloudflare Artifacts", "Cloudflare Artifacts";
         NativeGitStorage => "Native Git origin", "原生 Git 源站";
         DurableGitStorage => "Cloudflare Durable Objects", "Cloudflare Durable Objects";
+        R2GitStorage => "Cloudflare R2", "Cloudflare R2";
         StorageHelp => "Git clients connect through this Shard instance.", "Git 客户端通过此 Shard 实例连接。";
         DangerZone => "Danger zone", "危险操作";
         DeleteThisRepository => "Delete this repository", "删除此仓库";

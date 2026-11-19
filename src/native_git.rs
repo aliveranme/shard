@@ -17,6 +17,7 @@ pub(crate) enum ArtifactsMergeTransport {
 pub(crate) enum GitService {
     Native { origin: String, authorization: String },
     Durable(ObjectNamespace),
+    R2(ObjectNamespace),
 }
 
 pub(crate) struct GitServiceRepo {
@@ -186,10 +187,14 @@ impl GitService {
         env.durable_object("GIT_REPOS").map(Self::Durable)
     }
 
+    pub(crate) fn r2(env: &Env) -> Result<Self> {
+        env.durable_object("GIT_R2_REPOS").map(Self::R2)
+    }
+
     fn origin(&self) -> &str {
         match self {
             Self::Native { origin, .. } => origin,
-            Self::Durable(_) => "https://internal",
+            Self::Durable(_) | Self::R2(_) => "https://internal",
         }
     }
 
@@ -207,7 +212,7 @@ impl GitService {
                 init.headers.set("Authorization", authorization)?;
                 Fetch::Request(Request::new_with_init(url, &init)?).send().await
             }
-            Self::Durable(namespace) => {
+            Self::Durable(namespace) | Self::R2(namespace) => {
                 let id = id.ok_or_else(|| Error::RustError("Missing Git storage ID".into()))?;
                 let request = Request::new_with_init(url, &init)?;
                 namespace.get_by_name(id)?.fetch_with_request(request).await
@@ -285,6 +290,22 @@ impl GitServiceRepo {
         matches!(self.client, GitService::Durable(_))
     }
 
+    pub(crate) fn shares_comparison_backend(&self, source: &Self) -> bool {
+        match (&self.client, &source.client) {
+            (GitService::Native { origin: left, .. }, GitService::Native { origin: right, .. }) => left == right,
+            (GitService::R2(_), GitService::R2(_)) => true,
+            _ => false,
+        }
+    }
+
+    pub(crate) async fn r2_control(&self, endpoint: &str, payload: &impl Serialize) -> Result<Response> {
+        if !matches!(self.client, GitService::R2(_)) {
+            return Err(Error::RustError("Invalid R2 Git backend".into()));
+        }
+        let url = format!("{}/v1/r2/{}/{endpoint}", self.client.origin(), self.id);
+        self.client.send(Some(&self.id), &url, json_post(payload)?).await
+    }
+
     async fn read(&self, endpoint: &str, params: &[(&str, &str)]) -> Result<Response> {
         let mut url = Url::parse(&format!("{}/v1/repos/{}/{endpoint}", self.client.origin(), self.id))?;
         url.query_pairs_mut().extend_pairs(params.iter().copied());
@@ -294,7 +315,7 @@ impl GitServiceRepo {
     pub(crate) fn comparison_pair<'a>(target: &'a RepoHandle, source: &'a RepoHandle) -> Option<(&'a Self, &'a Self)> {
         match (target, source) {
             (RepoHandle::Service(target), RepoHandle::Service(source))
-                if !target.is_durable() && !source.is_durable() && target.client.origin() == source.client.origin() =>
+                if target.shares_comparison_backend(source) =>
             {
                 Some((target, source))
             }

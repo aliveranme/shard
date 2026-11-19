@@ -10,10 +10,11 @@
 | --- | --- | --- | --- |
 | 默认 Free | 顶层 `shard-free` | 每仓库一个 SQLite Durable Object | Workers Free、D1、Static Assets、Rate Limiting、Cron。可选 R2 |
 | 托管 Paid | `managed` 或 `managed-staging` | Artifacts | Workers Paid、Artifacts、D1、R2、Containers、Durable Objects、Workflows。构建容器镜像需要 Docker |
+| R2 Git（全托管大仓） | `r2` | R2 持久化 Git pack 和索引，SQLite Durable Objects 保存 refs 与清单 | Workers Paid、D1、两个私有 R2 桶、Containers、Durable Objects、Workflows。构建镜像需要 Docker |
 | 旧 Artifacts | `artifacts` | 原 Artifacts 命名空间 | Workers Paid、Artifacts、D1、R2。可选自管合并桥 |
 | 原生 Git（混合部署） | `native` | 自备主机持久盘上的裸 Git 仓库 | Cloudflare 托管 Worker、D1 和 R2，另需自备 HTTPS Git 源站。Paid 预设启用 R2 分片 |
 
-四种方案均使用 `DB`、`ASSETS` 和 `REQUEST_LIMITER`。`GIT_BACKEND` 为新建仓库和无凭据导入选择默认后端。已创建的仓库按 D1 中记录的后端访问，fork 继承源仓库的后端。配置中的变量会在发布时写入 Worker。由控制台维护的文本变量应从对应环境的 `vars` 中移除，`keep_vars: true` 会保留这些变量。令牌通过 Worker Secret 或 Git 忽略的 `.env.deploy.*` 文件提供。[配置源文件](../wrangler.jsonc) · [变量与密钥配置](../README.md#worker-variables-and-secrets)
+这些方案均使用 `DB`、`ASSETS` 和 `REQUEST_LIMITER`。`GIT_BACKEND` 为新建仓库选择默认后端。已创建的仓库按 D1 中记录的后端访问，fork 继承源仓库的后端。配置中的变量会在发布时写入 Worker。由控制台维护的文本变量应从对应环境的 `vars` 中移除，`keep_vars: true` 会保留这些变量。令牌通过 Worker Secret 或 Git 忽略的 `.env.deploy.*` 文件提供。[配置源文件](../wrangler.jsonc) · [变量与密钥配置](../README.md#worker-variables-and-secrets)
 
 ### 默认 Free
 
@@ -63,6 +64,16 @@ mise exec -- npm run deploy:paid -- --env native --secrets-file .env.deploy.paid
 
 配置直连后，从原生仓库页面复制新克隆地址。标准 Git 将 pack 传给源站。Worker 校验私库的读取授权和推送资格，源站在 Git 更新引用前再向 Worker 校验写权限与分支保护。Git LFS Batch 仍由 Worker 鉴权，R2 分片模式下客户端把对象字节直接上传到 R2。[直连反代样例](../README.md#large-repositories-on-workers-paid) · [DNS 代理状态](https://developers.cloudflare.com/dns/proxy-status/)
 
+### R2 Git（全托管大仓）
+
+开通 Workers Paid 和 Containers，为 `env.r2` 配置独立的 D1 数据库和两个私有桶。`GIT_PACKS` 保存普通 Git 对象，`LFS_OBJECTS` 保存 LFS 对象。为每个桶创建限于该桶的 Object Read & Write 凭据。在 `.env.deploy.r2` 中设置 `SHARD_GIT_R2_ACCESS_KEY_ID`、`SHARD_GIT_R2_SECRET_ACCESS_KEY`、`SHARD_LFS_R2_ACCESS_KEY_ID` 和 `SHARD_LFS_R2_SECRET_ACCESS_KEY`，并设置 `CLOUDFLARE_ACCOUNT_ID`。
+
+```sh
+mise exec -- npm run deploy:paid -- --env r2 --secrets-file .env.deploy.r2
+```
+
+标准 Git HTTPS 可直接使用。大 push 安装发布包中的 `git-remote-shard`，为 checkout 设置带 `shard::` 前缀的 push URL。分片传到私有 R2 暂存对象，续传列出 R2 已收到的分片。会话和最终 Git 回执保留六天。使用 `git remote-shard --list` 和 `--resume` 配合原 HTTPS 地址，恢复原来暂存的请求。分别给 `git-incoming/` 和 `lfs-incoming/` 设置七天过期和中止未完成分片上传规则。[完整命令和续传说明](../README.md#large-repositories-on-cloudflare-r2)
+
 ### 共用的 LFS 配置
 
 `proxy` 只需私有的 `LFS_OBJECTS` 绑定。手工启用 `r2-direct` 或 `r2-multipart` 时还要设置 `SHARD_LFS_UPLOAD_MODE`、`SHARD_LFS_R2_BUCKET`、`SHARD_LFS_R2_ENDPOINT` 和上文的两项 R2 Secret。桶名与绑定一致，endpoint 与桶的账号、辖区一致。给 `lfs-incoming/` 设置 7 天过期和中止未完成 multipart 的规则。`r2-multipart` 的上传客户端需要在各 Git checkout 配置随项目分发的 `scripts/git-lfs-r2-multipart.mjs`。三种模式的下载都使用标准 Git LFS。[LFS 变量、生命周期规则和客户端命令](../README.md#git-lfs-upload-modes)
@@ -90,6 +101,7 @@ HTTP Worker 可以在客户端连接存续时流式运行，运行时更新可�
 | --- | --- |
 | Free Git | `MAX_PUSH_MB` 可设 1–32 MiB，默认 32 MiB。push 计入 receive 命令及 pack。fork、公开 HTTPS import 需要把快照装进一个同样大小的 pack，复制最多 2,048 refs 和 1 MiB 引用元数据，导入期限 60 s。`INGEST_CACHE_MB` 默认 16 MiB，调小缓存可给其他解析留内存。展开的对象、delta 解析与 SQLite 索引仍占资源。[SQLite Git 实现](../worker/git-repository.mjs) |
 | Artifacts Git | 每次 push 64 MiB、50,000 个对象、1 MiB 的引用更新，单文件 32 MiB。创建于 2026-09-29 起的仓库为 1 GB，此前仓库为 10 GB。账号总存储默认 1 TB，可申请提高。每命名空间的控制面和每仓库的 Git 请求各限 2,000 次/10 s。[Artifacts 限制](https://developers.cloudflare.com/artifacts/platform/limits/) |
+| R2 Git | 普通 Git 数据保存为不可变 pack 和索引，仓库累计字节由 R2 容量和运行负载决定。分片 push 默认 `2 GiB`，可按字节调整 `SHARD_GIT_R2_MAX_PUSH_BYTES`。标准 push 同时受域名请求体限制。分片至少 32 MiB，最多 10,000 片，容器工作区元数据限 4 MiB。[R2 Git 实现](../worker/git-r2-repository.mjs) · [R2 限制](https://developers.cloudflare.com/r2/platform/limits/) |
 | 原生 Git | 经 Worker 代理的 URL 仍遵守入口限制。直连 pack 使用源站的 Git、文件系统、磁盘、网络和反代资源。保留引用与鉴权控制请求的独立预算。同一仓库的写操作串行。[原生源站](../scripts/git-origin.mjs) · [Git receive 配置](https://git-scm.com/docs/git-config#Documentation/git-config.txt-receivemaxInputSize) |
 | Git 控制请求 | 经 Worker 代理的 receive 命令前缀上限为 256 KiB。直连 Git 的引用钩子输入上限为 256 KiB，发往 Worker 的控制 JSON 上限为 512 KiB。Shard 的限流配置默认按请求类别与来源 IP 使用 300 次/60 s，由 Cloudflare 各位置近似计数。[Git 协议解析](../src/git_wire.js) · [直连授权](../src/handlers/git.rs) · [Rate Limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/) |
 | Paid 执行配置 | 托管和 `deploy:paid -- --env native` 默认 300 s CPU、20,000 子请求。旧 Artifacts 配置为 300 s CPU，子请求继承 Workers Paid 默认值。普通 `native` 使用 `free` 预设，将其显式切到 `paid` 时部署脚本会设置 300 s CPU，支持 `limits` 覆盖。[Wrangler 配置](../wrangler.jsonc) · [部署脚本](../scripts/deploy.mjs) |
@@ -121,13 +133,17 @@ HTTP Worker 可以在客户端连接存续时流式运行，运行时更新可�
 
 要进一步提高可用 LFS 容量，可将完整校验和条件发布拆成可恢复的后台步骤。由容器对指定版本的 R2 对象做流式校验，Worker 再按暂存对象版本发布，可把全量哈希移到更大的计算预算下。Workflow 持久保存对象标识和进度。[Workflow 持久执行](https://developers.cloudflare.com/workflows/build/rules-of-workflows/) · [当前 LFS 发布](../src/lfs_remote.rs)
 
-普通 Git 的 push、单文件及仓库额度由 Artifacts 执行。增加容器规格扩大合并能力，申请账号容量扩大多个仓库的总存储。需要更大单次推送或单仓库容量时，使用原生直连，或另行设计可持久化的 Git 数据服务。容器的临时盘适合计算，快照和 R2 FUSE 有各自的持久化和文件系统约束。持续写入裸仓库需要可靠的引用锁和原子更新。[Artifacts 限制](https://developers.cloudflare.com/artifacts/platform/limits/) · [容器磁盘行为](https://developers.cloudflare.com/containers/faq/#is-disk-persistent-what-happens-to-my-disk-when-my-container-sleeps) · [R2 FUSE](https://developers.cloudflare.com/containers/examples/r2-fuse-mount/)
+普通 Git 的 push、单文件及仓库额度由 Artifacts 执行。增加容器规格扩大合并能力，申请账号容量扩大多个仓库的总存储。需要更大单次推送或单仓库容量时，可选 R2 Git 或原生直连。[Artifacts 限制](https://developers.cloudflare.com/artifacts/platform/limits/) · [R2 Git 部署](../README.md#large-repositories-on-cloudflare-r2)
 
 ### 旧 Artifacts
 
 使用现有 R2 桶可切换到签名直传或分片。保留 S3 配置可支持已有大 LFS 对象的 fork 复制。补配外部合并桥可支持更多 Web 合并。后台吞吐需要继续扩大时，可为该实例引入托管方案的分支协调与复制 Workflow，在独立 staging 验证资源配置。[旧部署升级](../README.md#upgrade-an-existing-artifacts-deployment) · [LFS 上传模式](../README.md#git-lfs-upload-modes)
 
 保留 Artifacts 命名空间和仓库 ID 可保留早期仓库的 10 GB 容量。单次 push 执行与托管 Paid 相同的服务限制。迁移到其他 Git 后端时，先暂停写入，核对 refs、历史 PR 所需对象和 LFS 内容，再变更存储映射。[Artifacts 容量变更](https://developers.cloudflare.com/changelog/post/2026-09-29-repository-size-limit/) · [存储变更流程](../PLAN.md#optional-git-backends)
+
+### R2 Git
+
+容器用临时盘生成新 pack，按需从只读挂载读取 R2 上已有的 pack 和索引。SQLite Durable Object 只在新对象已存入 R2、权限和 refs 复查通过后发布清单。仓库可以累计保存大于单次 push 或容器工作盘的数据。单次接收、导入或合并仍需足够的工作盘、内存和执行时间。备份与恢复应同时覆盖 R2 pack、DO refs 和 D1。再提高配置前，先测冷启动读取、Git 对象校验、克隆和 fork。[容器磁盘行为](https://developers.cloudflare.com/containers/faq/#is-disk-persistent-what-happens-to-my-disk-when-my-container-sleeps) · [R2 Git 工作区](../scripts/git-r2-origin.mjs)
 
 ### 原生 Git
 

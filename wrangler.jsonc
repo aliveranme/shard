@@ -141,6 +141,33 @@
         "scheduling_policy": "durable_object",
         "images": { "bridge": { "dockerfile": "containers/git-merge.Dockerfile", "build_context": "." } }
       }]
+    },
+    "r2": {
+      "name": "shard-r2",
+      "vars": { "GIT_BACKEND": "r2", "SHARD_LIMIT_PROFILE": "paid" },
+      "limits": { "cpu_ms": 300000, "subrequests": 20000 },
+      "secrets": { "required": ["SHARD_GIT_R2_ACCESS_KEY_ID", "SHARD_GIT_R2_SECRET_ACCESS_KEY"] },
+      "d1_databases": [{
+        "binding": "DB", "database_name": "shard-r2",
+        "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "migrations"
+      }],
+      "r2_buckets": [
+        { "binding": "GIT_PACKS", "bucket_name": "shard-r2-git-packs" },
+        { "binding": "LFS_OBJECTS", "bucket_name": "shard-r2-lfs" }
+      ],
+      "ratelimits": [{ "name": "REQUEST_LIMITER", "namespace_id": "2006", "simple": { "limit": 300, "period": 60 } }],
+      "triggers": { "crons": ["0 3 * * *", "* * * * *"] },
+      "durable_objects": { "bindings": [
+        { "name": "GIT_R2_REPOS", "class_name": "R2GitRepository" },
+        { "name": "MERGE_COORDINATOR", "class_name": "MergeQueueCoordinator" }
+      ] },
+      "migrations": [{ "tag": "r2-git-v1", "new_sqlite_classes": ["R2GitRepository", "MergeQueueCoordinator"] }],
+      "workflows": [{ "name": "shard-r2-copy", "binding": "REPOSITORY_COPY_WORKFLOW", "class_name": "RepositoryCopyWorkflow" }],
+      "containers": [{
+        "class_name": "R2GitRepository",
+        "scheduling_policy": "durable_object",
+        "images": { "git": { "dockerfile": "containers/git-r2.Dockerfile", "build_context": "." } }
+      }]
     }
   }
 }

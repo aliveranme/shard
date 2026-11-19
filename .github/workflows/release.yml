@@ -50,10 +50,10 @@ jobs:
           export PACKAGE_DIR="$RUNNER_TEMP/$package_name"
           mkdir -p "$PACKAGE_DIR/scripts" "$PACKAGE_DIR/src"
           cp -R build static migrations worker containers "$PACKAGE_DIR/"
-          cp src/git_wire.js "$PACKAGE_DIR/src/"
+          cp src/git_wire.js src/lfs_s3.js "$PACKAGE_DIR/src/"
           cp .node-version .dockerignore package.json package-lock.json CHANGELOG.md "$PACKAGE_DIR/"
           cp node_modules/openpgp/LICENSE "$PACKAGE_DIR/OPENPGP-LICENSE"
-          cp scripts/deploy.mjs scripts/git-origin.mjs scripts/git-lfs-r2-multipart.mjs "$PACKAGE_DIR/scripts/"
+          cp scripts/deploy.mjs scripts/git-origin.mjs scripts/git-r2-origin.mjs scripts/git-remote-shard.mjs scripts/git-lfs-r2-multipart.mjs "$PACKAGE_DIR/scripts/"
           mise exec -- node <<'JS'
           const { writeFileSync } = require('node:fs');
           const { join } = require('node:path');
@@ -69,6 +69,7 @@ jobs:
           mise exec -- node "$PACKAGE_DIR/scripts/deploy.mjs" --config "$PACKAGE_DIR/wrangler.json" --paid --dry-run --outdir "$RUNNER_TEMP/bundled-paid"
           mise exec -- node "$PACKAGE_DIR/scripts/deploy.mjs" --config "$PACKAGE_DIR/wrangler.json" --paid --env managed-staging --dry-run --outdir "$RUNNER_TEMP/bundled-paid-staging"
           mise exec -- node "$PACKAGE_DIR/scripts/deploy.mjs" --config "$PACKAGE_DIR/wrangler.json" --paid --env native --dry-run --outdir "$RUNNER_TEMP/bundled-paid-native"
+          mise exec -- node "$PACKAGE_DIR/scripts/deploy.mjs" --config "$PACKAGE_DIR/wrangler.json" --paid --env r2 --dry-run --outdir "$RUNNER_TEMP/bundled-paid-r2"
           unlink "$PACKAGE_DIR/node_modules"
           cd "$RUNNER_TEMP/release"
           tar -C "$RUNNER_TEMP" -czf "$package_name.tar.gz" "$package_name"

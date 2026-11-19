@@ -643,7 +643,11 @@ async fn start_copy(
         return render_copy_form(state, source, destination, form_url, Some((Text::InvalidName, 400)));
     }
     let backend = if authenticated_import {
-        Ok(GitBackend::Native)
+        Ok(if matches!(GitBackend::selected(&state.env), Ok(GitBackend::R2)) {
+            GitBackend::R2
+        } else {
+            GitBackend::Native
+        })
     } else {
         source.map_or_else(|| GitBackend::selected(&state.env), |repo| Ok(repo.git_backend))
     };

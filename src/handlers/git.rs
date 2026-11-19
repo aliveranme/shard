@@ -9,12 +9,21 @@ use crate::ctx::AppState;
 use crate::db;
 use crate::models::GitIdentity;
 use crate::i18n::{BranchText, CollaboratorText, CommonText, RepoText};
+use crate::native_git::{GitService, GitServiceRepo};
 use crate::util;
 use wasm_bindgen::JsCast;
 use worker::*;
 
 pub(crate) const ORIGIN_TOKEN: &str = "x-shard-git-origin-token";
 const MAX_CONTROL_BYTES: usize = 512 * 1024;
+const MAX_MULTIPART_COMMAND_BYTES: usize = 4096;
+
+#[derive(serde::Deserialize)]
+struct PreparedPush {
+    prepared: String,
+    updates: Vec<RefUpdate>,
+    accepted: Vec<String>,
+}
 
 #[derive(serde::Deserialize)]
 struct GitRepo {
@@ -64,6 +73,7 @@ async fn proxy(req: Request, ctx: RouteContext<AppState>, service: &str) -> Resu
         Err(response) => return Ok(response),
     };
 
+    let r2 = matches!(repo.git_backend, GitBackend::R2);
     let storage = match GitStorage::from_env(&state.env, repo.git_backend) {
         Ok(storage) => storage,
         Err(error) => return upstream_error(state, &error),
@@ -102,6 +112,10 @@ async fn proxy(req: Request, ctx: RouteContext<AppState>, service: &str) -> Resu
             headers.set(name, &value)?;
         }
     }
+    if r2 && receive.is_some() {
+        let Some(identity) = &identity else { return hidden_repo() };
+        headers.set("x-shard-git-actor", &identity.user_id.to_string())?;
+    }
 
     let method = req.method();
     // Inspect only the command prefix. Pack data still bypasses Wasm memory.
@@ -112,7 +126,7 @@ async fn proxy(req: Request, ctx: RouteContext<AppState>, service: &str) -> Resu
     } else {
         None
     };
-    let intent = if let Some(push) = &receive {
+    let intent = if let Some(push) = receive.as_ref().filter(|_| !r2) {
         match crate::git_activity::stage(&state.env, repo.id, &push.updates).await {
             Ok(intent) => intent,
             Err(error) => {
@@ -134,6 +148,12 @@ async fn proxy(req: Request, ctx: RouteContext<AppState>, service: &str) -> Resu
         Ok(response) => response,
         Err(error) => return upstream_error(state, &error),
     };
+    if r2 && receive.is_some() && upstream.status_code() == 202 {
+        let (crate::git_storage::RepoHandle::Service(handle), Some(identity)) = (&handle, &identity) else {
+            return hidden_repo();
+        };
+        upstream = publish_r2(&ctx, &req, &repo, handle, identity.user_id, upstream).await?;
+    }
     let response_headers = Headers::new();
     for name in [
         "content-type",
@@ -144,6 +164,11 @@ async fn proxy(req: Request, ctx: RouteContext<AppState>, service: &str) -> Resu
     ] {
         if let Ok(Some(value)) = upstream.headers().get(name) {
             response_headers.set(name, &value)?;
+        }
+    }
+    if r2 {
+        if let Some(value) = upstream.headers().get("retry-after")? {
+            response_headers.set("Retry-After", &value)?;
         }
     }
     if private {
@@ -176,6 +201,111 @@ async fn proxy(req: Request, ctx: RouteContext<AppState>, service: &str) -> Resu
         }
     }
     Ok(upstream.with_headers(response_headers))
+}
+
+pub(crate) async fn multipart_upload(mut req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
+    let state = &ctx.data;
+    let invalid = |code| git_error(state, code, BranchText::InvalidPush);
+    let (Some(owner), Some(name)) = (ctx.param("owner"), ctx.param("repo").and_then(|name| name.strip_suffix(".git"))) else {
+        return hidden_repo();
+    };
+    let database = state.db()?;
+    let Some(repo) = load_repo(&database, owner, name).await? else { return hidden_repo() };
+    if !matches!(repo.git_backend, GitBackend::R2) {
+        return hidden_repo();
+    }
+    let actor = match authorize(state, &database, &repo, &req, true).await? {
+        Ok(Some(identity)) => identity.user_id,
+        Err(response) => return Ok(response),
+        Ok(None) => return hidden_repo(),
+    };
+    let length = util::header(&req, "content-length").and_then(|value| value.parse::<usize>().ok());
+    let Some(length) = length.filter(|length| *length <= MAX_MULTIPART_COMMAND_BYTES) else { return invalid(413) };
+    if util::header(&req, "content-encoding").is_some() {
+        return invalid(415);
+    }
+    let bytes = req.bytes().await?;
+    if bytes.len() != length {
+        return invalid(400);
+    }
+    let Ok(command) = serde_json::from_slice::<serde_json::Value>(&bytes) else { return invalid(400) };
+    let Some(action @ ("start" | "part" | "finish" | "abort")) = command.get("action").and_then(|value| value.as_str()) else {
+        return invalid(400);
+    };
+    let handle = match GitService::r2(&state.env).and_then(|service| service.repo(&repo.storage_id)) {
+        Ok(handle) => handle,
+        Err(error) => return upstream_error(state, &error),
+    };
+    let finish = action == "finish";
+    let payload = serde_json::json!({"actor": actor.to_string(), "command": command});
+    let response = match handle.r2_control("multipart", &payload).await {
+        Ok(response) if finish && response.status_code() == 202 => {
+            publish_r2(&ctx, &req, &repo, &handle, actor, response).await?
+        }
+        Ok(response) => response,
+        Err(error) => return upstream_error(state, &error),
+    };
+    no_store(response)
+}
+
+async fn publish_r2(
+    ctx: &RouteContext<AppState>, req: &Request, original: &GitRepo, handle: &GitServiceRepo,
+    actor: i64, mut response: Response,
+) -> Result<Response> {
+    let state = &ctx.data;
+    let prepared: PreparedPush = match response.json().await {
+        Ok(prepared) => prepared,
+        Err(error) => return upstream_error(state, &error),
+    };
+    let (Some(owner), Some(name)) = (ctx.param("owner"), ctx.param("repo").and_then(|name| name.strip_suffix(".git"))) else {
+        return hidden_repo();
+    };
+    let database = state.db()?;
+    let Some(repo) = load_repo(&database, owner, name).await? else { return hidden_repo() };
+    if repo.id != original.id || repo.storage_id != original.storage_id || !matches!(repo.git_backend, GitBackend::R2) {
+        return hidden_repo();
+    }
+    match authorize(state, &database, &repo, req, true).await? {
+        Ok(Some(identity)) if identity.user_id == actor => {}
+        Err(response) => return Ok(response),
+        _ => return hidden_repo(),
+    }
+    if crate::branch_rules::blocks_push(&database, repo.id, &prepared.updates).await? {
+        return git_error(state, 403, BranchText::ProtectedPush);
+    }
+    // Reconciliation should only inspect refs Git accepted during preparation.
+    let updates: Vec<_> = prepared.updates.into_iter().filter(|update| prepared.accepted.contains(&update.name)).collect();
+    let intent = crate::git_activity::stage(&state.env, repo.id, &updates).await?;
+    let payload = serde_json::json!({"prepared": prepared.prepared, "actor": actor.to_string()});
+    let response = match handle.r2_control("publish", &payload).await {
+        Ok(response) => response,
+        Err(error) => return upstream_error(state, &error),
+    };
+    if let Some(intent) = intent.filter(|_| matches!(response.status_code(), 200 | 409)) {
+        let env = state.env.clone();
+        let accepted = if response.status_code() == 200 && response.headers().get("X-Shard-Replayed-Push")?.is_none() {
+            prepared.accepted
+        } else {
+            Vec::new()
+        };
+        state.worker_ctx.wait_until(async move {
+            if crate::git_activity::confirm(&env, intent, Some(actor), &accepted).await.is_err() {
+                console_log!("event=git_push_confirmation_failed repo_id={}", repo.id);
+            }
+        });
+    }
+    Ok(response)
+}
+
+fn no_store(response: Response) -> Result<Response> {
+    let headers = Headers::new();
+    for name in ["content-type", "retry-after", "www-authenticate"] {
+        if let Some(value) = response.headers().get(name)? {
+            headers.set(name, &value)?;
+        }
+    }
+    headers.set("Cache-Control", "no-store")?;
+    Ok(response.with_headers(headers))
 }
 
 async fn load_repo(database: &d1::D1Database, owner: &str, name: &str) -> Result<Option<GitRepo>> {

@@ -1,0 +1,809 @@
+import { DurableObject } from "cloudflare:workers";
+import { gitR2S3 } from "../src/lfs_s3.js";
+import { shard_receive_report, shard_receive_request } from "../src/git_wire.js";
+
+const CONTROL = /^\/v1\/repos\/(shard-[A-Za-z0-9._-]{1,122})(?:\/(log|commit|commit-raw|tree|blob|file|ref|head|merge|merge-base|compare|integrated))?$/;
+const SMART = /^\/v1\/git\/(shard-[A-Za-z0-9._-]{1,122})\.git\/(info\/refs|git-upload-pack|git-receive-pack)$/;
+const STORAGE = /^\/v1\/r2\/(shard-[A-Za-z0-9._-]{1,122})\/(snapshot|multipart|publish)$/;
+const ID = /^shard-[A-Za-z0-9._-]{1,122}$/;
+const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+const ACTOR = /^[1-9][0-9]{0,18}$/;
+const OID = /^[a-f0-9]{40}$/;
+const SHA256 = /^[a-f0-9]{64}$/;
+const REF = /^refs\/[^\x00-\x20\x7f]{1,4096}$/;
+const ZERO = "0".repeat(40);
+const MiB = 1024 ** 2;
+const MAX_INPUT = (5 * 1024 - 5) * 1024 ** 3;
+const MAX_PARTS = 10_000;
+const MAX_INFO = 4 * MiB;
+const MAX_REPORT = MiB;
+const COMMAND_LIMIT = 8 * 1024;
+const SESSION_MS = 6 * 24 * 60 * 60_000;
+const WORK_MS = 60 * 60_000;
+const JOB_MS = WORK_MS + 5 * 60_000;
+const STARTUP_MS = 45_000;
+const PORT = 8793;
+const NO_STORE = { "Cache-Control": "no-store" };
+const REPORT_TYPE = "application/x-git-receive-pack-result";
+const INGEST_TYPE = "application/x-git-receive-pack-request";
+
+class GitHttpError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
+}
+
+function json(body, status = 200) {
+  return Response.json(body, { status, headers: NO_STORE });
+}
+
+function empty(status) {
+  return new Response(null, { status, headers: NO_STORE });
+}
+
+function result(bytes, replayed = false) {
+  return new Response(bytes, { headers: { ...NO_STORE, "Content-Type": REPORT_TYPE,
+    ...(replayed && { "X-Shard-Replayed-Push": "1" }) } });
+}
+
+function busy() {
+  return Response.json({ message: "Another Git write is in progress" }, {
+    status: 425, headers: { ...NO_STORE, "Retry-After": "2" },
+  });
+}
+
+async function bytes(body, max, errorStatus) {
+  if (!body) return new Uint8Array();
+  const chunks = [];
+  let length = 0;
+  for await (const chunk of body) {
+    length += chunk.byteLength;
+    if (length > max) throw new GitHttpError(errorStatus, "Git control response or request exceeds the size limit");
+    chunks.push(chunk);
+  }
+  if (chunks.length === 1 && chunks[0].byteLength === chunks[0].buffer.byteLength) return chunks[0];
+  const data = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    data.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return data;
+}
+
+async function control(body, limit = COMMAND_LIMIT, errorStatus = 400) {
+  const data = await bytes(body, limit, errorStatus === 400 ? 413 : errorStatus);
+  try {
+    const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(data));
+    if (value && typeof value === "object" && !Array.isArray(value)) return value;
+  } catch {
+    // Only a JSON object is valid for an internal command or result.
+  }
+  throw new GitHttpError(errorStatus, "Invalid Git control message");
+}
+
+function packPrefix(id, job = "") {
+  return `git-packs/${id}/${job ? `${job}/` : ""}`;
+}
+
+function incomingKey(id, upload) {
+  return `git-incoming/${id}/${upload}`;
+}
+
+function partLength(upload, number) {
+  const start = (number - 1) * upload.part_bytes;
+  return Number.isSafeInteger(number) && number > 0 && start < upload.size
+    ? Math.min(upload.part_bytes, upload.size - start) : 0;
+}
+
+function validSnapshot(snapshot, prefix) {
+  return typeof snapshot.head === "string" && snapshot.head.startsWith("refs/heads/") && REF.test(snapshot.head)
+    && Array.isArray(snapshot.refs) && Array.isArray(snapshot.packs)
+    && snapshot.refs.every(ref => typeof ref?.name === "string" && REF.test(ref.name) && OID.test(ref.oid) && ref.oid !== ZERO)
+    && new Set(snapshot.refs.map(ref => ref.name)).size === snapshot.refs.length
+    && new Set(snapshot.packs).size === snapshot.packs.length
+    && snapshot.packs.every(key => typeof key === "string" && key.startsWith(prefix) && /^pack-[a-f0-9]{40}$/.test(key.slice(prefix.length)));
+}
+
+function changedRefs(before, after, updates, reported) {
+  const old = new Map(before.refs.map(({ name, oid }) => [name, oid]));
+  const next = new Map(after.refs.map(({ name, oid }) => [name, oid]));
+  const names = new Set(reported);
+  const accepted = [];
+  for (const update of updates) {
+    const was = old.get(update.name) ?? ZERO;
+    const now = next.get(update.name) ?? ZERO;
+    if (was === now && !names.has(update.name)) continue;
+    if (was !== update.before || now !== update.after || reported && !names.delete(update.name)) {
+      throw new Error("Unexpected Git receive ref result");
+    }
+    accepted.push(update.name);
+    if (now === ZERO) old.delete(update.name);
+    else old.set(update.name, now);
+  }
+  if (names.size || old.size !== next.size || [...old].some(([name, oid]) => next.get(name) !== oid) || before.head !== after.head) {
+    throw new Error("Unexpected Git receive snapshot");
+  }
+  return accepted;
+}
+
+export class R2GitRepository extends DurableObject {
+  #sql;
+  #bucket;
+  #s3;
+  #writer = false;
+  #active = 0;
+  #ready;
+  #sessionToken;
+
+  constructor(ctx, env) {
+    super(ctx, env);
+    this.#sql = ctx.storage.sql;
+    this.#bucket = env.GIT_PACKS;
+    this.#sql.exec(`
+      CREATE TABLE IF NOT EXISTS repository (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1), id TEXT NOT NULL,
+        revision INTEGER NOT NULL, head TEXT NOT NULL, refs TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS packs (oid TEXT PRIMARY KEY, key TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS uploads (
+        id TEXT PRIMARY KEY, actor TEXT NOT NULL, digest TEXT NOT NULL, size INTEGER NOT NULL,
+        part_bytes INTEGER NOT NULL, expires INTEGER NOT NULL, upload TEXT, report BLOB,
+        aborted INTEGER NOT NULL DEFAULT 0,
+        UNIQUE (actor, digest, size)
+      );
+      CREATE TABLE IF NOT EXISTS work (
+        id TEXT PRIMARY KEY, repo TEXT NOT NULL, revision INTEGER NOT NULL, expires INTEGER NOT NULL,
+        actor TEXT, upload TEXT, candidate TEXT, updates TEXT, accepted TEXT, report BLOB,
+        published INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS work_upload ON work(upload, revision);
+    `);
+  }
+
+  #one(query, ...params) {
+    return this.#sql.exec(query, ...params).next().value;
+  }
+
+  #current() {
+    return this.#one("SELECT id, revision, head, deleted FROM repository WHERE singleton = 1");
+  }
+
+  #repository() {
+    const row = this.#one("SELECT id, revision, head, refs, deleted FROM repository WHERE singleton = 1");
+    if (!row || row.deleted) throw new GitHttpError(404, "Git repository is unavailable");
+    return { id: row.id, revision: row.revision, head: row.head, refs: JSON.parse(row.refs),
+      packs: [...this.#sql.exec("SELECT key FROM packs ORDER BY oid")].map(row => row.key) };
+  }
+
+  #metadata(snapshot) {
+    return { name: snapshot.id, remote: "", defaultBranch: snapshot.head.slice("refs/heads/".length) };
+  }
+
+  #refsFor(snapshot, publishedBytes = 0) {
+    const refs = JSON.stringify(snapshot.refs);
+    const paths = snapshot.packs.reduce((bytes, key) => bytes + key.length + 3, publishedBytes);
+    if (new TextEncoder().encode(refs + snapshot.head).byteLength + paths + 512 > MAX_INFO) {
+      throw new GitHttpError(413, "Git refs and pack manifest exceed the workspace metadata limit");
+    }
+    return refs;
+  }
+
+  #insert(id, snapshot) {
+    this.#sql.exec("INSERT INTO repository (singleton, id, revision, head, refs) VALUES (1, ?, 1, ?, ?)",
+      id, snapshot.head, this.#refsFor(snapshot));
+    this.#addPacks(snapshot.packs);
+  }
+
+  #addPacks(packs) {
+    for (const key of packs) this.#sql.exec("INSERT INTO packs (oid, key) VALUES (?, ?)", key.slice(-40), key);
+  }
+
+  #update(before, after) {
+    const current = this.#current();
+    if (current?.deleted || current?.revision !== before) throw new GitHttpError(409, "Git refs changed during preparation");
+    const { length } = this.#one("SELECT COALESCE(SUM(length(key) + 3), 0) AS length FROM packs");
+    this.#sql.exec("UPDATE repository SET revision = revision + 1, head = ?, refs = ? WHERE singleton = 1",
+      after.head, this.#refsFor(after, length));
+    this.#addPacks(after.packs);
+  }
+
+  #inputLimit() {
+    const value = Number(this.env.SHARD_GIT_R2_MAX_PUSH_BYTES ?? 2 * 1024 ** 3);
+    if (!Number.isSafeInteger(value) || value < 1 || value > MAX_INPUT) throw new Error("Invalid SHARD_GIT_R2_MAX_PUSH_BYTES");
+    return value;
+  }
+
+  #signer() {
+    return this.#s3 ??= gitR2S3(this.env);
+  }
+
+  async #lock(operation) {
+    if (this.#writer) return busy();
+    this.#writer = true;
+    try {
+      return await operation();
+    } finally {
+      this.#writer = false;
+    }
+  }
+
+  async #arm() {
+    const { next } = this.#one(`SELECT MIN(expires) AS next FROM (
+      SELECT expires FROM uploads UNION ALL SELECT expires FROM work
+    )`);
+    if (next === null) return;
+    const due = Math.max(next, Date.now() + 1_000);
+    const existing = await this.ctx.storage.getAlarm();
+    if (existing === null || due < existing) await this.ctx.storage.setAlarm(due);
+  }
+
+  async #reserve(id, revision, actor = null, upload = null) {
+    const job = crypto.randomUUID();
+    this.#sql.exec("INSERT INTO work (id, repo, revision, expires, actor, upload) VALUES (?, ?, ?, ?, ?, ?)",
+      job, id, revision, Date.now() + JOB_MS, actor, upload);
+    await this.#arm();
+    return job;
+  }
+
+  async #removePage(prefix) {
+    const page = await this.#bucket.list({ prefix, limit: 256 });
+    if (page.objects.length) await this.#bucket.delete(page.objects.map(object => object.key));
+    return !page.truncated;
+  }
+
+  async #dropWork(job) {
+    if (!job.published && !await this.#removePage(packPrefix(job.repo, job.id))) return false;
+    this.#sql.exec("DELETE FROM work WHERE id = ?", job.id);
+    return true;
+  }
+
+  async #dropUpload(id, upload, repo) {
+    this.#sql.exec("UPDATE uploads SET aborted = 1 WHERE id = ?", id);
+    const key = incomingKey(repo, id);
+    if (upload !== null && !await this.#bucket.head(key)) {
+      try {
+        await this.#bucket.resumeMultipartUpload(key, upload).abort();
+      } catch (error) {
+        if (!/\(10024\)$/.test(String(error))) throw error;
+      }
+    }
+    await this.#bucket.delete(key);
+    this.#sql.exec("DELETE FROM uploads WHERE id = ?", id);
+  }
+
+  async alarm() {
+    if (this.#writer) {
+      await this.ctx.storage.setAlarm(Date.now() + 30_000);
+      return;
+    }
+    await this.#lock(async () => {
+      const now = Date.now();
+      for (const job of [...this.#sql.exec("SELECT id, repo, published FROM work WHERE expires <= ? ORDER BY expires LIMIT 16", now)]) {
+        await this.#dropWork(job);
+      }
+      const repo = this.#current();
+      if (repo) {
+        for (const upload of [...this.#sql.exec("SELECT id, upload, report FROM uploads WHERE expires <= ? ORDER BY expires LIMIT 16", now)]) {
+          await this.#dropUpload(upload.id, upload.report === null ? upload.upload : null, repo.id);
+        }
+      }
+      await this.#arm();
+    });
+  }
+
+  async #startContainer() {
+    const instance = this.ctx.container;
+    if (instance.running && !this.#sessionToken) await instance.destroy();
+    if (!instance.running) {
+      const token = crypto.randomUUID();
+      this.#signer();
+      instance.start({
+        image: instance.images.git,
+        instance: this.env.SHARD_GIT_R2_INSTANCE ?? "standard-4",
+        enableInternet: true,
+        env: {
+          SHARD_GIT_TOKEN: token,
+          SHARD_GIT_R2_ENDPOINT: this.env.SHARD_GIT_R2_CONTAINER_ENDPOINT ?? this.env.SHARD_GIT_R2_ENDPOINT,
+          SHARD_GIT_R2_BUCKET: this.env.SHARD_GIT_R2_BUCKET,
+          SHARD_GIT_R2_ACCESS_KEY_ID: this.env.SHARD_GIT_R2_ACCESS_KEY_ID,
+          SHARD_GIT_R2_SECRET_ACCESS_KEY: this.env.SHARD_GIT_R2_SECRET_ACCESS_KEY,
+          ...(this.env.SHARD_GIT_IMPORT_HOSTS !== undefined && { SHARD_GIT_IMPORT_HOSTS: this.env.SHARD_GIT_IMPORT_HOSTS }),
+        },
+      });
+      this.#sessionToken = token;
+    }
+    await instance.setInactivityTimeout(2 * 60_000);
+    const port = instance.getTcpPort(PORT);
+    const end = Date.now() + STARTUP_MS;
+    do {
+      try {
+        const response = await port.fetch("http://container/healthz", { signal: AbortSignal.timeout(1_000) });
+        if (response.ok) {
+          const health = await control(response.body, COMMAND_LIMIT, 502);
+          if (health.protocol === 1) return { port, token: this.#sessionToken };
+        } else {
+          await response.body?.cancel();
+        }
+      } catch {
+        // The container port can be listening before the read-only mount is ready.
+      }
+      await scheduler.wait(200);
+    } while (Date.now() < end);
+    throw new GitHttpError(503, "Git container did not become ready");
+  }
+
+  async #workspace(job, repositories) {
+    this.#ready ??= this.#startContainer().finally(() => { this.#ready = undefined; });
+    const { port, token } = await this.#ready;
+    const prefix = `http://container/v1/workspaces/${job}`;
+    const fetch = (path, { method = "GET", headers, body, payload, timeout = WORK_MS } = {}) => {
+      const internal = new Headers(headers);
+      internal.set("Authorization", `Bearer ${token}`);
+      if (payload !== undefined) internal.set("Content-Type", "application/json");
+      return port.fetch(`${prefix}${path}`, { method, headers: internal,
+        body: payload === undefined ? body : JSON.stringify(payload), redirect: "manual", signal: AbortSignal.timeout(timeout) });
+    };
+    this.#active++;
+    let closed = false;
+    const close = async () => {
+      if (closed) return;
+      closed = true;
+      try {
+        const response = await fetch("", { method: "DELETE", timeout: 15_000 });
+        await response.body?.cancel();
+      } catch {
+        // The container scratch space is disposable, including after eviction.
+      } finally {
+        this.#active--;
+      }
+    };
+    try {
+      const response = await fetch("", { method: "POST", payload: { repositories } });
+      if (response.status !== 204) {
+        await response.body?.cancel();
+        throw new GitHttpError(response.status === 413 ? 413 : 502, "Could not open the Git workspace");
+      }
+      return { fetch, close };
+    } catch (error) {
+      await close();
+      throw error;
+    }
+  }
+
+  #forward(workspace, path, request, body = request.body) {
+    const headers = new Headers();
+    for (const name of ["content-type", "content-encoding", "git-protocol", "accept", "user-agent"]) {
+      const value = request.headers.get(name);
+      if (value !== null) headers.set(name, value);
+    }
+    return workspace.fetch(path, { method: request.method, headers, body });
+  }
+
+  async #snapshot(id) {
+    if (!ID.test(id)) throw new GitHttpError(422, "Invalid Git source repository");
+    const remote = this.env.GIT_R2_REPOS.getByName(id);
+    const response = await remote.fetch(`https://internal/v1/r2/${id}/snapshot`);
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new GitHttpError(response.status === 404 ? 404 : 502, "Git source repository is unavailable");
+    }
+    return control(response.body, MAX_INFO, 502);
+  }
+
+  async #capture(workspace, repository, job) {
+    const id = repository.id;
+    const response = await workspace.fetch(`/capture/${id}`, { method: "POST" });
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new GitHttpError(response.status === 413 ? 413 : 502, "Could not persist Git objects");
+    }
+    const captured = await control(response.body, MAX_INFO, 502);
+    if (!validSnapshot(captured, packPrefix(id, job))) throw new Error("Invalid Git container snapshot");
+    const old = new Set(repository.packs.map(key => key.slice(-40)));
+    const unique = [];
+    for (const key of captured.packs) {
+      const oid = key.slice(-40);
+      if (old.has(oid)) {
+        await this.#bucket.delete([`${key}.pack`, `${key}.idx`]);
+      } else {
+        const [pack, idx] = await Promise.all([this.#bucket.head(`${key}.pack`), this.#bucket.head(`${key}.idx`)]);
+        if (!pack || !idx || pack.size < 32 || idx.size === 0) throw new Error("Git container did not persist a pack and index");
+        old.add(oid);
+        unique.push(key);
+      }
+    }
+    captured.packs = unique;
+    return captured;
+  }
+
+  async #create(id, request, path) {
+    return this.#lock(async () => {
+      if (this.#current()) return empty(409);
+      const payload = await control(request.body);
+      const initial = { id, head: "refs/heads/main", refs: [], packs: [] };
+      if (payload.kind === "create" && payload.source === undefined && payload.credential === undefined) {
+        this.ctx.storage.transactionSync(() => this.#insert(id, initial));
+        return json(this.#metadata(initial), 201);
+      }
+      if (payload.kind !== "fork" && payload.kind !== "import") return empty(422);
+      const job = await this.#reserve(id, 0);
+      let next;
+      if (payload.kind === "fork") {
+        if (typeof payload.source !== "string" || payload.source === id || payload.credential !== undefined) return empty(422);
+        const source = await this.#snapshot(payload.source);
+        next = { ...source, id, packs: [] };
+        for (const key of source.packs) {
+          const target = `${packPrefix(id, job)}pack-${key.slice(-40)}`;
+          for (const extension of [".pack", ".idx"]) {
+            const object = await this.#bucket.head(key + extension);
+            if (!object || !await this.#signer().copy(key + extension, target + extension, object)) {
+              throw new GitHttpError(502, "Could not copy an existing Git pack");
+            }
+          }
+          next.packs.push(target);
+        }
+      } else {
+        const workspace = await this.#workspace(job, []);
+        try {
+          const response = await workspace.fetch(path, { method: "POST", payload });
+          await response.body?.cancel();
+          if (response.status !== 201) return empty(response.status);
+          next = await this.#capture(workspace, initial, job);
+          next.id = id;
+        } finally {
+          await workspace.close();
+        }
+      }
+      this.ctx.storage.transactionSync(() => {
+        this.#insert(id, next);
+        this.#sql.exec("DELETE FROM work WHERE id = ?", job);
+      });
+      return json(this.#metadata(next), 201);
+    });
+  }
+
+  async #delete(id) {
+    return this.#lock(async () => {
+      if (this.#active) return empty(202);
+      this.#sql.exec("INSERT INTO repository (singleton, id, revision, head, refs, deleted) VALUES (1, ?, 0, '', '[]', 1) "
+        + "ON CONFLICT (singleton) DO UPDATE SET deleted = 1", id);
+      const uploads = [...this.#sql.exec("SELECT id, upload, report FROM uploads LIMIT 16")];
+      for (const upload of uploads) {
+        await this.#dropUpload(upload.id, upload.report === null ? upload.upload : null, id);
+      }
+      const packs = await this.#removePage(packPrefix(id));
+      const incoming = await this.#removePage(`git-incoming/${id}/`);
+      if (!packs || !incoming || this.#one("SELECT id FROM uploads LIMIT 1")) return empty(202);
+      this.ctx.storage.transactionSync(() => {
+        this.#sql.exec("DELETE FROM work; DELETE FROM packs;");
+        this.#sql.exec("UPDATE repository SET head = '', refs = '[]' WHERE singleton = 1");
+      });
+      return empty(204);
+    });
+  }
+
+  async #read(repository, url, request, includeSource) {
+    const repositories = [repository];
+    const source = includeSource ? url.searchParams.get("source") : null;
+    if (source && source !== repository.id) repositories.push(await this.#snapshot(source));
+    const workspace = await this.#workspace(crypto.randomUUID(), repositories);
+    let response;
+    try {
+      response = await this.#forward(workspace, url.pathname + url.search, request);
+      if (!response.body) {
+        await workspace.close();
+        return response;
+      }
+    } catch (error) {
+      await workspace.close();
+      throw error;
+    }
+    const reader = response.body.getReader();
+    let ended = false;
+    const end = () => {
+      if (ended) return;
+      ended = true;
+      reader.releaseLock();
+      this.ctx.waitUntil(workspace.close());
+    };
+    const body = new ReadableStream({
+      async pull(controller) {
+        try {
+          const next = await reader.read();
+          if (!next.done) return controller.enqueue(next.value);
+          controller.close();
+        } catch (error) {
+          controller.error(error);
+        }
+        end();
+      },
+      async cancel(reason) {
+        try { await reader.cancel(reason); } finally { end(); }
+      },
+    });
+    return new Response(body, { status: response.status, headers: response.headers });
+  }
+
+  async #mutate(repository, path, request) {
+    return this.#lock(async () => {
+      const payload = await control(request.body);
+      const repos = [repository];
+      if (payload.source !== undefined && payload.source !== repository.id) {
+        if (typeof payload.source !== "string") return empty(422);
+        repos.push(await this.#snapshot(payload.source));
+      }
+      const job = await this.#reserve(repository.id, repository.revision);
+      const workspace = await this.#workspace(job, repos);
+      try {
+        const response = await workspace.fetch(path, { method: "POST", payload });
+        if (!response.ok) return empty(response.status);
+        const reply = response.body ? await bytes(response.body, COMMAND_LIMIT, 502) : null;
+        const candidate = await this.#capture(workspace, repository, job);
+        this.ctx.storage.transactionSync(() => {
+          this.#update(repository.revision, candidate);
+          this.#sql.exec("DELETE FROM work WHERE id = ?", job);
+        });
+        return new Response(reply, { status: response.status, headers: response.headers });
+      } finally {
+        await workspace.close();
+      }
+    });
+  }
+
+  #prepared(job) {
+    return json({ prepared: job.id, updates: JSON.parse(job.updates), accepted: JSON.parse(job.accepted) }, 202);
+  }
+
+  async #prepare(repository, actor, push, receive, upload = null) {
+    const updates = JSON.parse(push.updates);
+    // Git's HTTP helper sends an empty pkt-line probe before a streamed push.
+    if (!updates.length) return upload === null ? result(null) : empty(422);
+    if (updates.some(update => update.name === repository.head && update.after === ZERO)) {
+      return json({ message: "The default Git branch cannot be deleted" }, 422);
+    }
+    const job = await this.#reserve(repository.id, repository.revision, actor, upload);
+    const workspace = await this.#workspace(job, [repository]);
+    try {
+      const response = await receive(workspace);
+      if (!response.ok || response.headers.get("Content-Type")?.split(";", 1)[0] !== REPORT_TYPE) {
+        await response.body?.cancel();
+        return json({ message: "Git receive validation failed" }, response.ok ? 502 : response.status);
+      }
+      const report = await bytes(response.body, MAX_REPORT, 502);
+      const reported = push.report ? JSON.parse(await shard_receive_report(new Blob([report]).stream(), push.sideband)) : null;
+      if (reported?.length === 0) {
+        if (upload !== null) {
+          this.#sql.exec("UPDATE uploads SET report = ? WHERE id = ?", report.buffer, upload);
+          this.ctx.waitUntil(this.#deleteStaged(repository.id, upload));
+        }
+        this.#sql.exec("DELETE FROM work WHERE id = ?", job);
+        return result(report);
+      }
+      const candidate = await this.#capture(workspace, repository, job);
+      const accepted = changedRefs(repository, candidate, updates, reported);
+      const saved = this.#one("UPDATE work SET candidate = ?, updates = ?, accepted = ?, report = ? WHERE id = ? "
+        + "RETURNING id, updates, accepted", JSON.stringify(candidate), JSON.stringify(updates), JSON.stringify(accepted), report.buffer, job);
+      return this.#prepared(saved);
+    } finally {
+      await workspace.close();
+    }
+  }
+
+  async #standard(repository, path, request) {
+    if (request.headers.get("Content-Type") !== INGEST_TYPE) return empty(415);
+    const actor = request.headers.get("x-shard-git-actor");
+    if (!ACTOR.test(actor ?? "") || !request.body) return empty(400);
+    const limit = this.#inputLimit();
+    let length = 0;
+    let oversized = false;
+    const bounded = request.body.pipeThrough(new TransformStream({
+      transform(chunk, controller) {
+        length += chunk.byteLength;
+        if (length <= limit) controller.enqueue(chunk);
+        else {
+          oversized = true;
+          controller.error(new Error("Git upload size limit exceeded"));
+        }
+      },
+    }));
+    return this.#lock(async () => {
+      let push;
+      try {
+        push = await shard_receive_request(bounded, "");
+      } catch {
+        return empty(oversized ? 413 : 400);
+      }
+      try {
+        const response = await this.#prepare(repository, actor, push,
+          workspace => this.#forward(workspace, path, request, push.body));
+        if (!oversized) return response;
+        await response.body?.cancel();
+        return empty(413);
+      } catch (error) {
+        if (oversized) return empty(413);
+        throw error;
+      } finally {
+        if (!push.body.locked) await push.body.cancel().catch(() => {});
+      }
+    });
+  }
+
+  async #deleteStaged(repo, id) {
+    try { await this.#bucket.delete(incomingKey(repo, id)); } catch {
+      // The persisted upload expiry retries removal.
+    }
+  }
+
+  async #publish(request) {
+    const { prepared, actor } = await control(request.body);
+    if (typeof prepared !== "string" || !UUID.test(prepared) || typeof actor !== "string" || !ACTOR.test(actor)) return empty(400);
+    const job = this.#one("SELECT * FROM work WHERE id = ? AND actor = ? AND expires > ?", prepared, actor, Date.now());
+    if (!job || job.report === null) return empty(409);
+    if (job.published) return result(job.report, true);
+    const upload = job.upload === null ? null : this.#one("SELECT id, report FROM uploads WHERE id = ? AND actor = ? AND aborted = 0 AND expires > ?", job.upload, actor, Date.now());
+    if (job.upload !== null && !upload) return empty(409);
+    if (upload && upload.report !== null) return result(upload.report, true);
+    const candidate = JSON.parse(job.candidate);
+    // The new pack/index pairs are already durable. Refs and the retry receipt become visible together.
+    this.ctx.storage.transactionSync(() => {
+      this.#update(job.revision, candidate);
+      this.#sql.exec("UPDATE work SET published = 1, candidate = NULL WHERE id = ?", job.id);
+      if (upload) this.#sql.exec("UPDATE uploads SET report = ? WHERE id = ?", job.report, upload.id);
+    });
+    if (upload) this.ctx.waitUntil(this.#deleteStaged(job.repo, upload.id));
+    return result(job.report);
+  }
+
+  async #parts(upload, key) {
+    return (await this.#signer().parts(key, upload.upload)).filter(p => partLength(upload, p.partNumber) === p.size);
+  }
+
+  async #plan(id, actor, command) {
+    const { sha256, size } = command;
+    if (typeof sha256 !== "string" || !SHA256.test(sha256) || !Number.isSafeInteger(size) || size < 4) return empty(422);
+    let active = this.#one("SELECT * FROM uploads WHERE actor = ? AND digest = ? AND size = ?", actor, sha256, size);
+    if (active && (active.aborted || active.expires <= Date.now())) {
+      await this.#dropUpload(active.id, active.report === null ? active.upload : null, id);
+      active = null;
+    }
+    if (!active) {
+      if (size > this.#inputLimit()) return empty(413);
+      if (this.#one("SELECT COUNT(*) AS count FROM uploads WHERE report IS NULL AND expires > ?", Date.now()).count >= 8) {
+        return json({ message: "Finish or abort an existing Git upload before creating another" }, 429);
+      }
+      const partBytes = Math.max(32, Math.ceil(size / (MAX_PARTS * MiB))) * MiB;
+      active = this.#one("INSERT INTO uploads (id, actor, digest, size, part_bytes, expires) VALUES (?, ?, ?, ?, ?, ?) RETURNING *",
+        crypto.randomUUID(), actor, sha256, size, partBytes, Date.now() + SESSION_MS);
+      await this.#arm();
+    }
+    const plan = { id: active.id, partBytes: active.part_bytes, uploaded: [], staged: false, complete: active.report !== null };
+    if (plan.complete) return json(plan);
+    const key = incomingKey(id, active.id);
+    const staged = await this.#bucket.head(key);
+    if (staged) {
+      if (staged.size !== active.size) return empty(422);
+      return json({ ...plan, staged: true });
+    }
+    if (active.upload !== null) {
+      try {
+        plan.uploaded = (await this.#parts(active, key)).map(part => part.partNumber);
+        return json(plan);
+      } catch (error) {
+        if (error.status !== 404 || error.code !== "NoSuchUpload") throw error;
+      }
+    }
+    this.#signer();
+    const opened = await this.#bucket.createMultipartUpload(key);
+    this.#sql.exec("UPDATE uploads SET upload = ? WHERE id = ?", opened.uploadId, active.id);
+    return json(plan);
+  }
+
+  async #finish(repository, upload, key) {
+    const prepared = this.#one("SELECT id, updates, accepted FROM work WHERE upload = ? AND revision = ? "
+      + "AND report IS NOT NULL AND expires > ? ORDER BY expires DESC LIMIT 1", upload.id, repository.revision, Date.now());
+    if (prepared) return this.#prepared(prepared);
+    let staged = await this.#bucket.head(key);
+    if (!staged) {
+      const parts = await this.#parts(upload, key);
+      if (parts.length !== Math.ceil(upload.size / upload.part_bytes)) {
+        return json({ message: "Git upload is missing one or more parts" }, 409);
+      }
+      try {
+        staged = await this.#bucket.resumeMultipartUpload(key, upload.upload).complete(parts.map(({ partNumber, etag }) => ({ partNumber, etag })));
+      } catch (error) {
+        // The R2 completion can succeed even if the reply was lost.
+        staged = await this.#bucket.head(key);
+        if (!staged) throw error;
+      }
+    }
+    if (staged.size !== upload.size) return empty(422);
+    const prefix = await this.#bucket.get(key, { range: { offset: 0, length: Math.min(upload.size, 256 * 1024) } });
+    if (!prefix) throw new GitHttpError(502, "Git staged upload could not be read");
+    let push;
+    try {
+      push = await shard_receive_request(prefix.body, "");
+      await push.body.cancel();
+    } catch {
+      return json({ message: "Invalid Git push commands" }, 422);
+    }
+    return this.#prepare(repository, upload.actor, push, workspace => workspace.fetch(`/receive/${repository.id}`, {
+      method: "POST", payload: { key, size: upload.size, sha256: upload.digest },
+    }), upload.id);
+  }
+
+  async #multipart(id, request) {
+    const { actor, command } = await control(request.body);
+    if (typeof actor !== "string" || !ACTOR.test(actor) || !command || typeof command !== "object") return empty(400);
+    if (command.action === "start") return this.#lock(() => this.#plan(id, actor, command));
+    if (typeof command.id !== "string" || !UUID.test(command.id)) return empty(400);
+    const lookup = () => this.#one("SELECT * FROM uploads WHERE id = ? AND actor = ? AND aborted = 0 AND expires > ?", command.id, actor, Date.now());
+    if (command.action === "part") {
+      const upload = lookup();
+      if (!upload) return empty(404);
+      if (upload.report !== null || upload.upload === null) return empty(409);
+      const length = partLength(upload, command.number);
+      if (!length) return empty(422);
+      const key = incomingKey(id, upload.id);
+      if (await this.#bucket.head(key)) return empty(409);
+      return json(await this.#signer().signPart(key, upload.upload, command.number, length));
+    }
+    return this.#lock(async () => {
+      const upload = lookup();
+      if (!upload) return empty(404);
+      if (command.action === "abort") {
+        if (upload.report !== null) return empty(409);
+        await this.#dropUpload(upload.id, upload.upload, id);
+        return empty(204);
+      }
+      if (command.action !== "finish") return empty(400);
+      if (upload.report !== null) return result(upload.report);
+      if (upload.upload === null) return empty(409);
+      return this.#finish(this.#repository(), upload, incomingKey(id, upload.id));
+    });
+  }
+
+  async fetch(request) {
+    try {
+      const url = new URL(request.url);
+      const internal = STORAGE.exec(url.pathname);
+      const smart = SMART.exec(url.pathname);
+      const command = CONTROL.exec(url.pathname);
+      const route = internal ?? smart ?? command;
+      if (url.origin !== "https://internal" || !route) return empty(404);
+      const [, id, action] = route;
+      if (!this.ctx.id.equals(this.env.GIT_R2_REPOS.idFromName(id))) return empty(404);
+      if (command && !action) {
+        if (request.method === "POST") return await this.#create(id, request, url.pathname);
+        if (request.method === "DELETE") return await this.#delete(id);
+        if (request.method === "GET") {
+          if (this.#writer && !this.#current()) return empty(202);
+          return json(this.#metadata(this.#repository()));
+        }
+        return empty(404);
+      }
+      if (internal) {
+        if (action === "snapshot" && request.method === "GET") return json(this.#repository());
+        const repo = this.#current();
+        if (!repo || repo.deleted) return empty(404);
+        if (action === "publish" && request.method === "POST") return await this.#publish(request);
+        if (action === "multipart" && request.method === "POST") return await this.#multipart(id, request);
+        return empty(404);
+      }
+      const repository = this.#repository();
+      if (smart && action === "git-receive-pack" && request.method === "POST" && !url.search) {
+        return await this.#standard(repository, url.pathname, request);
+      } else if (command && ["ref", "head", "merge"].includes(action) && request.method === "POST" && !url.search) {
+        return await this.#mutate(repository, url.pathname, request);
+      } else if (request.method === "GET" || smart && action === "git-upload-pack" && request.method === "POST") {
+        return await this.#read(repository, url, request, command && ["merge-base", "compare"].includes(action));
+      }
+      return empty(404);
+    } catch (error) {
+      if (error instanceof GitHttpError) return json({ message: error.message }, error.status);
+      console.error("R2 Git repository operation failed", error?.operation ?? error?.name);
+      return json({ message: "R2 Git storage is temporarily unavailable" }, 502);
+    }
+  }
+}
