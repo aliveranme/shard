@@ -103,10 +103,9 @@ the LFS regressions also exercise uploads and clones with the real client.
 The Rust Worker serves the web interface and checks repository access before
 forwarding Git traffic. D1 keeps accounts, permissions, issues, and reviews.
 The default deployment gives each repository a SQLite Durable Object for Git
-objects and refs. Paid deployments can use Cloudflare Artifacts, and the
-`native` environment uses an authenticated Git server with persistent disk.
-It can expose a direct Git hostname for large transfers while the Worker
-continues to authorize clone, fetch and push.
+objects and refs. Paid deployments can use Cloudflare Artifacts. The `native`
+environment is retained for existing deployments that already run a Git server
+with persistent disk; it is not the project's recommended direction.
 The `r2` environment runs native Git in Cloudflare Containers, stores immutable
 Git packs and indexes in private R2, and publishes refs transactionally in
 Durable Objects.
@@ -126,7 +125,7 @@ push over HTTPS, open pull requests, and use issues and reviews immediately.
 | `npm run deploy:paid` (`managed` or `managed-staging`) | Artifacts, 64 MiB per push | Same-repository and cross-repository Artifacts merges through the Git container | R2 multipart | Workers Paid, Artifacts, Containers, Workflows, private R2, scoped S3 credentials |
 | `npm run deploy:paid -- --env r2` (`shard-r2`) | R2 pack storage. Standard HTTPS within the domain limit and resumable multipart through `git-remote-shard` | Same-backend merges through the Git container | R2 multipart | Workers Paid, Containers, Durable Objects, Workflows, D1 and two private R2 buckets with scoped credentials |
 | `--env artifacts` (`shard`) | Artifacts, 64 MiB per push | Same-repository fast-forward. Configure an external Git bridge for other Artifacts merges | R2 proxy by default | Workers Paid and R2. Preserves the original Artifacts instance's bindings |
-| `--env native` (`shard-native`, hybrid) | Bare repositories on a Git server you operate. A direct Git hostname can route pack transfers to that server. | Full same-origin merges with Git 2.38+ | R2 proxy or multipart via `deploy:paid` | Workers Free or Paid, D1 and R2 on Cloudflare. Supply an HTTPS Git origin and persistent storage. |
+| `--env native` (`shard-native`, legacy compatibility) | Bare repositories on a Git server you operate. Retained for existing native deployments; new instances should use `r2`. | Full same-origin merges with Git 2.38+ | R2 proxy or multipart via `deploy:paid` | Workers Free or Paid, D1 and R2 on Cloudflare. Supply an HTTPS Git origin and persistent storage. |
 
 Give each instance separate D1, Git storage, and any R2 resources.
 See the [Chinese Cloudflare Dashboard manual](docs/configuration.zh-CN.md) for setup and upgrades, and the [deployment capacity guide](docs/deployment-capacity.md) for Git and LFS limits.
@@ -219,7 +218,9 @@ The preset gives the Worker up to 300,000 ms of CPU and 20,000 subrequests
 per invocation by default. Configure the [Git LFS transfer adapter](#git-lfs-upload-modes)
 in each client checkout that uploads LFS files.
 
-For repositories that need larger Git pushes, select the [Paid native setup](#large-repositories-on-workers-paid).
+For repositories that need larger Git pushes, use the
+[R2 Git setup](#large-repositories-on-cloudflare-r2) and its resumable
+`git-remote-shard` helper. The native origin is legacy compatibility only.
 
 ### Upgrade an existing Artifacts deployment
 
@@ -330,9 +331,11 @@ The file accepts JSON or dotenv. Files named `.env.deploy` and
 Keep resource bindings, routes and Cron Triggers in the Wrangler configuration.
 [Dashboard environment variables](https://developers.cloudflare.com/workers/configuration/environment-variables/#add-environment-variables-via-the-dashboard) · [Workers secrets](https://developers.cloudflare.com/workers/configuration/secrets/#secrets-on-deployed-workers) · [Wrangler configuration precedence](https://developers.cloudflare.com/workers/wrangler/configuration/#source-of-truth)
 
-### Deploy with a native Git origin
+### Legacy: deploy with a native Git origin
 
-Choose the `native` Wrangler environment to use a Git server you operate. It
+This backend is retained for existing deployments. New instances should use
+`r2` Git on Cloudflare. Choose the `native` Wrangler environment only when a
+Git server with persistent disk already exists. It
 uses D1, R2, static assets and a rate limiter on Cloudflare, and stores bare Git
 repositories on the origin's disk. Repository paths and Shard token scopes
 follow the same conventions across backends. `GIT_BACKEND` selects storage
@@ -378,9 +381,12 @@ those repositories are migrated. Native non-fast-forward Web merges require
 Git 2.38 or later.
 [Wrangler environments](https://developers.cloudflare.com/workers/wrangler/environments/) · [Git backend plan](PLAN.md#optional-git-backends)
 
-### Large repositories on Workers Paid
+### Legacy: large repositories on a native Git origin
 
-Use the native Git origin when a push or repository exceeds Artifacts capacity.
+This path is retained for existing native deployments. New repositories should
+use the [R2 Git setup](#large-repositories-on-cloudflare-r2); use
+`git-remote-shard` when a push exceeds the domain request limit. The native Git
+origin remains available only for hosts that already operate it.
 The Paid preset deploys the Shard Worker and configures R2 multipart uploads.
 Run the Git origin on a host you operate with a persistent volume and a
 dedicated HTTPS hostname. For a hostname in Cloudflare DNS, use **DNS only**
@@ -403,7 +409,7 @@ location / {
 }
 ```
 
-1. Configure the origin as in [Deploy with a native Git origin](#deploy-with-a-native-git-origin).
+1. Configure the origin as in [the legacy native setup](#legacy-deploy-with-a-native-git-origin).
    Set `SHARD_GIT_FORGE_ORIGIN` on the Git host to the Shard Worker origin,
    such as `https://forge.example.com`. Set `SHARD_GIT_TRUST_PROXY=1` when
    the service listens on loopback behind a proxy that replaces `X-Real-IP`.
@@ -617,8 +623,9 @@ Artifacts enforces 64 MiB and 50,000 Git objects per push, with up to 32 MiB
 per normal Git file. Repositories created on or after September 29, 2026 have
 a 1 GB storage cap. Older repositories retain 10 GB. The same rules apply to
 managed and legacy Artifacts. Split compatible pushes by commit or put large
-files in LFS. Use the [direct native origin](#large-repositories-on-workers-paid)
-when the repository or a Git transfer needs to exceed those ceilings.
+files in LFS. Use the [R2 Git setup](#large-repositories-on-cloudflare-r2) for
+new repositories that exceed those ceilings; the native origin is legacy
+compatibility only.
 [Artifacts limits](https://developers.cloudflare.com/artifacts/platform/limits/) · [Worker request-body limits](https://developers.cloudflare.com/workers/platform/limits/#request-and-response-limits)
 
 The minute cron uses the following budgets. S3-backed LFS copies have a
@@ -678,9 +685,11 @@ Shard 是部署在 Cloudflare 上的自托管 Git 平台，适用于个人项目
 
 线上变量和密钥可在 Cloudflare 的 **Workers & Pages → 对应 Worker → Settings → Variables and Secrets** 中设置。控制台维护的文本变量应从该环境的 Wrangler `vars` 中移除，默认部署会保留这些变量。[Dashboard 变量与密钥配置](docs/configuration.zh-CN.md#在-dashboard-添加运行时变量与密钥)
 
-Paid 环境可运行 `npm run deploy:paid -- --secrets-file .env.deploy.paid`，默认启用 R2 分片上传。已有 Artifacts 实例通过 `--env artifacts` 升级并保留原来的资源绑定。自管 Git 服务器可使用 `--env native`。[Paid 部署说明](#deploy-paid-with-r2-multipart-uploads) · [原生 Git 部署说明](#deploy-with-a-native-git-origin)
+Paid 环境可运行 `npm run deploy:paid -- --secrets-file .env.deploy.paid`，默认启用 R2 分片上传。已有 Artifacts 实例通过 `--env artifacts` 升级并保留原来的资源绑定。已有自管 Git 源站可使用 `--env native`（兼容保留，不是新部署方向）。[Paid 部署说明](#deploy-paid-with-r2-multipart-uploads) · [兼容原生 Git 部署](#legacy-deploy-with-a-native-git-origin)
 
-大仓可运行 `npm run deploy:paid -- --env native --secrets-file .env.deploy.paid`，为原生 Git 源站配置 DNS only 的 HTTPS 域名和持久盘。标准 Git 直接向源站传输 pack，Worker 仍检查私库访问、写入令牌和分支保护。LFS 分片直接上传到 R2。[Paid 大仓部署](#large-repositories-on-workers-paid)
+大仓新部署应使用 `npm run deploy:paid -- --env r2 --secrets-file .env.deploy.r2`。R2 保存普通 Git 的 pack 和索引，clone/fetch 由 Worker 直接生成传输包，安装 `git-remote-shard` 可将超过域名限额的 push 分片直传 R2。[R2 Git 部署与续传](#large-repositories-on-cloudflare-r2)
+
+已有原生 Git 源站仍可运行 `npm run deploy:paid -- --env native --secrets-file .env.deploy.paid`，为源站配置 DNS only 的 HTTPS 域名和持久盘；该路径仅用于兼容已有部署。
 
 无需 VPS 的大仓可运行 `npm run deploy:paid -- --env r2 --secrets-file .env.deploy.r2`。R2 保存普通 Git 的 pack 和索引，容器按需运行 Git。标准 HTTPS 支持 clone、fetch 和域名限额内的 push，安装 `git-remote-shard` 可将大推送分片直传 R2，并从 R2 已接收的分片恢复。[R2 Git 部署与续传](#large-repositories-on-cloudflare-r2)
 
@@ -745,8 +754,9 @@ Shard checks the Git client's Shard token and repository access, then streams
 the Smart HTTP request and response through its recorded Git backend.
 Artifacts requests use a short-lived repository token. Native origin requests
 use the instance's shared secret. The Free Git backend is reached through a
-private Durable Object binding. Native repositories can advertise a
-[direct Git hostname](#large-repositories-on-workers-paid) for pack transfers.
+private Durable Object binding. Legacy native repositories can advertise a
+[direct Git hostname](#legacy-large-repositories-on-a-native-git-origin) for
+pack transfers.
 
 Create tokens under `/user/settings/tokens` with your current password. Choose
 read/write scope and a 7/30/90/365-day lifetime (30 days by default). In a

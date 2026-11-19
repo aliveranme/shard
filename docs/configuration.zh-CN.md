@@ -10,9 +10,9 @@
 | 给已经运行的 Artifacts 实例升级 | `artifacts` | 使用原 Worker、D1、Artifacts 命名空间、R2 桶和域名。普通 Git 单次 push 上限 64 MiB |
 | 使用 Artifacts，需要 Web 合并桥和预发布验证 | `managed` 与 `managed-staging` | Workers Paid、Artifacts、Containers、Workflows 和各环境独立的 D1、R2 |
 | 普通 Git pack 经常过大，希望继续由 Cloudflare 托管 | `r2` | Workers Paid、Containers、Workflows、D1 和两个私有 R2 桶。大 push 通过 `git-remote-shard` 分片续传 |
-| 已有 VPS 和持久盘，希望标准 Git 直接传大 pack | `native` | Worker 托管 Web 与权限检查，Git 源站使用独立 HTTPS 域名和持久盘。标准 Git 直连源站 |
+| 已有 VPS 和持久盘，需要继续维护旧部署 | `native`（兼容保留） | 仅用于已存在的自管源站。新部署应选择 `r2`，不再把独立 VPS 作为扩容方向 |
 
-个人实例可以先用 Free，观察实际 push 的压缩 pack 大小。如果大对象是图片、模型或压缩包等可用 LFS 管理的文件，先评估在原实例上启用 LFS。LFS 配置会影响之后用 LFS 跟踪的文件，已有普通 Git 历史仍占原后端空间。需要扩大普通 Git 的 push 或仓库容量时，再比较 `r2` 和 `native`。[各后端容量与计费边界](deployment-capacity.md#数量容量与执行限制)
+个人实例可以先用 Free，观察实际 push 的压缩 pack 大小。如果大对象是图片、模型或压缩包等可用 LFS 管理的文件，先评估在原实例上启用 LFS。LFS 配置会影响之后用 LFS 跟踪的文件，已有普通 Git 历史仍占原后端空间。需要扩大普通 Git 的 push 或仓库容量时，选择 `r2`；`native` 仅保留给已有源站兼容。[各后端容量与计费边界](deployment-capacity.md#数量容量与执行限制)
 
 ## Cloudflare Dashboard 部署与自动更新
 
@@ -277,7 +277,7 @@ SHARD_GIT_FORGE_ORIGIN=https://forge.example.com
 }
 ```
 
-在 Cloudflare 打开对应域名的 **DNS → 记录（Records）**，用源站的地址新增 `git.example.com` 的 A、AAAA 或 CNAME，并设 **DNS only**。在源站反代设置 TLS、流式转发、请求大小与读写超时。Nginx 需要关闭请求及响应代理缓冲。Worker 的 Web 域名 `forge.example.com` 通过 **域和路由** 添加。普通 Git 源站模式只填 `NATIVE_GIT_ORIGIN` 并使用 Worker 提供的 Git HTTPS URL。[HTTPS 反代配置示例](../README.md#large-repositories-on-workers-paid) · [DNS 代理状态](https://developers.cloudflare.com/dns/proxy-status/)
+在 Cloudflare 打开对应域名的 **DNS → 记录（Records）**，用源站的地址新增 `git.example.com` 的 A、AAAA 或 CNAME，并设 **DNS only**。在源站反代设置 TLS、流式转发、请求大小与读写超时。Nginx 需要关闭请求及响应代理缓冲。Worker 的 Web 域名 `forge.example.com` 通过 **域和路由** 添加。普通 Git 源站模式只填 `NATIVE_GIT_ORIGIN` 并使用 Worker 提供的 Git HTTPS URL。[HTTPS 反代配置示例](../README.md#legacy-large-repositories-on-a-native-git-origin) · [DNS 代理状态](https://developers.cloudflare.com/dns/proxy-status/)
 
 使用 Dashboard 自动更新时，在 `native` Worker 的构建里填写 `npm run deploy -- --env native`，并使用控制台中保存的 `NATIVE_GIT_TOKEN`。首次从命令行发布时，把同一 Secret 写入 `.env.deploy.native`，然后执行下列命令。
 
