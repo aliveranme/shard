@@ -13,7 +13,7 @@ pub fn is_git_request(req: &Request) -> bool {
         return false;
     }
     match endpoint {
-        "git-upload-pack" | "git-receive-pack" => parts.next().is_none(),
+        "git-upload-pack" | "git-receive-pack" | "shard-git-control" => parts.next().is_none(),
         "info" => match parts.next() {
             Some("refs") => parts.next().is_none(),
             Some("lfs") => match (parts.next(), parts.next()) {

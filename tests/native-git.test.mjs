@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createCipheriv, randomBytes } from "node:crypto";
 import { once } from "node:events";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, open, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { createServer, request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -89,7 +90,7 @@ async function scopedToken(client, scope) {
   return token;
 }
 
-async function startWorker(temporary, nativeOrigin, token) {
+async function startWorker(temporary, nativeOrigin, token, direct = false) {
   const configPath = join(temporary, "wrangler.json");
   const persistence = join(temporary, "state");
   const { rawConfig: config } = experimental_readRawConfig({ config: join(root, "wrangler.jsonc") });
@@ -102,6 +103,10 @@ async function startWorker(temporary, nativeOrigin, token) {
   const target = env ? config.env[env] : config;
   if (env) {
     target.vars = { ...target.vars, PUBLIC_ORIGIN: "https://forge.example.test", NATIVE_GIT_ORIGIN: nativeOrigin };
+    if (direct) {
+      target.vars.NATIVE_GIT_DIRECT_ORIGIN = nativeOrigin;
+      target.vars.SHARD_LIMIT_PROFILE = "paid";
+    }
     await writeFile(join(temporary, ".dev.vars.native"), `NATIVE_GIT_TOKEN=${token}\n`);
   }
   target.d1_databases = target.d1_databases.map((binding) => ({
@@ -129,7 +134,7 @@ async function tick(base) {
   await response.text();
 }
 
-async function gitClient(temporary) {
+async function gitClient(temporary, timeout = 30_000) {
   const gitConfig = join(temporary, "gitconfig");
   await writeFile(gitConfig, `[core]
   autocrlf = false
@@ -144,7 +149,7 @@ async function gitClient(temporary) {
   gpgSign = false
 `);
   return async (credential, ...args) => (await exec("git", args, {
-    cwd: temporary, timeout: 30_000,
+    cwd: temporary, timeout,
     env: {
       ...process.env, GIT_CONFIG_GLOBAL: gitConfig, GIT_CONFIG_NOSYSTEM: "1",
       GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_COUNT: credential ? "1" : "0",
@@ -591,6 +596,136 @@ test("forge native Git over loopback", { timeout: 240_000 }, async (t) => {
       } finally {
         await rm(temporary, { recursive: true, force: true, maxRetries: 5 });
       }
+    }
+  }
+});
+
+test("native direct Git accepts large packs and reapplies forge policy before publishing", { timeout: 180_000 }, async (t) => {
+  const temporary = await mkdtemp(join(tmpdir(), "shard-direct-git-"));
+  const directory = join(temporary, "bare");
+  const token = randomBytes(32).toString("hex");
+  const phases = [];
+  let origin;
+  let worker;
+  let base;
+  let revokeDuringPush;
+  async function relay(req, res) {
+    let body;
+    let action;
+    if (req.url.endsWith("/shard-git-control")) {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      body = Buffer.concat(chunks);
+      ({ action } = JSON.parse(body));
+      if (action === "stage" && revokeDuringPush) {
+        const revoke = revokeDuringPush;
+        revokeDuringPush = undefined;
+        await revoke();
+      }
+    }
+    const upstream = httpRequest(`${base}${req.url}`, {
+      method: req.method, headers: { ...req.headers, host: new URL(base).host },
+    }, (response) => {
+      if (action) phases.push([action, response.statusCode]);
+      res.writeHead(response.statusCode, response.headers);
+      response.pipe(res);
+    });
+    upstream.on("error", () => res.destroy());
+    if (body) upstream.end(body);
+    else req.pipe(upstream);
+  }
+  const gateway = createServer((req, res) => relay(req, res).catch((error) => {
+    t.diagnostic(error.message);
+    res.writeHead(500).end();
+  }));
+  try {
+    gateway.listen(0, "127.0.0.1");
+    await once(gateway, "listening");
+    origin = await createGitOrigin({ directory, token, forgeOrigin: `http://127.0.0.1:${gateway.address().port}` });
+    origin.listen(0, "127.0.0.1");
+    await once(origin, "listening");
+    const direct = `http://127.0.0.1:${origin.address().port}`;
+    worker = await startWorker(temporary, direct, token, true);
+    base = `http://127.0.0.1:${worker.port}`;
+
+    const owner = await signup(base, "directowner");
+    const viewer = await signup(base, "directviewer");
+    const repo = "/directowner/large";
+    const remote = remoteUrl(direct, repo);
+    redirected(await owner.post("/repo/create", { name: "large", private: "on" }), repo);
+    assert.ok((await owner.get(repo)).body.includes(remote), "the code page offers the direct clone URL");
+    const writeToken = await scopedToken(owner, "write");
+    const readToken = await scopedToken(owner, "read");
+    const viewerToken = await scopedToken(viewer, "write");
+    for (const [service, credential, expected] of [
+      ["upload", null, 401], ["upload", viewerToken, 404], ["receive", readToken, 401],
+    ]) {
+      const response = await request(`${direct}${infoRefs(repo, service)}`, { headers: credential ? bearer(credential) : {} });
+      assert.equal(response.status, expected);
+      if (expected === 401) assert.match(response.headers.get("www-authenticate"), /^Basic /);
+      await response.arrayBuffer();
+    }
+    const denied = await request(`${base}${repo}.git/shard-git-control`, {
+      method: "POST", headers: bearer(writeToken), body: JSON.stringify({ action: "resolve", write: true }),
+    });
+    assert.equal(denied.status, 404);
+    await denied.arrayBuffer();
+
+    const git = await gitClient(temporary, 90_000);
+    const source = join(temporary, "source");
+    const local = (...args) => git(null, "-C", source, ...args);
+    await git(null, "init", "--object-format=sha1", "--initial-branch=main", source);
+    const size = 128 * 1024 ** 2;
+    const zeros = Buffer.alloc(4 * 1024 ** 2);
+    const cipher = createCipheriv("aes-256-ctr", Buffer.alloc(32, 13), Buffer.alloc(16));
+    const file = await open(join(source, "large.bin"), "wx");
+    try {
+      for (let bytes = 0; bytes < size; bytes += zeros.length) await file.writeFile(cipher.update(zeros));
+    } finally {
+      await file.close();
+    }
+    await local("add", "large.bin");
+    await local("commit", "-m", "Native packed large blob");
+    const oid = await local("rev-parse", "HEAD");
+    const blob = await local("rev-parse", "HEAD:large.bin");
+    await git(writeToken, "-C", source, "push", remote, "main");
+    assert.deepEqual(phases.filter(([action]) => action !== "resolve"), [["stage", 200], ["confirm", 204]]);
+    const [stored] = (await readdir(directory)).filter((name) => name.endsWith(".git"));
+    const packs = join(directory, stored, "objects", "pack");
+    const [pack] = (await readdir(packs)).filter((name) => name.endsWith(".pack"));
+    assert.ok((await stat(join(packs, pack))).size >= size, "the accepted pack exceeds both edge ceilings");
+
+    const mirror = join(temporary, "mirror.git");
+    await git(readToken, "clone", "--bare", remote, mirror);
+    assert.equal(await git(null, "-C", mirror, "rev-parse", "HEAD"), oid);
+    assert.equal(await git(null, "-C", mirror, "cat-file", "-s", blob), String(size));
+    await git(null, "-C", mirror, "fsck", "--full");
+
+    redirected(await owner.post(`${repo}/settings/branches`, { action: "save", branch: "main", approvals: "1" }));
+    await local("commit", "--allow-empty", "-m", "Must use a reviewed branch");
+    await assert.rejects(git(writeToken, "-C", source, "push", "--atomic", remote, "main", "HEAD:refs/heads/also-blocked"), /HTTP 403/);
+    assert.equal(await git(readToken, "ls-remote", remote), `${oid}\tHEAD\n${oid}\trefs/heads/main`);
+
+    const collaborators = `${repo}/settings/collaborators`;
+    redirected(await owner.post(collaborators, { username: "directviewer", role: "write" }));
+    revokeDuringPush = async () => redirected(await owner.post(`${collaborators}/revoke`, { username: "directviewer" }));
+    await assert.rejects(git(viewerToken, "-C", source, "push", remote, "HEAD:refs/heads/revoked"), /HTTP 404/);
+    assert.equal(await git(readToken, "ls-remote", remote, "refs/heads/revoked"), "");
+    assert.equal(phases.filter(([action]) => action === "confirm").length, 1);
+
+    await exerciseLfs({ base: direct, repo, writeToken, readToken, canRunGitLfs: false });
+  } finally {
+    try {
+      await worker?.stop();
+    } finally {
+      for (const server of [origin, gateway]) {
+        if (!server?.listening) continue;
+        const closed = once(server, "close");
+        server.close();
+        server.closeAllConnections();
+        await closed;
+      }
+      await rm(temporary, { recursive: true, force: true, maxRetries: 5 });
     }
   }
 });

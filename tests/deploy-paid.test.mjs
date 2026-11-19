@@ -197,7 +197,7 @@ test("paid preflight rejects invalid inputs before invoking Wrangler", async (t)
     ["empty key", { secrets: JSON.stringify({ ...credentials, [secretName]: " " }) }, new RegExp(secretName)],
     ["malformed JSON", { secrets: `{${credentials[secretName]}` }, /Could not read --secrets-file/],
     ["conflicting secret", { secrets: JSON.stringify({ ...credentials, SHARD_LFS_UPLOAD_MODE: "proxy" }) }, /must not redefine/],
-    ["invalid environment", { args: ["--paid", "--env", "native"] }, /managed or managed-staging/],
+    ["invalid environment", { args: ["--paid", "--env", "artifacts"] }, /managed, managed-staging or native/],
     ["missing bucket", { configure: (raw) => { raw.env.managed.r2_buckets = []; } }, /LFS_OBJECTS/],
     ["different bucket", { configure: (raw) => { raw.env.managed.vars.SHARD_LFS_R2_BUCKET = "wrong-bucket"; } }, /must match the LFS_OBJECTS bucket/],
     ["different jurisdiction", { configure: (raw) => { raw.env.managed.vars.SHARD_LFS_R2_ENDPOINT = `https://${account}.eu.r2.cloudflarestorage.com`; } }, /must match.*jurisdiction/],
@@ -223,6 +223,32 @@ test("paid dry run needs no account or secrets and runs only the bundle check", 
   assert.ok(deploy.args.includes("--outdir"));
   assert.equal(deploy.config.env.managed.vars.SHARD_LFS_UPLOAD_MODE, "r2-multipart");
   assert.equal(deploy.config.env.managed.vars.SHARD_LFS_R2_ENDPOINT, undefined);
+});
+
+test("the native Paid preset enables R2 multipart without Artifacts", (t) => {
+  const result = exercise(t, {
+    args: ["--paid", "--env", "native"],
+    secrets: JSON.stringify({ ...credentials, NATIVE_GIT_TOKEN: "native-origin-fixture" }),
+    configure(raw) {
+      const native = raw.env.native;
+      native.vars.NATIVE_GIT_ORIGIN = "https://git.example.com";
+      native.vars.NATIVE_GIT_DIRECT_ORIGIN = "https://git.example.com";
+      native.r2_buckets = [{ binding: "LFS_OBJECTS", bucket_name: "native-lfs" }];
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.commands, ["d1 migrations", "deploy"]);
+  assert.equal(result.calls.at(-1).secretsMatch, true);
+  const config = result.calls.at(-1).config.env.native;
+  assert.equal(config.artifacts, undefined);
+  assert.deepEqual(config.vars, {
+    ...result.raw.env.native.vars,
+    SHARD_LIMIT_PROFILE: "paid",
+    SHARD_LFS_UPLOAD_MODE: "r2-multipart",
+    SHARD_LFS_R2_BUCKET: "native-lfs",
+    SHARD_LFS_R2_ENDPOINT: `https://${account}.r2.cloudflarestorage.com`,
+  });
+  assert.deepEqual(config.limits, { cpu_ms: 300000, subrequests: 20000 });
 });
 
 test("a failed paid publish removes both temporary files", (t) => {

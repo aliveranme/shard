@@ -40,8 +40,9 @@ Use the pinned mise toolchain. Standard commands:
   apply migrations, and publish the Worker. The shipped `keep_vars` preserves
   dashboard-managed Worker variables.
 - `npm run deploy:paid -- --secrets-file .env.deploy.paid` selects the managed
-  Paid environment and enables R2 multipart uploads. Use `--env artifacts`
-  with the regular deploy command to upgrade the original Artifacts instance.
+  Paid environment and enables R2 multipart uploads. Pass `--env native` to
+  `deploy:paid` for the direct native Git setup. Use `--env artifacts` with
+  the regular deploy command to upgrade the original Artifacts instance.
 - Managed Workers Builds use `npm run ci -- --container` for build, tests and
   image smoke checks, then `npm run cd` for staged release verification.
   See [README.md](README.md#deploy-with-managed-cloudflare-services).

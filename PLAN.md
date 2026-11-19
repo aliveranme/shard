@@ -32,7 +32,8 @@ repository storage ID. D1 keeps visibility, access grants, the selected
 backend and the same storage ID. `env.artifacts` retains the original Artifacts
 deployment. `managed` and `managed-staging` add the Git bridge and background
 execution services on Workers Paid. `native` uses an authenticated origin and
-persistent disk. Shard applies the same Git URLs and permission checks to each.
+persistent disk. It can advertise a direct Git hostname while retaining forge
+permission checks.
 [Deployment guide](README.md#deploy-to-cloudflare)
 
 | Service | Role in an alternative deployment | Limits that affect this design |
@@ -58,6 +59,14 @@ authenticated HTTP API. Shard budgets background work by deployment profile
 and queries Git snapshots on demand. D1 stores no per-file or per-commit search
 index from pushes.
 [Git HTTP backend](https://git-scm.com/docs/git-http-backend)
+
+For large native repositories, send each Git pack directly to the Git host.
+The origin resolves the repository through a small authenticated request to
+Shard and streams the pack to Git on persistent disk. A pre-receive callback
+rechecks the token and ref rules before any ref is published. Post-receive
+reports accepted refs to Shard, and Cron can reconcile a missed report. LFS
+negotiation remains in the Worker, with R2 multipart carrying upload bytes.
+[Paid native deployment](README.md#large-repositories-on-workers-paid)
 
 To move an existing repository between backends, pause writes, copy and
 verify the refs and retained PR objects, then change its recorded backend.

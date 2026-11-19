@@ -87,6 +87,8 @@ forwarding Git traffic. D1 keeps accounts, permissions, issues, and reviews.
 The default deployment gives each repository a SQLite Durable Object for Git
 objects and refs. Paid deployments can use Cloudflare Artifacts, and the
 `native` environment uses an authenticated Git server with persistent disk.
+It can expose a direct Git hostname for large transfers while the Worker
+continues to authorize clone, fetch and push.
 Any environment with a private `LFS_OBJECTS` R2 binding can store Git LFS bytes.
 
 [Storage design](PLAN.md#optional-git-backends) · [Verified behavior and staging status](STATUS.md)
@@ -97,12 +99,12 @@ Use the **Workers Free** deployment for a new forge. It provisions D1 and
 SQLite Durable Objects. You can sign up, create public or private repositories,
 push over HTTPS, open pull requests, and use issues and reviews immediately.
 
-| Deployment | Git storage | Git LFS | Services and account requirements |
-| --- | --- | --- | --- |
-| Default (`shard-free`) | SQLite Durable Objects | Optional R2 binding | Workers Free, D1, Static Assets, Rate Limiting, Cron |
-| `npm run deploy:paid` (`managed` or `managed-staging`) | Artifacts | R2 multipart | Workers Paid with Artifacts and Containers access, Workflows, private R2 and scoped S3 credentials |
-| `--env artifacts` (`shard`) | Artifacts | R2 proxy by default | Upgrade path for the original Artifacts instance, with Workers Paid and R2 |
-| `--env native` (`shard-native`) | Your Git server | R2 proxy by default | Workers Free or Paid, a reachable HTTPS Git origin with persistent storage, and R2 |
+| Deployment | Git storage and push limit | Web merge | Git LFS | Services and account requirements |
+| --- | --- | --- | --- | --- |
+| Default (`shard-free`) | One SQLite Durable Object per repository, 32 MiB per push | Same-repository fast-forward | Optional R2 | Workers Free, D1, Static Assets, Rate Limiting, Cron |
+| `npm run deploy:paid` (`managed` or `managed-staging`) | Artifacts, 64 MiB per push | Same-repository and cross-repository Artifacts merges through the Git container | R2 multipart | Workers Paid, Artifacts, Containers, Workflows, private R2, scoped S3 credentials |
+| `--env artifacts` (`shard`) | Artifacts, 64 MiB per push | Same-repository fast-forward. Configure an external Git bridge for other Artifacts merges | R2 proxy by default | Workers Paid and R2. Preserves the original Artifacts instance's bindings |
+| `--env native` (`shard-native`) | Bare repositories on the origin disk. The optional direct hostname avoids the Worker request-body ceiling. | Full same-origin merges with Git 2.38+ | R2 proxy or multipart via `deploy:paid` | Workers Free or Paid, an HTTPS Git origin with persistent storage, and R2 |
 
 Give each instance separate D1, Git storage, and any R2 resources.
 [Durable Object limits](https://developers.cloudflare.com/durable-objects/platform/limits/) · [Artifacts pricing](https://developers.cloudflare.com/artifacts/platform/pricing/) · [Enable R2](https://developers.cloudflare.com/r2/buckets/create-buckets/)
@@ -184,6 +186,8 @@ The preset gives the Worker up to 300,000 ms of CPU and 20,000 subrequests
 per invocation by default. Configure the [Git LFS transfer adapter](#git-lfs-upload-modes)
 in each client checkout that uploads LFS files.
 
+For repositories that need larger Git pushes, select the [Paid native setup](#large-repositories-on-workers-paid).
+
 ### Upgrade an existing Artifacts deployment
 
 Use `npm run deploy -- --env artifacts` for the original Artifacts instance
@@ -200,6 +204,11 @@ branch, a repository copy Workflow, and a Containers image for Web merges that
 need native Git. They use separate Workers, D1 databases, R2 buckets, Artifacts
 namespaces, and Workflow names. Use Workers Paid with Artifacts and Containers
 available in the target account.
+
+The merge container uses `standard-1` by default (0.5 vCPU, 4 GiB RAM,
+8 GB disk). Use `SHARD_GIT_MERGE_INSTANCE` to choose the runtime size.
+Supported sizes include `lite`, `basic` and `standard-1` through `standard-4`.
+[Instance sizes](https://developers.cloudflare.com/containers/platform/limits/#instance-types) · [Container pricing](https://developers.cloudflare.com/containers/platform/pricing/)
 
 Before the first managed release, set `SHARD_GIT_ARTIFACTS_ORIGINS` in the
 `vars` of both environments to the exact HTTPS Git origin for that account,
@@ -264,7 +273,7 @@ configure the build process separately.
 
 | Type | Settings |
 | --- | --- |
-| Text | `PUBLIC_ORIGIN`, `EMAIL_FROM`, `NATIVE_GIT_ORIGIN`, `SHARD_LIMIT_PROFILE`, `SHARD_LFS_UPLOAD_MODE`, `SHARD_LFS_MAX_BYTES`, `SHARD_LFS_R2_ENDPOINT`, `SHARD_LFS_R2_BUCKET`, `WEBHOOK_ENDPOINT` and `WEBHOOK_REPO` for the legacy integration |
+| Text | `PUBLIC_ORIGIN`, `EMAIL_FROM`, `NATIVE_GIT_ORIGIN`, `NATIVE_GIT_DIRECT_ORIGIN`, `SHARD_LIMIT_PROFILE`, `SHARD_LFS_UPLOAD_MODE`, `SHARD_LFS_MAX_BYTES`, `SHARD_LFS_R2_ENDPOINT`, `SHARD_LFS_R2_BUCKET`, `WEBHOOK_ENDPOINT` and `WEBHOOK_REPO` for the legacy integration |
 | Secret | `NATIVE_GIT_TOKEN`, `SHARD_LFS_R2_ACCESS_KEY_ID`, `SHARD_LFS_R2_SECRET_ACCESS_KEY`, `WEBHOOK_ENCRYPTION_KEY`, `WEBHOOK_SECRET` for the legacy integration |
 
 The shipped `keep_vars: true` preserves dashboard variables across Wrangler
@@ -281,10 +290,10 @@ Keep resource bindings, routes and Cron Triggers in the Wrangler configuration.
 
 Choose the `native` Wrangler environment to use a Git server you operate. It
 uses D1, R2, static assets and a rate limiter on Cloudflare, and stores bare Git
-repositories on the origin's disk. Repository URLs and Shard token scopes are
-the same across backends. `GIT_BACKEND` selects storage for new repositories and
-credential-free imports. A fork uses its source's backend. Existing repositories
-retain their recorded backend.
+repositories on the origin's disk. Repository paths and Shard token scopes
+follow the same conventions across backends. `GIT_BACKEND` selects storage
+for new repositories and credential-free imports. A fork uses its source's backend.
+Existing repositories retain their recorded backend.
 
 1. Run `node scripts/git-origin.mjs` on a host with the pinned Node version and
    Git 2.32 or later. Set `SHARD_GIT_DIRECTORY` to a dedicated directory on a
@@ -324,6 +333,59 @@ repositories, retain the Artifacts binding alongside the native origin until
 those repositories are migrated. Native non-fast-forward Web merges require
 Git 2.38 or later.
 [Wrangler environments](https://developers.cloudflare.com/workers/wrangler/environments/) · [Git backend plan](PLAN.md#optional-git-backends)
+
+### Large repositories on Workers Paid
+
+Use the native Git origin when a push or repository exceeds Artifacts capacity.
+Give it a persistent volume and a dedicated HTTPS Git hostname. Point DNS at
+the origin directly. For a hostname in Cloudflare DNS, use **DNS only**. The
+reverse proxy must stream uploads and downloads and accept the intended pack
+size. With Nginx, use these settings inside the TLS server for the Git hostname.
+
+```nginx
+location / {
+    client_max_body_size 0;
+    client_body_timeout 1h;
+    proxy_http_version 1.1;
+    proxy_request_buffering off;
+    proxy_buffering off;
+    proxy_read_timeout 1h;
+    proxy_send_timeout 1h;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_pass http://127.0.0.1:8793;
+}
+```
+
+1. Configure the origin as in [Deploy with a native Git origin](#deploy-with-a-native-git-origin).
+   Set `SHARD_GIT_FORGE_ORIGIN` on the Git host to the Shard Worker origin,
+   such as `https://forge.example.com`. Set `SHARD_GIT_TRUST_PROXY=1` when
+   the service listens on loopback behind a proxy that replaces `X-Real-IP`.
+2. Set both `NATIVE_GIT_ORIGIN` and `NATIVE_GIT_DIRECT_ORIGIN` in
+   `env.native.vars` to the Git origin, such as `https://git.example.com`.
+   Set `CLOUDFLARE_ACCOUNT_ID` and use a private `LFS_OBJECTS` bucket with
+   the R2 multipart [setup and lifecycle rule](#git-lfs-upload-modes).
+3. Put `NATIVE_GIT_TOKEN` and the two bucket-scoped R2 credentials in
+   `.env.deploy.paid`. Use the origin's `SHARD_GIT_TOKEN` as the value of
+   `NATIVE_GIT_TOKEN`. Deploy the Paid native preset.
+
+   ```sh
+   mise exec -- npm run deploy:paid -- --env native --secrets-file .env.deploy.paid
+   ```
+
+Copy the clone URL from the repository page. For an existing checkout, update
+the remote with `git remote set-url origin "$SHARD_CLONE_URL"`. Standard Git
+clients send pack bytes to native Git. The Worker resolves the repository and
+checks its current access rules. Before Git publishes refs, the Worker checks
+write access and branch protection again. Accepted ref changes feed pull
+request refresh and webhooks. Git LFS Batch stays authenticated through Shard,
+and the multipart adapter uploads the object parts directly to R2.
+
+The Git host's disk, resources, TLS proxy and Git limits determine achievable
+pack size and repository capacity. Keep the Git volume backed up with D1 and
+R2. This option serves repositories already recorded as native, including
+new repositories in `env.native`. Existing Artifacts repositories retain
+their recorded backend and Artifacts limits.
+[Cloudflare upload limits](https://developers.cloudflare.com/workers/platform/limits/#request-and-response-limits) · [DNS proxy status](https://developers.cloudflare.com/dns/proxy-status/) · [Git receive configuration](https://git-scm.com/docs/git-config#Documentation/git-config.txt-receivemaxInputSize)
 
 ### Web merges on Artifacts
 
@@ -365,23 +427,29 @@ successful reset revokes all browser sessions for the account.
 ### Deployment limits
 
 The default and native Wrangler environments use `SHARD_LIMIT_PROFILE=free`.
-Artifacts and managed environments use `paid`. A native deployment on Workers
-Paid can use the `paid` profile to increase its scheduled batch sizes.
+Artifacts and managed environments use `paid`. On a Workers Paid account, a
+native deployment can set `env.native.vars.SHARD_LIMIT_PROFILE=paid` to use
+larger processing budgets. The deploy script defaults that environment to
+300,000 ms of Worker CPU and honors an explicit `limits` override. The legacy
+Artifacts environment configures 300,000 ms of CPU. Managed Workers also
+configure 20,000 subrequests per invocation.
 
-The default Git backend keeps one SQLite Durable Object per repository and
-sets `MAX_PUSH_MB=8` for the compressed Git push. Forks and imports must each
-fit one packed snapshot within this limit. Expanded objects also consume
-Worker memory and Durable Object storage.
+The SQLite backend streams pushes and copies to storage. `MAX_PUSH_MB` sets a
+limit in MiB from 1 to 32, with 32 as the default. Push accounting includes the
+receive commands and pack. Each fork or import must fit a single packed
+snapshot, with at most 2,048 refs and 1 MiB of ref metadata. Import transfers
+have a 60-second deadline. Expanded objects still consume isolate memory and
+Durable Object storage.
 
 Cloudflare's limits table lists 10 GB per SQLite Durable Object and 5 GB
 total per Workers Free account. Its storage-full FAQ lists a Free-specific
 limit of 1 GB per object.
 [SQLite limits table](https://developers.cloudflare.com/durable-objects/platform/limits/#sqlite-backed-durable-objects-general-limits) · [Storage-full FAQ](https://developers.cloudflare.com/durable-objects/platform/limits/#what-happens-when-a-durable-object-exceeds-its-storage-limit)
 
-The Web UI supports same-repository fast-forward merges. For a divergent or
-cross-repository change targeting a protected branch, merge locally on top of
-the current target tip. Push the result to a topic branch in the target
-repository and open a fast-forward pull request.
+The SQLite backend's Web UI supports same-repository fast-forwards. For a
+divergent or cross-repository change targeting a protected branch, merge
+locally on top of the current target tip. Push the result to a topic branch
+in the target repository and open a fast-forward pull request.
 
 On the SQLite Git backend, keep each ref name distinct from its ancestors.
 For example, Git clients using file-based refs can fail to fetch when a
@@ -392,16 +460,36 @@ Free imports accept credential-free HTTPS Git URLs on `github.com`,
 `gitlab.com` and `codeberg.org`. Use the native origin for imports that
 require credentials.
 
+Artifacts enforces 64 MiB and 50,000 Git objects per push, with up to 32 MiB
+per normal Git file. Repositories created on or after September 29, 2026 have
+a 1 GB storage cap. Older repositories retain 10 GB. The same rules apply to
+managed and legacy Artifacts. Split compatible pushes by commit or put large
+files in LFS. Use the [direct native origin](#large-repositories-on-workers-paid)
+when the repository or a Git transfer needs to exceed those ceilings.
+[Artifacts limits](https://developers.cloudflare.com/artifacts/platform/limits/) · [Worker request-body limits](https://developers.cloudflare.com/workers/platform/limits/#request-and-response-limits)
+
+The minute cron uses the following budgets. S3-backed LFS copies have a
+smaller recovery page so multipart copy requests leave room for the other
+jobs in the same invocation.
+
 | Work | `free` | `paid` |
 | --- | ---: | ---: |
-| Repository copy checks per tick | 2 | 8 |
-| Repository cleanups per tick | 1 | 8 |
-| R2 objects per copy page | 2 | 8 |
-| R2 keys per cleanup page | 64 | 256 |
-| Unfinished push checks per tick | 1 | 12 |
-| PR refreshes per tick | 1 | 24 |
+| Repository copy checks per tick | 2 | 12, or 3 with an S3 endpoint |
+| Repository cleanups per tick | 1 | 12 |
+| R2 objects per Web or Workflow copy page | 2 | 8 |
+| R2 objects per cron copy page | 2, or 1 with S3 | 16, or 1 with S3 |
+| R2 keys per cleanup page | 256 | 1,000 |
+| Unfinished push checks per tick | 1 | 24 |
+| PR refreshes per tick | 1 | 32, or 28 with S3 |
 | Merge queue entries per tick | 1 | 12 |
-| Webhook deliveries per tick, per delivery mechanism | 1 | 16 |
+| Webhook deliveries per tick, per delivery mechanism | 1 | 32 |
+
+Code search on `paid` scans up to 4,096 entries and 2 MiB of file content.
+Commit search scans up to 64 first-parent commits. The `free` profile scans
+up to 2,048 entries, 512 KiB of file content and 24 commits. Snapshot-based
+PR comparisons on `paid` can read up to 160 trees and inspect 8,192 entries.
+Native comparisons between repositories on the same origin use the origin's
+Git command with a five-second comparison deadline and 256 changed files.
 
 With `LFS_OBJECTS` bound, the default LFS mode (`proxy`) streams uploads through
 the Worker. Its `SHARD_LFS_MAX_BYTES` default is `100000000`. The `free` profile
@@ -436,6 +524,8 @@ Shard 是部署在 Cloudflare 上的自托管 Git 平台，适用于个人项目
 线上变量和密钥可在 Cloudflare 的 **Workers & Pages → 对应 Worker → Settings → Variables and Secrets** 中设置。控制台维护的文本变量应从该环境的 Wrangler `vars` 中移除，默认部署会保留这些变量。[变量与密钥配置](#worker-variables-and-secrets)
 
 Paid 环境可运行 `npm run deploy:paid -- --secrets-file .env.deploy.paid`，默认启用 R2 分片上传。已有 Artifacts 实例通过 `--env artifacts` 升级并保留原来的资源绑定。自管 Git 服务器可使用 `--env native`。[Paid 部署说明](#deploy-paid-with-r2-multipart-uploads) · [原生 Git 部署说明](#deploy-with-a-native-git-origin)
+
+大仓可运行 `npm run deploy:paid -- --env native --secrets-file .env.deploy.paid`，为原生 Git 源站配置 DNS only 的 HTTPS 域名和持久盘。标准 Git 直接向源站传输 pack，Worker 仍检查私库访问、写入令牌和分支保护。LFS 分片直接上传到 R2。[Paid 大仓部署](#large-repositories-on-workers-paid)
 
 选择 `managed-staging` 和 `managed` 可用 Durable Objects 协调受保护分支的合并、用 Workflows 续跑仓库复制，并通过 Containers 执行需要原生 Git 的 Artifacts 合并。Workers Builds 使用 `npm run ci -- --container` 验证代码与镜像，再通过 `npm run cd` 部署 staging。发布 Workflow 验证通过后，同一提交才会部署到生产并再次验证。[托管 CI/CD 配置](#deploy-with-managed-cloudflare-services)
 
@@ -494,7 +584,8 @@ Shard checks the Git client's Shard token and repository access, then streams
 the Smart HTTP request and response through its recorded Git backend.
 Artifacts requests use a short-lived repository token. Native origin requests
 use the instance's shared secret. The Free Git backend is reached through a
-private Durable Object binding. All clients use the Shard URL.
+private Durable Object binding. Native repositories can advertise a
+[direct Git hostname](#large-repositories-on-workers-paid) for pack transfers.
 
 Create tokens under `/user/settings/tokens`, choosing read/write scope and a
 7/30/90/365-day lifetime (30 days by default). In a private repo, owners and
@@ -581,8 +672,8 @@ Shard domain's request-body size limit. Multipart uploads can resume recorded
 parts for up to six days. The complete operation verifies the file before
 it becomes visible in the repository. With large objects above the single
 PUT ceiling, the Worker streams the staged object through SHA-256 and uses
-R2 multipart copy to publish it. Budget CPU and wall time for this step and
-for copying objects into forks. Each publication has a 15-minute window.
+R2 multipart copy to publish it. Verification and publication each have a
+15-minute wall-time window and share the invocation's CPU budget.
 Set a lower `SHARD_LFS_MAX_BYTES` for the throughput verified on your instance.
 Hosted verification and fork copying near the protocol ceiling remain unmeasured.
 

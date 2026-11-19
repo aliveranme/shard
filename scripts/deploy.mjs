@@ -41,7 +41,8 @@ function readPaidSecrets(file, vars) {
 }
 
 function configurePaid(rawConfig, target, lfsBinding, dryRun) {
-  if (!target.artifacts?.some(({ binding, namespace }) => binding === "ARTIFACTS" && namespace)) {
+  const artifacts = target.artifacts?.some(({ binding, namespace }) => binding === "ARTIFACTS" && namespace);
+  if (!artifacts && target.vars?.GIT_BACKEND !== "native") {
     throw new Error("Configure an Artifacts namespace bound as ARTIFACTS in the paid environment.");
   }
   const bucket = lfsBinding?.bucket_name;
@@ -87,7 +88,7 @@ function configurePaid(rawConfig, target, lfsBinding, dryRun) {
     throw new Error("SHARD_LFS_R2_ENDPOINT must match the account and jurisdiction of the LFS_OBJECTS binding.");
   }
   vars.SHARD_LFS_R2_ENDPOINT = endpoint;
-  vars.SHARD_GIT_ARTIFACTS_ORIGINS = `https://${account}.artifacts.cloudflare.net`;
+  if (artifacts) vars.SHARD_GIT_ARTIFACTS_ORIGINS = `https://${account}.artifacts.cloudflare.net`;
 }
 
 function readD1Rows(output) {
@@ -148,8 +149,8 @@ function deploy() {
   const paid = values.paid;
   const dryRun = values["dry-run"];
   const environment = values.env ?? process.env.CLOUDFLARE_ENV ?? (paid ? "managed" : undefined);
-  if (paid && environment !== "managed" && environment !== "managed-staging") {
-    throw new Error("--paid selects managed or managed-staging.");
+  if (paid && !["managed", "managed-staging", "native"].includes(environment)) {
+    throw new Error("--paid selects managed, managed-staging or native.");
   }
   const { rawConfig, configPath } = experimental_readRawConfig({ config: values.config, env: environment });
   if (!configPath) throw new Error("Provide a Wrangler configuration with --config.");
@@ -211,11 +212,12 @@ function deploy() {
     throw new Error("Another D1 database shadows the DB binding in Wrangler.");
   }
 
-  const origin = target.vars?.NATIVE_GIT_ORIGIN;
-  if (origin !== undefined && !dryRun) {
+  for (const name of ["NATIVE_GIT_ORIGIN", "NATIVE_GIT_DIRECT_ORIGIN"]) {
+    const origin = target.vars?.[name];
+    if (origin === undefined || dryRun) continue;
     const url = URL.parse(origin);
     if (url?.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
-      throw new Error("Use an HTTPS NATIVE_GIT_ORIGIN for deployment, or omit it here to use the Worker's dashboard variable.");
+      throw new Error(`Use an HTTPS ${name} for deployment, or omit it here to use the Worker's dashboard variable.`);
     }
   }
   const lfsBucket = target.vars?.SHARD_LFS_R2_BUCKET;

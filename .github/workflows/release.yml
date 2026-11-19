@@ -68,6 +68,7 @@ jobs:
           mise exec -- node "$PACKAGE_DIR/scripts/deploy.mjs" --config "$PACKAGE_DIR/wrangler.json" --env artifacts --dry-run --outdir "$RUNNER_TEMP/bundled-artifacts"
           mise exec -- node "$PACKAGE_DIR/scripts/deploy.mjs" --config "$PACKAGE_DIR/wrangler.json" --paid --dry-run --outdir "$RUNNER_TEMP/bundled-paid"
           mise exec -- node "$PACKAGE_DIR/scripts/deploy.mjs" --config "$PACKAGE_DIR/wrangler.json" --paid --env managed-staging --dry-run --outdir "$RUNNER_TEMP/bundled-paid-staging"
+          mise exec -- node "$PACKAGE_DIR/scripts/deploy.mjs" --config "$PACKAGE_DIR/wrangler.json" --paid --env native --dry-run --outdir "$RUNNER_TEMP/bundled-paid-native"
           unlink "$PACKAGE_DIR/node_modules"
           cd "$RUNNER_TEMP/release"
           tar -C "$RUNNER_TEMP" -czf "$package_name.tar.gz" "$package_name"

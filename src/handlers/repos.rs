@@ -237,7 +237,12 @@ pub async fn tree(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
     } else {
         page_title(&[&repo.full_name(), &path])
     };
-    let clone_url = format!("{}/{}/{}.git", util::base_url(&req), repo.owner_name, repo.name);
+    let direct_origin = match repo.git_backend {
+        GitBackend::Native => super::git::direct_origin(&state.env),
+        _ => None,
+    };
+    let clone_origin = direct_origin.unwrap_or_else(|| util::base_url(&req));
+    let clone_url = format!("{clone_origin}/{}/{}.git", repo.owner_name, repo.name);
 
     let page = RepoCodePage {
         chrome: Chrome::new(&state),

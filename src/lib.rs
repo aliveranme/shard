@@ -197,6 +197,7 @@ fn routes(router: Router<AppState>) -> Router<AppState> {
             "/:owner/:repo/git-receive-pack",
             handlers::git::receive_pack,
         )
+        .post_async("/:owner/:repo/shard-git-control", handlers::git::direct_control)
         .post_async("/:owner/:repo/info/lfs/objects/batch", lfs::batch)
         .put_async("/:owner/:repo/info/lfs/objects/:repo_id/:oid/:size", lfs::upload)
         .get_async("/:owner/:repo/info/lfs/objects/:repo_id/:oid/:size", lfs::download)
@@ -236,7 +237,8 @@ async fn serve(mut req: Request, env: Env, worker_ctx: Context, request_id: &str
             util::header(&req, "accept-language").as_deref().map_or(Locale::En, Locale::negotiate)
         }
     };
-    let source = util::header(&req, "cf-connecting-ip").unwrap_or_else(|| "local".into());
+    let source = is_git.then(|| handlers::git::direct_client_ip(&env, &req)).flatten()
+        .or_else(|| util::header(&req, "cf-connecting-ip")).unwrap_or_else(|| "local".into());
     let class = if is_git { "git" } else if is_check { "checks" } else { "web" };
     if !env.rate_limiter("REQUEST_LIMITER")?.limit(format!("{class}:{source}")).await?.success {
         console_log!("request_id={request_id} event=rate_limit class={class}");

@@ -69,6 +69,7 @@
       "vars": {
         "GIT_BACKEND": "native",
         "SHARD_LIMIT_PROFILE": "free",
+        // "NATIVE_GIT_DIRECT_ORIGIN": "https://git.example.com",
         "NATIVE_GIT_ORIGIN": "http://127.0.0.1:8793"
       },
       // Optional vars, secrets and send_email bindings belong to this environment.

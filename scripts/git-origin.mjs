@@ -1,12 +1,14 @@
 import { spawn } from "node:child_process";
 import { createHash, timingSafeEqual } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
 import { once } from "node:events";
-import { appendFile, lstat, mkdir, mkdtemp, realpath, rename, rm } from "node:fs/promises";
+import { access, appendFile, chmod, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { createServer, STATUS_CODES } from "node:http";
 import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { Readable } from "node:stream";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const WINDOWS = process.platform === "win32";
 const ID = /^shard-[A-Za-z0-9._-]{1,245}$/;
@@ -14,6 +16,8 @@ const OID = /^[0-9a-f]{40}$/;
 const ZERO_OID = "0".repeat(40);
 const DEFAULT_IMPORT_HOSTS = ["github.com", "gitlab.com", "codeberg.org"];
 const MAX_BODY_BYTES = 8 * 1024;
+const MAX_HOOK_BYTES = 256 * 1024;
+const CONTROL_TIMEOUT_MS = 15_000;
 const MAX_COMMIT_BYTES = 256 * 1024;
 const MAX_METADATA_BYTES = 4 * 1024 * 1024;
 const MAX_CGI_HEADER_BYTES = 8 * 1024;
@@ -29,6 +33,8 @@ const RAW_DIFF_ENTRY = /^:(000000|100644|100755|120000|160000) (000000|100644|10
 const BRANCH_PREFIX = "refs/heads/";
 const TAG_PREFIX = "refs/tags/";
 const SERVICE = /^(git-upload-pack|git-receive-pack)$/;
+const DIRECT_GIT = /^\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}\.git\/(info\/refs|git-upload-pack|git-receive-pack|info\/lfs\/objects\/(?:batch|\d+\/[a-f0-9]{64}\/\d+(?:\/(?:verify|multipart))?))$/;
+const PUSH_HOOKS = ["pre-receive", "post-receive"];
 const TREE_ENTRY = /^(040000|100644|100755|120000|160000) (?:tree|blob|commit) ([0-9a-f]{40}) +([0-9]+|-)\t/;
 
 const REPO_CONFIG = `
@@ -679,7 +685,7 @@ function setCgiHeaders(res, headers) {
     if (name === "status") {
       if (!/^[2-5][0-9]{2}(?: |$)/.test(value)) throw new Error("Invalid Git CGI status");
       status = Number(value.slice(0, 3));
-    } else if (["content-type", "content-length", "cache-control", "expires", "pragma"].includes(name)) {
+    } else if (["content-type", "content-length", "expires", "pragma"].includes(name)) {
       responseHeaders.set(name, value);
     }
   }
@@ -711,7 +717,7 @@ async function smartHttp(req, res, id, action, service, options) {
   const receiveBody = req.method === "POST";
   // A receive-pack must finish before another operation can switch HEAD.
   const git = startGit("http-backend", [], {
-    ...options, env: cgi, pipeInput: receiveBody, signal: pushing ? undefined : options.signal,
+    ...options, env: { ...cgi, ...options.env }, pipeInput: receiveBody, signal: pushing ? undefined : options.signal,
   });
   function drainRequest() {
     req.unpipe(git.child.stdin);
@@ -755,7 +761,119 @@ async function smartHttp(req, res, id, action, service, options) {
   }
 }
 
-export async function createGitOrigin({ directory, token, importHosts = DEFAULT_IMPORT_HOSTS, artifactsOrigins = [], bridgeOnly = false }) {
+function forgeUrl(value) {
+  const url = URL.parse(value);
+  const loopback = ["127.0.0.1", "[::1]"].includes(url?.hostname);
+  if (!(url?.protocol === "https:" || url?.protocol === "http:" && loopback) ||
+      url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
+    throw new TypeError("SHARD_GIT_FORGE_ORIGIN must be an HTTPS origin or loopback HTTP origin");
+  }
+  return url.origin;
+}
+
+function callerIp(req, trustProxy) {
+  const peer = req.socket.remoteAddress?.replace(/^::ffff:/, "");
+  const forwarded = req.headersDistinct["x-real-ip"];
+  if (trustProxy && ["127.0.0.1", "::1"].includes(peer) && forwarded?.length === 1 && isIP(forwarded[0])) {
+    return forwarded[0];
+  }
+  return peer;
+}
+
+function forgeHeaders(token, authorization, clientIp) {
+  const headers = new Headers({ "X-Shard-Git-Origin-Token": token });
+  if (authorization) headers.set("Authorization", authorization);
+  if (clientIp) headers.set("X-Shard-Git-Client-IP", clientIp);
+  return headers;
+}
+
+async function forgeControl(url, headers, command, signal) {
+  const timeout = AbortSignal.timeout(CONTROL_TIMEOUT_MS);
+  headers.set("Content-Type", "application/json");
+  const response = await fetch(url, {
+    method: "POST", headers, body: JSON.stringify(command), redirect: "error",
+    signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+  });
+  if (response.status === 200) return response.json();
+  if (response.status === 204) return null;
+  await response.body?.cancel();
+  throw new HttpError([401, 403, 404, 413, 429].includes(response.status) ? response.status : 502);
+}
+
+async function relayLfs(req, res, url, headers, signal) {
+  for (const name of ["accept", "content-type", "content-length", "content-encoding"]) {
+    if (req.headers[name] !== undefined) headers.set(name, req.headers[name]);
+  }
+  headers.set("Accept-Encoding", "identity");
+  const body = req.method === "GET" ? undefined : Readable.toWeb(req);
+  const response = await fetch(url, { method: req.method, headers, body, duplex: "half", redirect: "error", signal });
+  res.statusCode = response.status;
+  if (!response.headers.has("content-encoding") && response.headers.has("content-length")) {
+    res.setHeader("Content-Length", response.headers.get("content-length"));
+  }
+  for (const name of ["content-type", "www-authenticate", "lfs-authenticate", "retry-after"]) {
+    const value = response.headers.get(name);
+    if (value) res.setHeader(name, value);
+  }
+  if (response.body) {
+    for await (const chunk of response.body) await writeChunk(res, chunk, signal);
+  }
+  res.end();
+}
+
+async function installPushHooks(cwd) {
+  const directory = join(cwd, ".shard-direct-hooks");
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const shellPath = (path) => `'${(WINDOWS ? path.replaceAll("\\", "/") : path).replaceAll("'", "'\\''")}'`;
+  const command = `${shellPath(process.execPath)} ${shellPath(fileURLToPath(import.meta.url))}`;
+  for (const hook of PUSH_HOOKS) {
+    const path = join(directory, hook);
+    await writeFile(path, `#!/bin/sh\nexec ${command} --${hook}\n`, { mode: 0o700 });
+    await chmod(path, 0o700);
+  }
+  return directory;
+}
+
+async function hookUpdates() {
+  const chunks = [];
+  let length = 0;
+  for await (const chunk of process.stdin) {
+    length += chunk.length;
+    if (length > MAX_HOOK_BYTES) throw new HttpError(413);
+    chunks.push(chunk);
+  }
+  const lines = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks, length)).trimEnd();
+  return lines.split("\n").map((line) => {
+    const match = /^([a-f0-9]{40}) ([a-f0-9]{40}) (refs\/[^\s\0]+)$/.exec(line);
+    if (!match) throw new Error("Invalid Git hook input");
+    const [, before, after, name] = match;
+    return { before, after, name };
+  });
+}
+
+async function runPushHook(stage) {
+  const { SHARD_GIT_TOKEN: token, SHARD_GIT_HOOK_URL: url, SHARD_GIT_HOOK_AUTH: authorization,
+    SHARD_GIT_HOOK_IP: ip, SHARD_GIT_HOOK_STORAGE: storage, SHARD_GIT_HOOK_STATE: state } = process.env;
+  const headers = forgeHeaders(token, authorization, ip);
+  const updates = await hookUpdates();
+  if (stage === "--pre-receive") {
+    const { intent, actor } = await forgeControl(url, headers, { action: "stage", storage, updates });
+    if (intent !== null && (!Number.isSafeInteger(intent) || intent < 1) || !Number.isSafeInteger(actor) || actor < 1) {
+      throw new Error("Invalid Git push intent");
+    }
+    await writeFile(state, JSON.stringify({ intent, actor }), { flag: "wx", mode: 0o600 });
+  } else {
+    const { intent, actor } = JSON.parse(await readFile(state, "utf8"));
+    if (intent !== null) {
+      await forgeControl(url, headers, { action: "confirm", storage, intent, actor, accepted: updates.map(({ name }) => name) });
+    }
+  }
+}
+
+export async function createGitOrigin({
+  directory, token, importHosts = DEFAULT_IMPORT_HOSTS, artifactsOrigins = [], bridgeOnly = false,
+  forgeOrigin, trustProxy = false,
+}) {
   if (!bridgeOnly && (typeof directory !== "string" || !directory)) throw new TypeError("A Git directory is required");
   if (typeof token !== "string" || !/^[\x21-\x7e]+$/.test(token)) throw new TypeError("A Git token is required");
   const hosts = bridgeOnly ? undefined : configuredImportHosts(importHosts);
@@ -773,6 +891,8 @@ export async function createGitOrigin({ directory, token, importHosts = DEFAULT_
   const [, major, minor] = /^git version (\d+)\.(\d+)\./.exec(version) ?? [];
   const canWriteTree = Number(major) > 2 || Number(major) === 2 && Number(minor) >= 38;
   if (bridgeOnly && !canWriteTree) throw new Error("The Artifacts merge bridge requires Git 2.38 or later");
+  const forge = !bridgeOnly && forgeOrigin !== undefined ? forgeUrl(forgeOrigin) : null;
+  const hooks = forge ? await installPushHooks(cwd) : null;
   const mutations = new Set();
   const readers = new Map();
   const writes = new Map();
@@ -1042,6 +1162,52 @@ export async function createGitOrigin({ directory, token, importHosts = DEFAULT_
     });
   }
 
+  async function directGit(req, res, path, query, action, signal) {
+    const ip = callerIp(req, trustProxy);
+    const authorization = req.headers.authorization;
+    const headers = forgeHeaders(token, authorization, ip);
+    if (action.startsWith("info/lfs/")) {
+      const method = /\/(?:batch|verify|multipart)$/.test(action) ? "POST" : null;
+      if (method ? req.method !== method : !["GET", "PUT"].includes(req.method)) throw new HttpError(404);
+      return relayLfs(req, res, `${forge}${req.url}`, headers, signal);
+    }
+
+    const advertised = query.getAll("service");
+    const service = action === "info/refs" ? advertised[0] : action;
+    if (!SERVICE.test(service) || (action === "info/refs"
+      ? req.method !== "GET" || query.size !== 1 || advertised.length !== 1
+      : req.method !== "POST" || query.size !== 0)) throw new HttpError(404);
+
+    const url = `${forge}${path.slice(0, -action.length)}shard-git-control`;
+    let storage;
+    try {
+      ({ storage } = await forgeControl(url, headers, { action: "resolve", write: service === "git-receive-pack" }, signal));
+    } catch (error) {
+      if (error instanceof HttpError && error.status === 401) res.setHeader("WWW-Authenticate", 'Basic realm="shard"');
+      if (error instanceof HttpError && error.status === 429) res.setHeader("Retry-After", "60");
+      throw error;
+    }
+    if (typeof storage !== "string" || !ID.test(storage)) throw new Error("Invalid authorized Git storage ID");
+    const options = { cwd, signal, command: httpBackend, env: gitConfig([["core.bigFileThreshold", "64m"]]) };
+    if (action !== "git-receive-pack") {
+      return withRepo(storage, () => smartHttp(req, res, storage, action, service, options));
+    }
+    return withWrite(storage, signal, () => withStaging(async (staging) => {
+      // A missing pre-receive hook would silently let Git write without a fresh authorization check.
+      await access(join(hooks, "pre-receive"), fsConstants.X_OK);
+      const env = {
+        ...gitConfig([["core.hooksPath", hooks], ["receive.unpackLimit", "1"], ["core.bigFileThreshold", "64m"]]),
+        SHARD_GIT_TOKEN: token,
+        SHARD_GIT_HOOK_URL: url,
+        SHARD_GIT_HOOK_AUTH: authorization,
+        SHARD_GIT_HOOK_IP: ip ?? "",
+        SHARD_GIT_HOOK_STORAGE: storage,
+        SHARD_GIT_HOOK_STATE: join(staging, "push.json"),
+      };
+      await smartHttp(req, res, storage, action, service, { ...options, env });
+    }));
+  }
+
   async function handle(req, res, signal) {
     if (bridgeOnly) {
       if (req.method === "GET" && req.url === "/healthz") {
@@ -1049,15 +1215,17 @@ export async function createGitOrigin({ directory, token, importHosts = DEFAULT_
       }
       if (req.method !== "POST" || req.url !== "/v1/artifacts/merge") throw new HttpError(404);
     }
+    const url = req.url ?? "";
+    const delimiter = url.indexOf("?");
+    const path = delimiter < 0 ? url : url.slice(0, delimiter);
+    const query = new URLSearchParams(delimiter < 0 ? "" : url.slice(delimiter + 1));
+    const direct = forge && DIRECT_GIT.exec(path);
+    if (direct) return directGit(req, res, path, query, direct[1], signal);
     const auth = req.headersDistinct.authorization;
     if (auth?.length !== 1 || !timingSafeEqual(createHash("sha256").update(auth[0]).digest(), expectedToken)) {
       res.setHeader("WWW-Authenticate", "Bearer");
       throw new HttpError(401);
     }
-    const url = req.url ?? "";
-    const delimiter = url.indexOf("?");
-    const path = delimiter < 0 ? url : url.slice(0, delimiter);
-    const query = new URLSearchParams(delimiter < 0 ? "" : url.slice(delimiter + 1));
     if (path === "/v1/artifacts/merge" && req.method === "POST" && query.size === 0) {
       return mergeArtifacts(req, res, signal);
     }
@@ -1098,7 +1266,8 @@ export async function createGitOrigin({ directory, token, importHosts = DEFAULT_
     throw new HttpError(404);
   }
 
-  return createServer((req, res) => {
+  const serverOptions = forge ? { requestTimeout: 0, headersTimeout: 60_000 } : {};
+  return createServer(serverOptions, (req, res) => {
     const cancellation = new AbortController();
     req.on("error", () => cancellation.abort());
     res.on("error", () => cancellation.abort());
@@ -1131,6 +1300,8 @@ async function main() {
     importHosts: process.env.SHARD_GIT_IMPORT_HOSTS?.split(",").filter((host) => host.trim()),
     artifactsOrigins: process.env.SHARD_GIT_ARTIFACTS_ORIGINS?.split(",").filter((origin) => origin.trim()),
     bridgeOnly: process.env.SHARD_GIT_BRIDGE_ONLY === "1",
+    forgeOrigin: process.env.SHARD_GIT_FORGE_ORIGIN,
+    trustProxy: process.env.SHARD_GIT_TRUST_PROXY === "1",
   });
   server.listen(port, process.env.SHARD_GIT_HOST ?? "127.0.0.1");
   await once(server, "listening");
@@ -1138,8 +1309,21 @@ async function main() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  main().catch(() => {
-    console.error("Git origin could not start");
-    process.exitCode = 1;
-  });
+  const mode = process.argv[2];
+  if (mode === "--pre-receive" || mode === "--post-receive") {
+    runPushHook(mode).catch((error) => {
+      const reason = error instanceof HttpError ? ` (HTTP ${error.status})` : "";
+      if (mode === "--pre-receive") {
+        console.error(`Shard refused the Git ref update${reason}`);
+        process.exitCode = 1;
+      } else {
+        console.error(`Shard will reconcile Git push activity${reason}`);
+      }
+    });
+  } else {
+    main().catch(() => {
+      console.error("Git origin could not start");
+      process.exitCode = 1;
+    });
+  }
 }

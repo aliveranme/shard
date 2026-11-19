@@ -20,6 +20,12 @@ pub(crate) struct PushIntent {
     expires_at: i64,
 }
 
+impl PushIntent {
+    pub(crate) fn id(&self) -> i64 {
+        self.id
+    }
+}
+
 fn observable(update: &RefUpdate) -> bool {
     update.before != update.after
         && (update.name.starts_with("refs/heads/") || update.name.starts_with("refs/tags/"))
@@ -60,6 +66,18 @@ pub(crate) async fn confirm(env: &Env, mut intent: PushIntent, actor: Option<i64
         intent = current;
     }
     Err(Error::RustError("Git push confirmation raced with reconciliation".into()))
+}
+
+pub(crate) async fn confirm_direct(env: &Env, repo_id: i64, id: i64, actor: i64, accepted: &[String]) -> Result<()> {
+    let database = env.d1("DB")?;
+    let intent = db::first(&database,
+        "SELECT id, repo_id, updates, expires_at FROM git_push_intents WHERE id = ?1 AND repo_id = ?2",
+        &[js_int(id), js_int(repo_id)],
+    ).await?;
+    if let Some(intent) = intent {
+        confirm(env, intent, Some(actor), accepted).await?;
+    }
+    Ok(())
 }
 
 pub(crate) async fn record(env: &Env, repo_id: i64, actor: Option<i64>, updates: &[RefUpdate]) {

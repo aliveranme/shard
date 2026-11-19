@@ -174,22 +174,12 @@ impl ArtifactsMergeTransport {
 impl GitService {
     pub(crate) fn from_env(env: &Env) -> Result<Self> {
         let raw = env.var("NATIVE_GIT_ORIGIN")?.to_string();
-        let origin = Url::parse(&raw).map_err(|_| invalid_origin())?;
-        let loopback = matches!(origin.host_str(), Some("127.0.0.1" | "[::1]"));
-        if !(origin.scheme() == "https" && origin.host_str().is_some() || origin.scheme() == "http" && loopback)
-            || !origin.username().is_empty()
-            || origin.password().is_some()
-            || origin.path() != "/"
-            || origin.query().is_some()
-            || origin.fragment().is_some()
-        {
-            return Err(invalid_origin());
-        }
+        let origin = git_origin(&raw).ok_or_else(invalid_origin)?;
         let token = env.secret("NATIVE_GIT_TOKEN")?.to_string();
         if token.is_empty() || !token.bytes().all(|byte| (b'!'..=b'~').contains(&byte)) {
             return Err(Error::RustError("NATIVE_GIT_TOKEN must be a nonempty token".into()));
         }
-        Ok(Self::Native { origin: origin.origin().ascii_serialization(), authorization: format!("Bearer {token}") })
+        Ok(Self::Native { origin, authorization: format!("Bearer {token}") })
     }
 
     pub(crate) fn durable(env: &Env) -> Result<Self> {
@@ -524,6 +514,14 @@ async fn merge_result(mut response: Response) -> std::result::Result<String, Wri
         return Err(WriteError::Unavailable);
     }
     Ok(result.oid)
+}
+
+pub(crate) fn git_origin(raw: &str) -> Option<String> {
+    let url = Url::parse(raw).ok()?;
+    let loopback = matches!(url.host_str(), Some("127.0.0.1" | "[::1]"));
+    (url.host_str().is_some() && (url.scheme() == "https" || url.scheme() == "http" && loopback)
+        && url.username().is_empty() && url.password().is_none() && url.path() == "/"
+        && url.query().is_none() && url.fragment().is_none()).then(|| url.origin().ascii_serialization())
 }
 
 fn invalid_origin() -> Error {

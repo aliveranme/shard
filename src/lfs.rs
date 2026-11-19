@@ -1,6 +1,8 @@
 //! Backend-independent Git LFS transfers.
 use crate::ctx::AppState;
+use crate::git_storage::GitBackend;
 use crate::handlers::common::{repo_role, RepoRole};
+use crate::handlers::git::{trusted_direct_origin, ORIGIN_TOKEN};
 use crate::{auth, db, limits, util};
 use js_sys::{Reflect, Uint8Array};
 use serde::{Deserialize, Serialize};
@@ -62,6 +64,7 @@ struct Repository {
     lfs_copy_id: Option<i64>,
     owner_id: i64,
     visibility: String,
+    git_backend: GitBackend,
 }
 
 #[derive(Clone, Copy)]
@@ -161,7 +164,8 @@ pub async fn batch(req: Request, ctx: RouteContext<AppState>) -> Result<Response
     let Some(path) = url.path().strip_suffix("/batch") else {
         return failure(HIDDEN);
     };
-    let prefix = format!("{}{path}/{}", url.origin().ascii_serialization(), repo.id);
+    let origin = trusted_direct_origin(&ctx.data.env, &req).unwrap_or_else(|| url.origin().ascii_serialization());
+    let prefix = format!("{origin}{path}/{}", repo.id);
     let object_prefix = Namespace::for_repo(repo.id, repo.lfs_copy_id).prefix();
     let mut objects = Vec::with_capacity(batch.objects.len());
     for object in batch.objects {
@@ -385,7 +389,7 @@ async fn authorized(
     let database = ctx.data.db().map_err(|_| STORAGE)?;
     let repo: Repository = db::first(
         &database,
-        "SELECT r.id, r.owner_id, r.visibility, r.lfs_copy_id
+        "SELECT r.id, r.owner_id, r.visibility, r.lfs_copy_id, r.git_backend
            FROM repo_paths p JOIN users pu ON pu.id = p.owner_id JOIN repos r ON r.id = p.repo_id
           WHERE pu.username = ? COLLATE NOCASE AND p.name = ? COLLATE NOCASE",
         &[util::js_text(owner), util::js_text(name)],
@@ -393,6 +397,11 @@ async fn authorized(
     .await
     .map_err(|_| STORAGE)?
     .ok_or(HIDDEN)?;
+    if util::header(req, ORIGIN_TOKEN).is_some()
+        && (!matches!(repo.git_backend, GitBackend::Native) || trusted_direct_origin(&ctx.data.env, req).is_none())
+    {
+        return Err(HIDDEN);
+    }
     let private = repo.visibility != "public";
     if !private && !operation.writes() {
         return Ok(repo);

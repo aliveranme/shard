@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Account settings accept GPG public keys. Commit details verify OpenPGP signatures, show the signing certificate fingerprint, and separately indicate verified committer email.
+- The Paid native preset can advertise a direct Git hostname backed by persistent disk. Git pushes can exceed the Artifacts and Worker ingress limits while Shard checks access and branch protection. The preset enables R2 multipart LFS uploads.
+
+### Changed
+
+- The SQLite Git backend streams forks and imports. Push and copy budgets rise from 8 MiB to 32 MiB, and the copy ref limit rises from 512 to 2,048.
+- The Paid profile expands search, pull request comparison and scheduled maintenance budgets. Legacy Artifacts and explicitly opted-in Paid native deployments use up to 300 seconds of Worker CPU by default.
+- Managed Artifacts merges start a `standard-1` Cloudflare Container by default. The instance size is configurable.
+- Large LFS uploads have separate wall-time budgets for checksum verification and R2 publication. Scheduled recovery caps S3 multipart copy work per invocation.
+
 ## 0.2.0
 
 ### Added
