@@ -4,4 +4,7 @@ node_modules/
 .wrangler/
 .dev.vars
 .dev.vars.*
+.env
+.env.*
+.wrangler.deploy-*.json
 *.log

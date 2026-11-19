@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Source checkouts and prebuilt archives share one deploy command. It creates or reuses the selected D1 database, applies migrations and then publishes the Worker. A first deploy can upload Worker secrets with `--secrets-file`.
+- Shipped Wrangler configurations preserve dashboard-managed Worker variables across deployments.
+
 ## 0.2.0
 
 ### Added

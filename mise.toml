@@ -27,7 +27,7 @@ description = "Build the Worker bundle"
 run = "npm run build"
 
 [tasks.deploy]
-description = "Apply D1 migrations and deploy to Cloudflare"
+description = "Resolve D1, apply remote migrations and deploy to Cloudflare"
 run = "npm run deploy"
 
 [tasks.check]

@@ -50,8 +50,8 @@ jobs:
           export PACKAGE_DIR="$RUNNER_TEMP/$package_name"
           mkdir -p "$PACKAGE_DIR/scripts"
           cp -R build static migrations "$PACKAGE_DIR/"
-          cp CHANGELOG.md "$PACKAGE_DIR/"
-          cp scripts/git-origin.mjs scripts/git-lfs-r2-multipart.mjs "$PACKAGE_DIR/scripts/"
+          cp .node-version package.json package-lock.json CHANGELOG.md "$PACKAGE_DIR/"
+          cp scripts/deploy.mjs scripts/git-origin.mjs scripts/git-lfs-r2-multipart.mjs "$PACKAGE_DIR/scripts/"
           mise exec -- node <<'JS'
           const { writeFileSync } = require('node:fs');
           const { join } = require('node:path');
@@ -60,8 +60,9 @@ jobs:
           delete rawConfig.build;
           writeFileSync(join(process.env.PACKAGE_DIR, 'wrangler.json'), JSON.stringify(rawConfig, null, 2) + '\n');
           JS
-          mise exec -- node node_modules/wrangler/bin/wrangler.js deploy --config "$PACKAGE_DIR/wrangler.json" --dry-run --outdir "$RUNNER_TEMP/bundled"
-          mise exec -- node node_modules/wrangler/bin/wrangler.js deploy --config "$PACKAGE_DIR/wrangler.json" --env native --dry-run --outdir "$RUNNER_TEMP/bundled-native"
+          export NODE_PATH="$PWD/node_modules"
+          mise exec -- node "$PACKAGE_DIR/scripts/deploy.mjs" --config "$PACKAGE_DIR/wrangler.json" --dry-run --outdir "$RUNNER_TEMP/bundled"
+          mise exec -- node "$PACKAGE_DIR/scripts/deploy.mjs" --config "$PACKAGE_DIR/wrangler.json" --env native --dry-run --outdir "$RUNNER_TEMP/bundled-native"
           cd "$RUNNER_TEMP/release"
           tar -C "$RUNNER_TEMP" -czf "$package_name.tar.gz" "$package_name"
           sha256sum "$package_name.tar.gz" > "$package_name.tar.gz.sha256"

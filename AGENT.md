@@ -35,8 +35,10 @@ Use the pinned mise toolchain. Standard commands:
 - `mise run build`: produce the Worker bundle.
 - `mise run dev`: run the local simulator at `http://localhost:8787`.
 - `mise run test` runs isolated HTTP and real Git regressions for both storage modes.
-- `mise run deploy` and Cloudflare Workers Builds use `npm run deploy` to apply
-  migrations to the `DB` binding and publish the Worker. See [README.md](README.md#deploy-to-cloudflare).
+- `mise run deploy` and Cloudflare Workers Builds use `npm run deploy` to resolve
+  the target `DB` binding, apply migrations, and publish the Worker. In the shipped
+  configuration, `keep_vars` preserves dashboard-managed Worker variables.
+  See [README.md](README.md#deploy-to-cloudflare).
 
 Run the narrowest relevant checks after implementing a complete change. For UI changes, inspect the actual page in a browser at desktop and mobile widths. Cover permission, CSRF, credential and pagination boundaries with consumer-visible regression tests. Tests must use isolated data and must not contact deployed services. Update `README.md` and `STATUS.md` with verified behavior and remaining constraints. Keep this instruction file current when commands or conventions change.
 

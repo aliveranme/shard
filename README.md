@@ -90,88 +90,82 @@ modes store Git LFS bytes in the private `LFS_OBJECTS` R2 binding.
 
 ## Deploy to Cloudflare
 
-The default Artifacts deployment requires **Workers Paid** with Artifacts access.
-The Worker can use its `workers.dev` address or a Cloudflare custom domain.
-Enable R2 and configure a private `LFS_OBJECTS` bucket for each instance.
-Use separate D1, Git storage, and R2 resources for staging.
-[Artifacts pricing](https://developers.cloudflare.com/artifacts/platform/pricing/) · [Custom domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)
-
-### Deployment limits
-
-Set `SHARD_LIMIT_PROFILE` in Wrangler `vars` to `free` or `paid`. The
-Artifacts configuration uses `paid`, the `native` environment uses `free`,
-and a configuration that omits the variable uses `free`. Set
-`env.native.vars.SHARD_LIMIT_PROFILE` to `paid` when a native deployment uses
-a Workers Paid account and needs larger batches. Release archives use the
-same settings in `wrangler.json`.
-
-| Work | `free` | `paid` |
-| --- | ---: | ---: |
-| Repository copy checks per tick | 2 | 8 |
-| Repository cleanups per tick | 1 | 8 |
-| R2 objects per copy page | 2 | 8 |
-| R2 keys per cleanup page | 64 | 256 |
-| Unfinished push checks per tick | 1 | 12 |
-| PR refreshes per tick | 1 | 24 |
-| Merge queue entries per tick | 1 | 12 |
-| Webhook deliveries per tick, per delivery mechanism | 1 | 16 |
-
-The default Git LFS mode (`proxy`) streams uploads through the Worker. Its
-`SHARD_LFS_MAX_BYTES` default is `100000000`. The `free` profile can lower it.
-The `paid` profile can raise it up to the lower of the domain's request-body
-limit and R2's single-PUT limit of `5363466240` bytes. The domain's Free and
-Pro plans accept 100 MB and Business accepts 200 MB. The two R2 upload modes
-use the [limits below](#git-lfs-upload-modes).
-
-Workers Free has 10 ms of CPU per HTTP or cron invocation and 50 external
-subrequests per invocation. D1 Free allows 50 queries per Worker invocation
-and 100,000 written rows per day across the account. Workers and R2 usage
-follow their account and zone settings when you change the Shard profile.
-[Workers limits](https://developers.cloudflare.com/workers/platform/limits/) · [D1 limits](https://developers.cloudflare.com/d1/platform/limits/) · [R2 limits](https://developers.cloudflare.com/r2/platform/limits/)
-
-Active Worker HTTP requests can stream while the client is connected.
-An HTTPS origin behind Cloudflare's proxy has a default 125-second read
-timeout and 30-second write timeout. Configure the origin proxy to send
-and receive streams. Shard gives each proxied LFS upload 15 minutes for its
-body and tracks unfinished Git pushes in D1 for scheduled recovery.
-[Worker duration](https://developers.cloudflare.com/workers/platform/limits/#duration) · [Proxy timeouts](https://developers.cloudflare.com/fundamentals/reference/connection-limits/)
+The default deployment uses **Workers Paid** with Artifacts access. For
+Workers Free, use the [native Git environment](#deploy-with-a-native-git-origin).
+Enable R2 in the target account. Keep the Git LFS bucket private and use
+separate D1, Git storage and R2 resources for each instance.
+[Artifacts pricing](https://developers.cloudflare.com/artifacts/platform/pricing/) · [Enable R2](https://developers.cloudflare.com/r2/buckets/create-buckets/)
 
 ### Deploy from GitHub or GitLab
 
 1. Click **Deploy to Cloudflare** at the top of this page and select your
    Cloudflare account.
-2. Connect GitHub or GitLab and choose the destination repository, Worker name,
-   and D1 database name. Cloudflare copies Shard into your Git account and
-   provisions the `DB` binding.
+2. Connect GitHub or GitLab. Confirm the destination repository, Worker name,
+   D1 database and R2 bucket. Cloudflare copies the source and provisions the
+   resources for the default environment.
 3. Keep the repository root as the build root, `npm run build` as the build
    command, and `npm run deploy` as the deploy command. Click **Deploy** and
    open the `workers.dev` URL when Workers Builds finishes.
 
-The badge uses the public Shard repository as its source. If you import an
-existing copy directly through Workers & Pages, [create and configure its D1 database](#deploy-from-a-local-checkout)
-before the first build. A custom build API token needs Workers Scripts Edit
-and D1 Edit in the target Cloudflare account.
+For an existing repository, connect it in Workers & Pages and use the same
+build and deploy commands. The build API token needs Workers Scripts Edit,
+D1 Edit and Workers R2 Storage Edit in the target account. Add Workers
+Routes Edit for a zone when deploying routes there.
 [Deploy to Cloudflare buttons](https://developers.cloudflare.com/workers/platform/deploy-buttons/) · [Workers Builds settings](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/)
 
 Workers Builds uses the Node version in `.node-version` and installs the pinned
-Rust toolchain and `worker-build`. The deploy command applies migrations to
-the `DB` binding before publishing the Worker. Artifacts creates the configured
-namespace when Shard creates its first Git repository.
+Rust toolchain and `worker-build`. The deploy command applies migrations before
+publishing the Worker. Artifacts creates the configured namespace when Shard
+creates its first Git repository.
 [Artifacts namespaces](https://developers.cloudflare.com/artifacts/concepts/namespaces/)
 
 ### Deploy from a local checkout
 
-Set up the toolchain as shown in the local development section. Authenticate,
-then create a production D1 database in the same account as the Worker.
+Set up the toolchain from the local development section, then authenticate and
+deploy from the checkout.
 
 ```sh
 mise exec -- npx wrangler login
-mise exec -- npx wrangler d1 create shard
+mise run deploy
 ```
 
-Copy the database ID into `d1_databases[0].database_id` in `wrangler.jsonc`.
-If you chose another database name, update `database_name` and keep the binding
-named `DB`. Run `mise run deploy` to apply remote migrations and deploy.
+The deploy script uses the selected environment's `DB` binding. With the
+placeholder ID, it reuses the D1 database with the configured `database_name`
+or creates it. The script applies pending migrations without a second command
+or confirmation prompt. Wrangler then provisions or reuses the named R2
+bucket and deploys the Worker. An explicit D1 UUID pins the database for an
+existing installation.
+
+For another instance, choose a Worker name, D1 name, R2 bucket and Artifacts
+namespace in `wrangler.jsonc`. You can also pass `--config PATH` to use another
+configuration and `--env NAME` to select one of its environments. Use the same
+account throughout. For CI or an explicit account selection, set
+`CLOUDFLARE_ACCOUNT_ID` and supply `CLOUDFLARE_API_TOKEN` through the build
+environment. For a local bundle check, run `mise exec -- npm run deploy -- --dry-run`.
+[Wrangler authentication](https://developers.cloudflare.com/workers/wrangler/commands/general/#login) · [D1 migrations](https://developers.cloudflare.com/d1/reference/migrations/) · [Wrangler resource provisioning](https://developers.cloudflare.com/workers/wrangler/configuration/#automatic-provisioning)
+
+### Worker variables and secrets
+
+In the Cloudflare dashboard, open **Workers & Pages → your Worker → Settings → Variables and Secrets**.
+Choose **Add**, enter the name and value as **Text** or **Secret**, and deploy
+the change. For a named Wrangler environment, open that environment's Worker,
+such as `shard-native`. These are runtime settings. Workers Builds variables
+configure the build process separately.
+
+| Type | Settings |
+| --- | --- |
+| Text | `PUBLIC_ORIGIN`, `EMAIL_FROM`, `NATIVE_GIT_ORIGIN`, `SHARD_LIMIT_PROFILE`, `SHARD_LFS_UPLOAD_MODE`, `SHARD_LFS_MAX_BYTES`, `SHARD_LFS_R2_ENDPOINT`, `SHARD_LFS_R2_BUCKET`, `WEBHOOK_ENDPOINT` and `WEBHOOK_REPO` for the legacy integration |
+| Secret | `NATIVE_GIT_TOKEN`, `SHARD_LFS_R2_ACCESS_KEY_ID`, `SHARD_LFS_R2_SECRET_ACCESS_KEY`, `WEBHOOK_ENCRYPTION_KEY`, `WEBHOOK_SECRET` for the legacy integration |
+
+The shipped `keep_vars: true` preserves dashboard variables across Wrangler
+deployments. For each dashboard-managed text variable, omit the corresponding
+key from Wrangler `vars` in that environment. Values declared in `vars` are
+uploaded on every deploy. Wrangler retains existing secrets, and you can
+supply required secrets on a first deployment with `--secrets-file PATH`.
+The file accepts JSON or dotenv. Files named `.env.deploy` and
+`.env.deploy.*` are ignored by Git.
+Keep resource bindings, routes and Cron Triggers in the Wrangler configuration.
+[Dashboard environment variables](https://developers.cloudflare.com/workers/configuration/environment-variables/#add-environment-variables-via-the-dashboard) · [Workers secrets](https://developers.cloudflare.com/workers/configuration/secrets/#secrets-on-deployed-workers) · [Wrangler configuration precedence](https://developers.cloudflare.com/workers/wrangler/configuration/#source-of-truth)
 
 ### Deploy with a native Git origin
 
@@ -187,17 +181,18 @@ retain their recorded backend.
    persistent volume and `SHARD_GIT_TOKEN` to a randomly generated shared
    secret. The service defaults to `127.0.0.1:8793`. Run one process per volume
    and put it behind an HTTPS reverse proxy that streams request bodies.
-2. In `env.native` in `wrangler.jsonc`, set `NATIVE_GIT_ORIGIN` to the proxy's
-   HTTPS origin. Set the native D1 database ID and name and the native
-   `LFS_OBJECTS` bucket name. Set `NATIVE_GIT_TOKEN` to the same value as
-   `SHARD_GIT_TOKEN`. Use a dedicated origin directory and token per instance.
-3. Apply migrations and deploy the same environment:
+2. In `env.native.vars`, set `NATIVE_GIT_ORIGIN` to the proxy's HTTPS origin.
+   To manage it through the dashboard on an existing Worker, remove the
+   loopback entry from the file and set the dashboard variable on that Worker.
+   Use a dedicated origin directory and token per instance.
+3. For a new Worker, put `NATIVE_GIT_TOKEN` in `.env.deploy.native` with the
+   same value as `SHARD_GIT_TOKEN`. Deploy the native environment with that file.
 
    ```sh
-   mise exec -- npx wrangler secret put NATIVE_GIT_TOKEN --env native
-   mise exec -- npx wrangler d1 migrations apply DB --env native --remote
-   mise exec -- npx wrangler deploy --env native
+   mise exec -- npm run deploy -- --env native --secrets-file .env.deploy.native
    ```
+
+   On subsequent deploys, omit `--secrets-file` to use the existing Worker secret.
 
 For Windows or Linux local development, start the origin with a disposable
 directory and token. Put `NATIVE_GIT_TOKEN` in `.dev.vars.native` and run:
@@ -233,20 +228,79 @@ merges require manual integration and verification.
 ### Optional email setup
 
 Set `PUBLIC_ORIGIN` to the HTTPS origin of your instance and `EMAIL_FROM` to an
-address on your onboarded sending domain. Add the `EMAIL` binding via Wrangler
-`send_email`. Verification links expire after 24 hours. Password-reset links
-expire after 30 minutes and a successful reset revokes all browser sessions for
-the account. [Cloudflare Email Service](https://developers.cloudflare.com/email-service/get-started/send-emails/)
+address on your onboarded sending domain. Add `send_email` to the selected
+Wrangler environment with `[{ "name": "EMAIL", "allowed_sender_addresses":
+["shard@example.com"] }]`, using your own sender address. Verification links
+expire after 24 hours. Password-reset links expire after 30 minutes and a
+successful reset revokes all browser sessions for the account.
+[Email Sending and domain onboarding](https://developers.cloudflare.com/email-service/get-started/send-emails/) · [`send_email` binding](https://developers.cloudflare.com/email-service/configuration/send-bindings/)
+
+### Cloudflare services used by Shard
+
+| Service | Role | Official documentation |
+| --- | --- | --- |
+| Workers and Static Assets | Serve the Rust/Wasm Worker and static files through `ASSETS`. | [Workers](https://developers.cloudflare.com/workers/) · [Static Assets binding](https://developers.cloudflare.com/workers/static-assets/binding/) · [Custom domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) |
+| D1 | Store accounts, permissions, repository metadata and review history in `DB`. | [D1](https://developers.cloudflare.com/d1/) · [Migrations](https://developers.cloudflare.com/d1/reference/migrations/) |
+| Artifacts | Store Git repositories in the default environment through `ARTIFACTS`. | [Artifacts](https://developers.cloudflare.com/artifacts/) · [Namespaces](https://developers.cloudflare.com/artifacts/concepts/namespaces/) |
+| R2 | Keep Git LFS objects private in `LFS_OBJECTS`. | [R2 Worker API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/) · [S3 credentials](https://developers.cloudflare.com/r2/api/tokens/) |
+| Rate Limiting | Enforce per-source limits through `REQUEST_LIMITER`. | [Rate Limiting binding](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/) |
+| Cron Triggers | Process queued work every minute and expire records at 03:00 UTC. | [Cron Triggers](https://developers.cloudflare.com/workers/configuration/cron-triggers/) |
+| Workers Logs | Record Worker errors and application logs. | [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) |
+| Email Service | Send account verification and password reset links through optional `EMAIL`. | [Email Sending](https://developers.cloudflare.com/email-service/get-started/send-emails/) |
+
+[Evaluate Durable Objects, Workflows and Containers](PLAN.md#optional-cloudflare-execution-services)
+
+### Deployment limits
+
+Set `SHARD_LIMIT_PROFILE` to `free` or `paid`. The shipped Wrangler config uses
+`paid` for Artifacts and `free` for native Git. Shard uses `free` when the variable
+is absent. A native deployment on Workers Paid can use `paid` to increase its
+scheduled batch sizes.
+
+| Work | `free` | `paid` |
+| --- | ---: | ---: |
+| Repository copy checks per tick | 2 | 8 |
+| Repository cleanups per tick | 1 | 8 |
+| R2 objects per copy page | 2 | 8 |
+| R2 keys per cleanup page | 64 | 256 |
+| Unfinished push checks per tick | 1 | 12 |
+| PR refreshes per tick | 1 | 24 |
+| Merge queue entries per tick | 1 | 12 |
+| Webhook deliveries per tick, per delivery mechanism | 1 | 16 |
+
+The default Git LFS mode (`proxy`) streams uploads through the Worker. Its
+`SHARD_LFS_MAX_BYTES` default is `100000000`. The `free` profile can lower it.
+The `paid` profile can raise it up to the lower of the domain's request-body
+limit and R2's single-PUT limit of `5363466240` bytes. The domain's Free and
+Pro plans accept 100 MB and Business accepts 200 MB. The two R2 upload modes
+use the [limits below](#git-lfs-upload-modes).
+
+Workers Free has 10 ms of CPU per HTTP or cron invocation and 50 external
+subrequests per invocation. D1 Free allows 50 queries per Worker invocation
+and 100,000 written rows per day across the account. Workers and R2 usage
+follow their account and zone settings when you change the Shard profile.
+[Workers limits](https://developers.cloudflare.com/workers/platform/limits/) · [D1 limits](https://developers.cloudflare.com/d1/platform/limits/) · [R2 limits](https://developers.cloudflare.com/r2/platform/limits/)
+
+Active Worker HTTP requests can stream while the client is connected.
+An HTTPS origin behind Cloudflare's proxy has a default 125-second read
+timeout and 30-second write timeout. Configure the origin proxy to send
+and receive streams. Shard gives each proxied LFS upload 15 minutes for its
+body and tracks unfinished Git pushes in D1 for scheduled recovery.
+[Worker duration](https://developers.cloudflare.com/workers/platform/limits/#duration) · [Proxy timeouts](https://developers.cloudflare.com/fundamentals/reference/connection-limits/)
 
 ## 简体中文
 
 Shard 是部署在 Cloudflare 上的自托管 Git 平台，适用于个人项目和小团队。D1 保存账户、权限、议题和审查记录。Git 默认使用 Artifacts，也可配置原生 Git 源站。界面语言可在页脚或账号设置中切换。
 
-点击顶部的 **Deploy to Cloudflare** 徽章，选择 Cloudflare 账户，连接 GitHub 或 GitLab，并确认 Worker 和 D1 数据库名称。Cloudflare 会复制源码、创建 D1 数据库、构建 Worker 并应用迁移。部署需要开通 **Workers Paid** 并可使用 Artifacts。 [官方部署按钮文档](https://developers.cloudflare.com/workers/platform/deploy-buttons/)
+启用 R2 后，点击 **Deploy to Cloudflare**，选择账户并确认 Worker、D1 数据库和 R2 存储桶。默认部署需要 **Workers Paid** 与 Artifacts。已有仓库也可通过 Workers Builds 运行 `npm run deploy`。本地登录 Wrangler 后，`mise run deploy` 会准备 D1、应用迁移并发布 Worker。[部署指南](#deploy-to-cloudflare) · [Cloudflare 模块文档](#cloudflare-services-used-by-shard)
 
 在本地试用无需 Cloudflare 账号。安装 Git 2.32 或更高版本和 mise 后，运行 `mise install`、`mise run setup`、`mise run dev`，打开 `http://localhost:8787`。
 
-需要避开 Artifacts 时，选择 `--env native`，并配置自有 Git 源站、持久磁盘和 D1。详见 [原生 Git 部署说明](#deploy-with-a-native-git-origin)。
+线上变量和密钥可在 Cloudflare 的 **Workers & Pages → 对应 Worker → Settings → Variables and Secrets** 中设置。控制台维护的文本变量应从该环境的 Wrangler `vars` 中移除，默认部署会保留这些变量。[变量与密钥配置](#worker-variables-and-secrets)
+
+使用 Workers Free 时可选择 `--env native`，并配置自有 HTTPS Git 源站和持久磁盘。[原生 Git 部署说明](#deploy-with-a-native-git-origin)
+
+合并队列协调、仓库复制续跑和原生 Git 合并桥的方案见 [Durable Objects、Workflows 和 Containers 架构评估](PLAN.md#optional-cloudflare-execution-services)。
 
 ## Project releases
 
@@ -261,18 +315,18 @@ and dry-runs both deployment environments from the prebuilt package. It
 checks the archive's SHA-256 and uploads the archive and checksum to a draft
 before publishing the GitHub Release.
 
-To deploy the prebuilt archive, verify its checksum and extract it. Use the
-pinned Node version from [`.node-version`](.node-version) and set the D1 name
-and ID in the extracted `wrangler.json`, following the
-[local checkout setup](#deploy-from-a-local-checkout). From the extracted directory:
+To deploy the prebuilt archive, verify its checksum, extract it, and use the
+Node version in the included `.node-version`. Set the resource names in the
+extracted `wrangler.json` and authenticate to the target Cloudflare account.
+Run these commands from the extracted directory.
 
 ```sh
-npx --yes wrangler@4.164.0 d1 migrations apply DB --remote
-npx --yes wrangler@4.164.0 deploy
+npm ci
+npm run deploy
 ```
 
-For native mode, follow the origin and secret setup above, use the packaged
-`scripts/git-origin.mjs`, and add `--env native` to both Wrangler commands.
+For native mode, use the packaged `scripts/git-origin.mjs` and the same
+`--env native` and `--secrets-file` options as a source deployment.
 
 [Release workflow](.github/workflows/release.yml) · [GitHub Releases](https://github.com/aliveranme/shard/releases)
 
@@ -344,8 +398,9 @@ LFS objects separately for external Git imports and mirrors.
 
 #### Git LFS upload modes
 
-Set `SHARD_LFS_UPLOAD_MODE` in `vars` for Artifacts or `env.native.vars` for
-the native origin. Apply D1 migration `0026_lfs_multipart.sql` when upgrading.
+Set `SHARD_LFS_UPLOAD_MODE` through the [Worker's Variables and Secrets](#worker-variables-and-secrets)
+or the selected environment's Wrangler `vars`. The deploy command applies D1
+migration `0026_lfs_multipart.sql` when upgrading.
 
 | Mode | Client | New object limit |
 | --- | --- | --- |
@@ -363,6 +418,8 @@ R2 multipart copy to publish it. Budget CPU and wall time for this step and
 for copying objects into forks. Each publication has a 15-minute window.
 
 Both R2 modes use the following settings in the same Worker environment.
+Set the endpoint and bucket as text variables in the dashboard or Wrangler.
+Set the credentials as Worker secrets in the dashboard or a deploy secrets file.
 
 | Setting | Value |
 | --- | --- |

@@ -76,6 +76,99 @@ object to or from a private, repository-scoped R2 key. Forks copy LFS pages
 before publication. Repository cleanup and copy progress live in D1. Back up
 the R2 bucket with D1 and Git storage. [Git LFS Batch API](https://github.com/git-lfs/git-lfs/blob/main/docs/api/batch.md)
 
+## Optional Cloudflare execution services
+
+Shard currently advances repository copies, incomplete pushes, PR comparisons,
+protected merges and Webhook deliveries in bounded batches on the minute cron.
+The Git backend owns objects and refs, D1 owns permissions and job outcomes, and
+R2 owns LFS bytes. Keep those ownership boundaries when evaluating an execution
+service. [Scheduled handler](src/lib.rs) · [Verified behavior](STATUS.md#verified-locally)
+
+### Durable Objects for branch coordination
+
+A Durable Object provides a globally addressed, single-threaded instance with
+transactional SQLite storage. SQLite-backed classes are available on Workers
+Free and Paid. Alarms can wake an idle object and deliver at least once, with one
+scheduled alarm per object. Awaiting external I/O can interleave requests, so an
+object still needs an explicit operation claim and recovery logic around remote
+writes. [Durable Objects](https://developers.cloudflare.com/durable-objects/) · [Rules](https://developers.cloudflare.com/durable-objects/best-practices/rules-of-durable-objects/) · [SQLite storage and class setup](https://developers.cloudflare.com/durable-objects/best-practices/access-durable-objects-storage/) · [Alarms](https://developers.cloudflare.com/durable-objects/api/alarms/) · [Limits and pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/)
+
+The merge queue is the most useful target if hosted measurements show recurring
+contention or long waits. D1 already enforces order per target branch and checks
+approvals, CI results and access during the claim. A Durable Object addressed by
+the stable repository ID and full target ref could coalesce enqueue and check
+events, wake the next eligible item promptly and schedule a retry when an origin
+response is ambiguous. Different branches can progress independently. Keep the
+D1 claim, the Git compare-and-swap against the expected tip, and the recovery
+check that observes the live ref after a lost response. Requests that bypass the
+object can still change Git refs. Keep the bounded cron fallback for lost
+notifications or exhausted alarm retries. [Existing merge queue](src/branch_rules.rs)
+
+Compare queue wait time and D1 queries per completed merge against the existing
+path. Include the extra request hop and object usage in that comparison. Test
+competing merges to one branch, parallel branches, revoked access, duplicate
+alarms and a lost reply after a successful ref update. A Cloudflare-only Git
+backend would use one object per repository for the ref and pack-index commit.
+That design also needs the separate [Git storage evaluation](#optional-git-backends).
+
+### Workflows for repository copies
+
+Workflows is the Workers durable execution engine for multi-step jobs. Completed
+steps checkpoint their results, failed steps can retry, and an instance can sleep
+or wait for an event. External operations can still commit before a step reports
+success. Keep retries idempotent and retain user-visible job status in D1 because
+Workflow history expires. [Workflows](https://developers.cloudflare.com/workflows/) · [Workers API](https://developers.cloudflare.com/workflows/build/workers-api/) · [Idempotency and retries](https://developers.cloudflare.com/workflows/build/rules-of-workflows/) · [Limits](https://developers.cloudflare.com/workflows/reference/limits/) · [Pricing](https://developers.cloudflare.com/workflows/reference/pricing/)
+
+Pilot fork completion first. Start one Workflow keyed by the committed
+`repo_copies.id` and use the stored destination identity for all retries. After
+Git storage confirms the copy, advance bounded LFS pages using the existing D1
+lease and cursor. Publish once, after rechecking source access and confirming Git
+and LFS completion. Keep job IDs, cursors and object references in step state.
+Keep Git packs and LFS bytes in their backends. For authenticated imports,
+observe the native origin job after submission and keep user credentials out of
+Workflow parameters and persisted state. [Existing copy reconciliation](src/repo_lifecycle.rs)
+
+The D1 commit and Workflow start are separate operations. Keep a bounded cron
+check for missed starts and expired claims, with one executor advancing each
+job. Test a duplicate start, a stop between a copy and its cursor update, and a
+revocation before publication. Measure copy completion latency, retries and
+platform usage per job. If the pilot earns its cost, use the same model for
+repository storage cleanup or verification jobs with multiple external steps.
+The existing minute cron remains suitable for compact, bounded work.
+
+### Containers for native Git compute
+
+Cloudflare Containers provides Linux processes, local scratch space and larger
+CPU and memory budgets on Workers Paid. A Worker can route to a container
+through its Durable Object. The first candidate is the existing Artifacts merge
+bridge. It already builds a temporary bare repository with pinned base and head
+commits, runs native Git and advances the target only if the expected tip still
+matches. A container could run the same Git 2.38+ operation without a separately
+operated bridge host. Keep Shard's authorization in the Worker and grant the
+job access only to the intended Git remotes. [Existing bridge](scripts/git-origin.mjs) · [Containers](https://developers.cloudflare.com/containers/) · [Durable Object Container API](https://developers.cloudflare.com/containers/api/durable-object-container/) · [Outbound traffic controls](https://developers.cloudflare.com/containers/configuration/outbound-traffic/)
+
+Use disposable workspaces and keep published results in the existing Git or R2
+backend. Container disks are ephemeral. The snapshot beta captures a point in
+time and ties it to an image version. R2 FUSE lacks full POSIX semantics, which
+matters for Git ref locks and atomic renames. The native Git origin requires a
+persistent filesystem with those guarantees. Large LFS verification is a later
+candidate if Worker CPU or elapsed time limits it. Stream the complete staged
+object from R2 for SHA-256, check its size and use the existing publication
+conditions. Account for outbound upload size limits on intercepted requests.
+[Disk lifecycle](https://developers.cloudflare.com/containers/faq/#is-disk-persistent-what-happens-to-my-disk-when-my-container-sleeps) · [Snapshots](https://developers.cloudflare.com/containers/guides/snapshots/) · [R2 FUSE](https://developers.cloudflare.com/containers/examples/r2-fuse-mount/) · [Limits](https://developers.cloudflare.com/containers/platform/limits/) · [Pricing](https://developers.cloudflare.com/containers/platform/pricing/)
+
+Measure cold and warm merge latency and cost on a private staging repository.
+Verify conflict handling, changed target refs and container termination during
+both preparation and publication. A retry must reconcile the observed Git ref
+or R2 object before repeating an external mutation. Version the bridge API so
+the Worker can handle a previous image during rollout, and check container
+readiness after deploy. [Container deployment and rollouts](https://developers.cloudflare.com/containers/guides/deploy/)
+
+Prototype each service in a separate Wrangler environment with isolated data.
+The pinned Rust SDK exposes Durable Object bindings and handlers. Verify how
+Workflows and Container control entrypoints integrate with the Wasm build
+before enabling their bindings. [workers-rs Durable Objects](https://docs.rs/worker/0.9.0/worker/durable/index.html)
+
 ## Deployment prerequisites
 
 - Use `workers.dev` or an owned HTTPS name for staging. Artifacts staging

@@ -3,6 +3,9 @@
   "name": "shard",
   "main": "build/index.js",
   "compatibility_date": "2026-11-17",
+  // Preserve dashboard variables that are managed outside this file.
+  "keep_vars": true,
+  // "routes": [{ "pattern": "forge.example.com", "custom_domain": true }],
   "build": {
     "command": "npm run build"
   },
@@ -11,9 +14,12 @@
     "binding": "ASSETS"
   },
   "vars": {
-    "SHARD_LIMIT_PROFILE": "paid",
-    "SHARD_LFS_UPLOAD_MODE": "proxy"
+    "SHARD_LIMIT_PROFILE": "paid"
+    // Add optional text variables here or in Workers Settings > Variables and Secrets.
+    // See the README for Git LFS, email, webhooks and the optional native Git bridge.
   },
+  // "send_email": [{ "name": "EMAIL", "allowed_sender_addresses": ["shard@example.com"] }],
+  // "secrets": { "required": ["WEBHOOK_ENCRYPTION_KEY"] },
   // Default Git storage for the Cloudflare deploy button and local simulator.
   "artifacts": [
     { "binding": "ARTIFACTS", "namespace": "shard" }
@@ -22,7 +28,7 @@
     {
       "binding": "DB",
       "database_name": "shard",
-      // Deploy to Cloudflare replaces this default with the provisioned database ID.
+      // The deploy script resolves this placeholder by name. It also identifies the local database.
       "database_id": "00000000-0000-0000-0000-000000000000",
       "migrations_dir": "migrations"
     }
@@ -43,9 +49,9 @@
       "vars": {
         "GIT_BACKEND": "native",
         "SHARD_LIMIT_PROFILE": "free",
-        "SHARD_LFS_UPLOAD_MODE": "proxy",
         "NATIVE_GIT_ORIGIN": "http://127.0.0.1:8793"
       },
+      // Optional vars, secrets and send_email bindings belong to this environment.
       "secrets": { "required": ["NATIVE_GIT_TOKEN"] },
       "triggers": { "crons": ["0 3 * * *", "* * * * *"] },
       "artifacts": [],

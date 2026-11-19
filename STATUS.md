@@ -3,7 +3,7 @@
 Living record of what works, what is missing, and how it was verified.
 Update this file whenever a milestone lands or a limitation changes.
 
-**Snapshot:** 2026-11-19 · Git LFS uploads and release packaging · local development
+**Snapshot:** 2026-11-19 · Cloudflare deployment and execution service evaluation · local development
 
 | Item | Value |
 |---|---|
@@ -11,7 +11,7 @@ Update this file whenever a milestone lands or a limitation changes.
 | Tooling | Node 26.13.1, Wrangler 4.164.0, mise |
 | Storage | D1 with Cloudflare Artifacts by default or an authenticated native Git origin. Both environments use a private R2 bucket for LFS objects. |
 | UI | Server-rendered Askama templates using `static/css/theme.css` and `static/css/shard.css` |
-| Deployment | The prebuilt Worker passed a Wrangler dry run in both environments. Hosted staging verification is pending. |
+| Deployment | The unified deploy command passed loopback Cloudflare API checks and packaged dry runs for Artifacts and native Git. Hosted staging verification is pending. |
 | Source | [aliveranme/shard](https://github.com/aliveranme/shard) |
 
 ## Verified locally
@@ -53,7 +53,7 @@ Update this file whenever a milestone lands or a limitation changes.
 | Git protocol | Artifacts switches through Shard to the classic advertisement when HEAD is overridden. Production partial clone and fetch compatibility require verification. Provider-side updates that bypass Shard need separate event ingestion. |
 | Operations | Live metrics, token-list pagination, and further CSP tightening after moving inline styles. |
 
-Architecture decisions and provider evidence are recorded in [PLAN.md](PLAN.md).
+Architecture decisions and provider evidence are recorded in [PLAN.md](PLAN.md). The [execution service evaluation](PLAN.md#optional-cloudflare-execution-services) covers branch coordination, copy recovery and native Git compute.
 
 ## Cloudflare Artifacts constraints (verified 2026-11-17)
 
@@ -134,6 +134,8 @@ Architecture decisions and provider evidence are recorded in [PLAN.md](PLAN.md).
 | 2026-11-19 | Isolated D1 and R2 restore | The local SQL export placed a trigger ahead of its view. After reordering those statements in the import copy, the restored trigger recorded a ref update. The Worker served exact object bytes from both restored LFS namespaces. |
 | 2026-11-19 | Wasm release build and isolated Git LFS tests | The 29 existing HTTP and native Git regressions passed. Two new cases exercised the real Git LFS client against Miniflare's signed S3 endpoint. A staged direct upload stayed hidden before verification. Multipart resumed after the first of two parts and rejected a wrong whole-object SHA-256. |
 | 2026-11-19 | Release notes and prebuilt archive rehearsal | The notes extractor selected `0.1.0` and `0.2.0` independently and rejected an undocumented prerelease and an invalid tag. The archive contained the migration, client adapter and changelog. Wrangler dry run passed for both environments. |
+| 2026-11-19 | Unified deployment against an isolated Cloudflare API | Wrangler created missing D1 and R2 resources, applied migrations before upload and reused an existing database in native mode. Upload metadata preserved dashboard text, JSON and secrets, and carried the native secret on first deploy. An explicit UUID took precedence. A failed migration prevented publication, and mismatched R2 bucket settings stopped before remote requests. |
+| 2026-11-19 | Prebuilt deploy command | The archive installed its pinned npm dependencies independently. Dry runs through the deploy script resolved both environments, and the archive's `npm run deploy -- --dry-run` resolved the default bindings. |
 
 ## How to update
 

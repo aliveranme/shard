@@ -5,7 +5,7 @@
   "description": "Shard - a self-hosted, Cloudflare-native Git forge",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler d1 migrations apply DB --remote && wrangler deploy",
+    "deploy": "node scripts/deploy.mjs",
     "build": "node scripts/build-worker.mjs",
     "test": "node --test --test-concurrency=1 tests/*.test.mjs",
     "db:migrate": "wrangler d1 migrations apply DB --local"
@@ -14,6 +14,9 @@
     "bindings": {
       "DB": {
         "description": "Stores accounts, repository metadata, issues and pull requests. The deploy script applies the schema."
+      },
+      "LFS_OBJECTS": {
+        "description": "Private R2 bucket for Git LFS. Use a separate bucket for each Shard instance."
       }
     }
   },
