@@ -1251,5 +1251,8 @@ according to the system's reduced-motion preference.
   tree entries are `{ name, mode, type, hash }`.
 - Git remotes accept a Bearer repo token; for Basic auth the password is the token
   secret before its `?expires=` suffix.
-
 [cloudflare-deploy]: https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Faliveranme%2Fshard
+
+## Links
+
+- https://linux.do
