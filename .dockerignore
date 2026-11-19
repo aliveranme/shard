@@ -1,0 +1,5 @@
+**
+!scripts/
+!scripts/git-origin.mjs
+!containers/
+!containers/git-merge.Dockerfile

@@ -78,11 +78,11 @@ the R2 bucket with D1 and Git storage. [Git LFS Batch API](https://github.com/gi
 
 ## Optional Cloudflare execution services
 
-Shard currently advances repository copies, incomplete pushes, PR comparisons,
-protected merges and Webhook deliveries in bounded batches on the minute cron.
-The Git backend owns objects and refs, D1 owns permissions and job outcomes, and
-R2 owns LFS bytes. Keep those ownership boundaries when evaluating an execution
-service. [Scheduled handler](src/lib.rs) · [Verified behavior](STATUS.md#verified-locally)
+The `managed-staging` and `managed` environments enable branch coordination,
+durable repository copies and an ephemeral Git merge container. Git owns
+objects and refs, D1 owns permissions and job outcomes, and R2 owns LFS bytes.
+The minute cron remains the recovery path for outstanding jobs.
+[Scheduled handler](src/lib.rs) · [Verified behavior](STATUS.md#verified-locally)
 
 ### Durable Objects for branch coordination
 
@@ -93,23 +93,12 @@ scheduled alarm per object. Awaiting external I/O can interleave requests, so an
 object still needs an explicit operation claim and recovery logic around remote
 writes. [Durable Objects](https://developers.cloudflare.com/durable-objects/) · [Rules](https://developers.cloudflare.com/durable-objects/best-practices/rules-of-durable-objects/) · [SQLite storage and class setup](https://developers.cloudflare.com/durable-objects/best-practices/access-durable-objects-storage/) · [Alarms](https://developers.cloudflare.com/durable-objects/api/alarms/) · [Limits and pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/)
 
-The merge queue is the most useful target if hosted measurements show recurring
-contention or long waits. D1 already enforces order per target branch and checks
-approvals, CI results and access during the claim. A Durable Object addressed by
-the stable repository ID and full target ref could coalesce enqueue and check
-events, wake the next eligible item promptly and schedule a retry when an origin
-response is ambiguous. Different branches can progress independently. Keep the
-D1 claim, the Git compare-and-swap against the expected tip, and the recovery
-check that observes the live ref after a lost response. Requests that bypass the
-object can still change Git refs. Keep the bounded cron fallback for lost
-notifications or exhausted alarm retries. [Existing merge queue](src/branch_rules.rs)
-
-Compare queue wait time and D1 queries per completed merge against the existing
-path. Include the extra request hop and object usage in that comparison. Test
-competing merges to one branch, parallel branches, revoked access, duplicate
-alarms and a lost reply after a successful ref update. A Cloudflare-only Git
-backend would use one object per repository for the ref and pack-index commit.
-That design also needs the separate [Git storage evaluation](#optional-git-backends).
+A SQLite-backed Durable Object is addressed by the stable repository ID and
+full target ref. It schedules an alarm on enqueue or a matching CI update.
+The D1 claim still checks queue order, approvals, commit checks and access.
+Git compares the expected target tip before updating the ref. After an
+ambiguous write, the queue checks the live ref before retrying. The minute
+cron reschedules unfinished work. [Merge queue](src/branch_rules.rs)
 
 ### Workflows for repository copies
 
@@ -119,33 +108,22 @@ or wait for an event. External operations can still commit before a step reports
 success. Keep retries idempotent and retain user-visible job status in D1 because
 Workflow history expires. [Workflows](https://developers.cloudflare.com/workflows/) · [Workers API](https://developers.cloudflare.com/workflows/build/workers-api/) · [Idempotency and retries](https://developers.cloudflare.com/workflows/build/rules-of-workflows/) · [Limits](https://developers.cloudflare.com/workflows/reference/limits/) · [Pricing](https://developers.cloudflare.com/workflows/reference/pricing/)
 
-Pilot fork completion first. Start one Workflow keyed by the committed
-`repo_copies.id` and use the stored destination identity for all retries. After
-Git storage confirms the copy, advance bounded LFS pages using the existing D1
-lease and cursor. Publish once, after rechecking source access and confirming Git
-and LFS completion. Keep job IDs, cursors and object references in step state.
-Keep Git packs and LFS bytes in their backends. For authenticated imports,
-observe the native origin job after submission and keep user credentials out of
-Workflow parameters and persisted state. [Existing copy reconciliation](src/repo_lifecycle.rs)
-
-The D1 commit and Workflow start are separate operations. Keep a bounded cron
-check for missed starts and expired claims, with one executor advancing each
-job. Test a duplicate start, a stop between a copy and its cursor update, and a
-revocation before publication. Measure copy completion latency, retries and
-platform usage per job. If the pilot earns its cost, use the same model for
-repository storage cleanup or verification jobs with multiple external steps.
-The existing minute cron remains suitable for compact, bounded work.
+Each copy Workflow uses the committed `repo_copies.id` for its instance ID and
+payload. A step observes the destination Git storage and advances a bounded
+LFS page with the existing D1 lease and cursor. Publication rechecks access.
+Authenticated imports keep their credentials at the native origin. D1 stores
+the visible outcome. The cron recovers missed starts and resumes jobs whose
+Workflow is missing or has ended. [Copy reconciliation](src/repo_lifecycle.rs)
 
 ### Containers for native Git compute
 
 Cloudflare Containers provides Linux processes, local scratch space and larger
-CPU and memory budgets on Workers Paid. A Worker can route to a container
-through its Durable Object. The first candidate is the existing Artifacts merge
-bridge. It already builds a temporary bare repository with pinned base and head
-commits, runs native Git and advances the target only if the expected tip still
-matches. A container could run the same Git 2.38+ operation without a separately
-operated bridge host. Keep Shard's authorization in the Worker and grant the
-job access only to the intended Git remotes. [Existing bridge](scripts/git-origin.mjs) · [Containers](https://developers.cloudflare.com/containers/) · [Durable Object Container API](https://developers.cloudflare.com/containers/api/durable-object-container/) · [Outbound traffic controls](https://developers.cloudflare.com/containers/configuration/outbound-traffic/)
+CPU and memory budgets on Workers Paid. Shard routes the Artifacts merge
+bridge through its own Durable Object. The bridge fetches the pinned base
+and head into a temporary bare repository, creates the merge with native Git
+and pushes with a lease on the expected target tip. The Worker checks access
+and sends short-lived, repository-scoped credentials to the bridge.
+[Git bridge](scripts/git-origin.mjs) · [Containers](https://developers.cloudflare.com/containers/) · [Durable Object Container API](https://developers.cloudflare.com/containers/api/durable-object-container/) · [Outbound traffic controls](https://developers.cloudflare.com/containers/configuration/outbound-traffic/)
 
 Use disposable workspaces and keep published results in the existing Git or R2
 backend. Container disks are ephemeral. The snapshot beta captures a point in
@@ -157,17 +135,18 @@ object from R2 for SHA-256, check its size and use the existing publication
 conditions. Account for outbound upload size limits on intercepted requests.
 [Disk lifecycle](https://developers.cloudflare.com/containers/faq/#is-disk-persistent-what-happens-to-my-disk-when-my-container-sleeps) · [Snapshots](https://developers.cloudflare.com/containers/guides/snapshots/) · [R2 FUSE](https://developers.cloudflare.com/containers/examples/r2-fuse-mount/) · [Limits](https://developers.cloudflare.com/containers/platform/limits/) · [Pricing](https://developers.cloudflare.com/containers/platform/pricing/)
 
-Measure cold and warm merge latency and cost on a private staging repository.
-Verify conflict handling, changed target refs and container termination during
-both preparation and publication. A retry must reconcile the observed Git ref
-or R2 object before repeating an external mutation. Version the bridge API so
-the Worker can handle a previous image during rollout, and check container
-readiness after deploy. [Container deployment and rollouts](https://developers.cloudflare.com/containers/guides/deploy/)
+Hosted staging is the place to measure cold and warm merges and verify
+conflicts, changed target refs and container termination during a push.
+The release Workflow checks the bridge protocol and configured origin after
+each deployment. [Container deployment and rollouts](https://developers.cloudflare.com/containers/guides/deploy/)
 
-Prototype each service in a separate Wrangler environment with isolated data.
-The pinned Rust SDK exposes Durable Object bindings and handlers. Verify how
-Workflows and Container control entrypoints integrate with the Wasm build
-before enabling their bindings. [workers-rs Durable Objects](https://docs.rs/worker/0.9.0/worker/durable/index.html)
+### Workers Builds releases
+
+Workers Builds runs the isolated regressions and smokes the Git image. The
+release script gives staging and production separate Workers and bindings.
+It runs each environment's D1 migrations, deploys the checkout SHA, and waits
+for that SHA to pass the release Workflow. A staging failure blocks the
+production step. [Managed deployment](README.md#deploy-with-managed-cloudflare-services)
 
 ## Deployment prerequisites
 
@@ -176,8 +155,8 @@ before enabling their bindings. [workers-rs Durable Objects](https://docs.rs/wor
   Git origin and a persistent volume. Use separate D1 state for each stage.
 - Email delivery requires the configured `EMAIL` binding, a verified sending
   domain and a mailbox available for end-to-end verification.
-- For divergent or cross-repository Artifacts Web merges, use Git 2.38 or later
-  and configure the native bridge with the exact Artifacts Git origin.
+- Divergent or cross-repository Artifacts Web merges require the exact Artifacts
+  Git origin and a configured managed container or external Git 2.38+ bridge.
 - Exercise paid Artifacts remotes, hosted import, Webhook delivery and backups
   in staging with live bindings. Use separate R2 storage and signing secrets.
 

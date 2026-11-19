@@ -60,6 +60,10 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
     config.main = resolve(root, config.main);
     config.assets.directory = resolve(root, config.assets.directory);
     config.artifacts = config.artifacts.map((binding) => ({ ...binding, remote: false }));
+    const managed = config.env.managed;
+    config.durable_objects = { bindings: managed.durable_objects.bindings.filter(({ name }) => name === "MERGE_COORDINATOR") };
+    config.migrations = [{ tag: "managed-test-v1", new_sqlite_classes: ["MergeQueueCoordinator"] }];
+    config.workflows = managed.workflows.filter(({ binding }) => binding === "REPOSITORY_COPY_WORKFLOW");
     config.send_email = [{ name: "EMAIL", remote: false }];
     config.vars = {
       ...config.vars, PUBLIC_ORIGIN: "https://forge.example.test", EMAIL_FROM: "shard@example.test",
@@ -116,6 +120,14 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
       },
     });
     const base = `http://127.0.0.1:${worker.port}`;
+    const waitFor = async (condition, message) => {
+      const deadline = Date.now() + 25_000;
+      while (Date.now() < deadline) {
+        if (await condition()) return;
+        await delay(100);
+      }
+      assert.fail(message);
+    };
     const tick = async () => {
       const result = await fetch(`${base}/__scheduled?cron=${encodeURIComponent("* * * * *")}`, {
         signal: AbortSignal.timeout(30_000),
@@ -776,12 +788,8 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
       const queued = { action: "queue", comparison_version: "1" };
       assert.equal((await viewer.post(queuePath, queued)).status, 403);
       redirected(await owner.post(queuePath, queued));
-      for (let attempt = 0; attempt < 8; attempt++) {
-        await tick();
-        if ((await owner.get(gatePull.location)).body.includes("Waiting for required approvals or checks")) break;
-        await delay(50);
-      }
-      assert.match((await owner.get(gatePull.location)).body, /Waiting for required approvals or checks/);
+      await waitFor(async () => (await owner.get(gatePull.location)).body.includes("Waiting for required approvals or checks"),
+        "branch coordinator did not examine the queued merge");
       const status = (state) => owner.request(`${history}/commit/${reviewedOid}/checks`, {
         method: "POST", headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
         body: JSON.stringify({ context: "ci/unit", state }),
@@ -792,7 +800,8 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
       await verifyMain(mergeTip, "with failing CI");
       assert.match((await owner.get(gatePull.location)).body, /Checks on the reviewed commit[\s\S]*ci\/unit[\s\S]*Failed/);
       assert.equal((await status("success")).status, 204);
-      await tick();
+      await waitFor(async () => (await owner.get(gatePull.location)).body.includes("Merged by Shard"),
+        "passing CI did not wake the queued merge");
       await verifyMain(reviewedOid, "after the successful queued merge");
       assert.match((await owner.get(gatePull.location)).body, /Merged by Shard/);
 
@@ -870,16 +879,17 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
         objects.push(await prepareLfsObject({ base, repo, writeToken }));
       }
       const fork = "/suiteowner/lfs-fork";
-      let copied = await owner.post(`${repo}/fork`, { name: "lfs-fork" });
+      const copied = await owner.post(`${repo}/fork`, { name: "lfs-fork" });
       redirected(copied);
       const pendingPath = copied.location;
       assert.match(pendingPath, /^\/user\/settings\/repository-copies\/\d+$/);
-      assert.equal((await owner.get(fork)).status, 404);
-      for (let attempt = 0; attempt < 6 && copied.location !== fork; attempt++) {
-        await owner.get(pendingPath);
-        copied = await owner.post(pendingPath, {});
-      }
-      redirected(copied, fork);
+      await waitFor(async () => (await owner.get(fork)).status === 200, "copy Workflow did not publish the fork");
+      const instanceId = pendingPath.split("/").at(-1);
+      const result = JSON.parse(await cli(["workflows", "instances", "describe", config.workflows[0].name,
+        instanceId, "--local", "--port", String(worker.port), "--json"]));
+      assert.equal(result.id, instanceId);
+      assert.equal(result.status, "complete");
+      assert.equal((await new Client().get(pendingPath)).status, 302);
       const forbidden = await objects[0].batch({ repo: fork });
       assert.equal(forbidden.status, 401);
       await forbidden.text();
@@ -1142,8 +1152,9 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
 
       const fork = await viewer.post("/suiteowner/history/fork", { name: "fork-fixture" });
       redirected(fork);
-      assert.equal(fork.location, "/suiteviewer/fork-fixture");
-      assert.match((await viewer.get(`${fork.location}/refs`)).body, /feature\/readme/);
+      const forkPath = "/suiteviewer/fork-fixture";
+      await waitFor(async () => (await viewer.get(forkPath)).status === 200, "copy Workflow did not publish the repository");
+      assert.match((await viewer.get(`${forkPath}/refs`)).body, /feature\/readme/);
       const rejected = await viewer.post("/user/settings/repository-import", { name: "unsafe-import", source_url: "http://127.0.0.1/repo.git" });
       assert.equal(rejected.status, 400);
       assert.equal((await viewer.get("/suiteviewer/unsafe-import")).status, 404);

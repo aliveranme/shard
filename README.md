@@ -130,11 +130,11 @@ mise run deploy
 ```
 
 The deploy script uses the selected environment's `DB` binding. With the
-placeholder ID, it reuses the D1 database with the configured `database_name`
-or creates it. The script applies pending migrations without a second command
-or confirmation prompt. Wrangler then provisions or reuses the named R2
-bucket and deploys the Worker. An explicit D1 UUID pins the database for an
-existing installation.
+placeholder ID or no ID, it resolves D1 by `database_name` or creates it.
+Automatic reuse accepts an empty database or a schema with Shard's initial
+migration and core tables. To select an existing database explicitly, set its
+UUID in `database_id`. The script applies pending migrations, then Wrangler
+provisions or reuses the named R2 bucket and deploys the Worker.
 
 For another instance, choose a Worker name, D1 name, R2 bucket and Artifacts
 namespace in `wrangler.jsonc`. You can also pass `--config PATH` to use another
@@ -143,6 +143,59 @@ account throughout. For CI or an explicit account selection, set
 `CLOUDFLARE_ACCOUNT_ID` and supply `CLOUDFLARE_API_TOKEN` through the build
 environment. For a local bundle check, run `mise exec -- npm run deploy -- --dry-run`.
 [Wrangler authentication](https://developers.cloudflare.com/workers/wrangler/commands/general/#login) · [D1 migrations](https://developers.cloudflare.com/d1/reference/migrations/) · [Wrangler resource provisioning](https://developers.cloudflare.com/workers/wrangler/configuration/#automatic-provisioning)
+
+### Deploy with managed Cloudflare services
+
+The `managed` and `managed-staging` environments add a Durable Object per target
+branch, a repository copy Workflow, and a Containers image for Web merges that
+need native Git. They use separate Workers, D1 databases, R2 buckets, Artifacts
+namespaces, and Workflow names. Use Workers Paid with Artifacts and Containers
+available in the target account.
+
+Before the first managed release, set `SHARD_GIT_ARTIFACTS_ORIGINS` in the
+`vars` of both environments to the exact HTTPS Git origin for that account,
+for example `https://<ACCOUNT_ID>.artifacts.cloudflare.net`. You can instead
+set it as a text variable on each existing Worker. [Artifacts Git HTTPS](https://developers.cloudflare.com/artifacts/api/git-protocol/)
+
+In the `shard-managed` Worker's **Settings → Build**, connect the repository
+and keep the repository root as the build root. Configure the production branch
+as `main` or set the build variable `SHARD_RELEASE_BRANCH` to your chosen
+production branch. Use the following commands.
+
+| Workers Builds setting | Command |
+| --- | --- |
+| Build command | `npm run ci -- --container` |
+| Deploy command | `npm run cd` |
+
+CI builds the Worker, runs the isolated regressions, and starts the Git bridge
+image to check its health and authentication. CD deploys the checkout SHA to
+staging, then waits for the release Workflow to verify the version tag, D1
+schema, R2 access, CSS, and Git bridge readiness. Once staging passes, CD
+deploys the same SHA to production and verifies it there after activation. If
+that check fails, the release command reports the Workflow instance to inspect.
+Workers Builds reports the build and deploy result on the linked commit.
+
+If you enable builds for other branches, leave their preview command separate
+from `npm run cd`. The release script checks the Workers Builds branch and
+checkout SHA. Use a build token limited to the target account with Workers
+Scripts Edit, D1 Edit and Workers R2 Storage Edit. Add Workers Routes Edit
+when deploying custom routes. [Workers Builds settings](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/) · [Container deployment](https://developers.cloudflare.com/containers/guides/deploy/) · [Workflow instance permissions](https://developers.cloudflare.com/api/resources/workflows/subresources/instances/methods/create/)
+
+With Docker running, verify both bundles and their configured image from the
+source checkout.
+
+```sh
+mise exec -- npm run cd -- --dry-run
+```
+
+For the first staged release, configure both environments and authenticate
+Wrangler, then run the same commands Workers Builds uses. This creates the
+Workers so you can connect `shard-managed` to the repository in the dashboard.
+
+```sh
+mise exec -- npm run ci -- --container
+mise exec -- npm run cd
+```
 
 ### Worker variables and secrets
 
@@ -217,13 +270,13 @@ Git 2.38 or later.
 
 ### Web merges on Artifacts
 
-Artifacts supports same-repository fast-forwards through Git HTTPS. For a
-divergent or cross-repository merge between Artifacts repositories, point the
-Worker's `NATIVE_GIT_ORIGIN` and `NATIVE_GIT_TOKEN` at a Git 2.38+ origin and
-configure `SHARD_GIT_ARTIFACTS_ORIGINS` there with the exact HTTPS origin from
-your Artifacts repository remotes. The origin stages the reviewed objects and
-pushes one branch with a lease on the expected target tip. Mixed-backend Web
-merges require manual integration and verification.
+Artifacts supports same-repository fast-forwards through Git HTTPS. Managed
+environments send divergent and cross-repository Artifacts merges to the Git
+merge container. Other Artifacts deployments can point `NATIVE_GIT_ORIGIN`
+and `NATIVE_GIT_TOKEN` at a Git 2.38+ origin and set
+`SHARD_GIT_ARTIFACTS_ORIGINS` on that host. The bridge stages the reviewed
+objects and pushes one branch with a lease on the expected target tip.
+Mixed-backend Web merges require manual integration and verification.
 
 ### Optional email setup
 
@@ -241,14 +294,16 @@ successful reset revokes all browser sessions for the account.
 | --- | --- | --- |
 | Workers and Static Assets | Serve the Rust/Wasm Worker and static files through `ASSETS`. | [Workers](https://developers.cloudflare.com/workers/) · [Static Assets binding](https://developers.cloudflare.com/workers/static-assets/binding/) · [Custom domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) |
 | D1 | Store accounts, permissions, repository metadata and review history in `DB`. | [D1](https://developers.cloudflare.com/d1/) · [Migrations](https://developers.cloudflare.com/d1/reference/migrations/) |
-| Artifacts | Store Git repositories in the default environment through `ARTIFACTS`. | [Artifacts](https://developers.cloudflare.com/artifacts/) · [Namespaces](https://developers.cloudflare.com/artifacts/concepts/namespaces/) |
+| Artifacts | Store Git repositories in the default and managed environments through `ARTIFACTS`. | [Artifacts](https://developers.cloudflare.com/artifacts/) · [Namespaces](https://developers.cloudflare.com/artifacts/concepts/namespaces/) |
 | R2 | Keep Git LFS objects private in `LFS_OBJECTS`. | [R2 Worker API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/) · [S3 credentials](https://developers.cloudflare.com/r2/api/tokens/) |
 | Rate Limiting | Enforce per-source limits through `REQUEST_LIMITER`. | [Rate Limiting binding](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/) |
 | Cron Triggers | Process queued work every minute and expire records at 03:00 UTC. | [Cron Triggers](https://developers.cloudflare.com/workers/configuration/cron-triggers/) |
 | Workers Logs | Record Worker errors and application logs. | [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) |
 | Email Service | Send account verification and password reset links through optional `EMAIL`. | [Email Sending](https://developers.cloudflare.com/email-service/get-started/send-emails/) |
-
-[Evaluate Durable Objects, Workflows and Containers](PLAN.md#optional-cloudflare-execution-services)
+| Durable Objects | Wake and coordinate protected merges for one repository and target branch. | [Durable Objects alarms](https://developers.cloudflare.com/durable-objects/api/alarms/) |
+| Workflows | Resume repository copies and verify each managed release. | [Workflows](https://developers.cloudflare.com/workflows/) |
+| Containers | Run Git for divergent and cross-repository Artifacts merges. | [Containers](https://developers.cloudflare.com/containers/) |
+| Workers Builds | Build and test commits and run the staged release command. | [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) |
 
 ### Deployment limits
 
@@ -300,7 +355,7 @@ Shard 是部署在 Cloudflare 上的自托管 Git 平台，适用于个人项目
 
 使用 Workers Free 时可选择 `--env native`，并配置自有 HTTPS Git 源站和持久磁盘。[原生 Git 部署说明](#deploy-with-a-native-git-origin)
 
-合并队列协调、仓库复制续跑和原生 Git 合并桥的方案见 [Durable Objects、Workflows 和 Containers 架构评估](PLAN.md#optional-cloudflare-execution-services)。
+选择 `managed-staging` 和 `managed` 可用 Durable Objects 协调受保护分支的合并、用 Workflows 续跑仓库复制，并通过 Containers 执行需要原生 Git 的 Artifacts 合并。Workers Builds 使用 `npm run ci -- --container` 验证代码与镜像，再通过 `npm run cd` 部署 staging。发布 Workflow 验证通过后，同一提交才会部署到生产并再次验证。[托管 CI/CD 配置](#deploy-with-managed-cloudflare-services)
 
 ## Project releases
 
@@ -492,6 +547,10 @@ protection** adds rules for exact branch names. Protected refs accept changes
 through the PR merge queue. Required check results belong to the reviewed head
 commit and the target repository. Once a comparison changes, review its new
 version before queuing again.
+
+In the managed environments, an alarm wakes the branch queue on enqueue or
+CI updates. A Workflow advances each repository copy through Git and LFS
+publication. The minute cron recovers work when a wake or start is missed.
 
 **Settings → Organizations** lets a repository owner offer the repository to an
 organization. The organization owner accepts it and grants teams read or write

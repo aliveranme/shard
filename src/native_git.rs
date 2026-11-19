@@ -1,8 +1,18 @@
 use crate::git_storage::{is_object_id, BlobRead, Commit, CopyError, CreatedRepo, GitFile, RepoHandle, TreeEntry};
+use js_sys::Reflect;
 use serde::{Deserialize, Serialize};
+use wasm_bindgen::JsValue;
+use worker::durable::Stub;
 use worker::{Env, Error, Fetch, Method, Request, RequestInit, RequestRedirect, Response, ResponseBody, Result, Url};
 
 const MAX_COMPARISON_BYTES: u64 = 4 * 1024 * 1024;
+const ARTIFACTS_MERGE_BINDING: &str = "ARTIFACTS_MERGE_CONTAINER";
+const ARTIFACTS_MERGE_PATH: &str = "/v1/artifacts/merge";
+
+pub(crate) enum ArtifactsMergeTransport {
+    Container(Stub),
+    Native(NativeGit),
+}
 
 pub(crate) struct NativeGit {
     origin: String,
@@ -81,6 +91,13 @@ pub(crate) struct RemoteRepo<'a> {
     pub(crate) token: &'a str,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MergeHealth {
+    protocol: u8,
+    merge_enabled: bool,
+}
+
 #[derive(Serialize)]
 struct RemoteMerge<'a> {
     #[serde(flatten)]
@@ -108,6 +125,50 @@ struct Entry {
     mode: String,
     hash: String,
     size: Option<u64>,
+}
+
+impl ArtifactsMergeTransport {
+    pub(crate) async fn from_env(env: &Env) -> std::result::Result<Self, WriteError> {
+        let binding = Reflect::get(env.as_ref(), &JsValue::from_str(ARTIFACTS_MERGE_BINDING))
+            .map_err(|_| WriteError::Unavailable)?;
+        if binding.is_undefined() {
+            return NativeGit::from_env(env).map(Self::Native).map_err(|_| WriteError::Unsupported);
+        }
+        let container = env.durable_object(ARTIFACTS_MERGE_BINDING)
+            .and_then(|namespace| namespace.get_by_name("artifacts-merge"))
+            .map_err(|_| WriteError::Unavailable)?;
+        let mut response = container.fetch_with_str("https://internal/healthz").await
+            .map_err(|_| WriteError::Unavailable)?;
+        if response.status_code() != 200 {
+            discard(response);
+            return Err(WriteError::Unavailable);
+        }
+        let health: MergeHealth = response.json().await.map_err(|_| WriteError::Unavailable)?;
+        if health.protocol != 1 {
+            return Err(WriteError::Unavailable);
+        }
+        if !health.merge_enabled {
+            return Err(WriteError::Unsupported);
+        }
+        Ok(Self::Container(container))
+    }
+
+    pub(crate) async fn merge_remote(
+        &self, reference: &str, base_oid: &str, head_oid: &str, target: &RemoteRepo<'_>, source: Option<&RemoteRepo<'_>>,
+    ) -> std::result::Result<String, WriteError> {
+        let payload = RemoteMerge { inputs: MergeInputs { reference, base_oid, head_oid }, target, source };
+        let response = match self {
+            Self::Native(native) => native.write(ARTIFACTS_MERGE_PATH, &payload).await?,
+            Self::Container(container) => {
+                let mut init = json_post(&payload).map_err(|_| WriteError::Unavailable)?;
+                init.redirect = RequestRedirect::Manual;
+                let request = Request::new_with_init("https://internal/v1/artifacts/merge", &init)
+                    .map_err(|_| WriteError::Unavailable)?;
+                container.fetch_with_request(request).await.map_err(|_| WriteError::Unavailable)?
+            }
+        };
+        merge_result(response).await
+    }
 }
 
 impl NativeGit {
@@ -158,13 +219,6 @@ impl NativeGit {
     async fn write(&self, path: &str, payload: &impl Serialize) -> std::result::Result<Response, WriteError> {
         let init = json_post(payload).map_err(|_| WriteError::Unavailable)?;
         self.send(&format!("{}{path}", self.origin), init).await.map_err(|_| WriteError::Unavailable)
-    }
-
-    pub(crate) async fn merge_remote(
-        &self, reference: &str, base_oid: &str, head_oid: &str, target: &RemoteRepo<'_>, source: Option<&RemoteRepo<'_>>,
-    ) -> std::result::Result<String, WriteError> {
-        let payload = RemoteMerge { inputs: MergeInputs { reference, base_oid, head_oid }, target, source };
-        merge_result(self.write("/v1/artifacts/merge", &payload).await?).await
     }
 
     pub(crate) async fn create(&self, id: &str) -> Result<CreatedRepo> {

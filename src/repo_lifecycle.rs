@@ -13,7 +13,7 @@ use crate::{crypto, db};
 use askama::Template;
 use serde::Deserialize;
 use worker::d1::D1Database;
-use wasm_bindgen::JsValue;
+use wasm_bindgen::{prelude::{wasm_bindgen, JsError}, JsValue};
 use wasm_bindgen_futures::{future_to_promise, JsFuture};
 use worker::*;
 
@@ -22,6 +22,38 @@ const IMPORT: &str = "/user/settings/repository-import";
 const COPIES: &str = "/user/settings/repository-copies";
 const COPY_CHECK_INTERVAL: i64 = 30;
 const COPY_START_GRACE: i64 = 300;
+
+#[wasm_bindgen(inline_js = r#"
+export async function shard_copy_workflow_active(env, id, createIfMissing) {
+    const workflow = env.REPOSITORY_COPY_WORKFLOW;
+    if (workflow == null) return false;
+
+    const copyId = id.toString();
+    let instance;
+    try {
+        instance = await workflow.get(copyId);
+    } catch {
+        if (!createIfMissing) return false;
+        try {
+            await workflow.create({ id: copyId, params: { copyId } });
+            return true;
+        } catch {
+            // The submission and cron may both try to create this instance.
+            instance = await workflow.get(copyId);
+        }
+    }
+
+    const { status } = await instance.status();
+    return status === "queued" || status === "running" || status === "waiting" ||
+        status === "paused" || status === "waitingForPause";
+}
+"#)]
+extern "C" {
+    #[wasm_bindgen(catch)]
+    async fn shard_copy_workflow_active(
+        env: &Env, id: i64, create_if_missing: bool,
+    ) -> std::result::Result<bool, JsValue>;
+}
 
 #[derive(Deserialize)]
 struct Identity {
@@ -330,6 +362,61 @@ struct CopyJob {
 
 const COPY_COLUMNS: &str = "id, name, artifacts_repo AS storage_id, git_backend, kind, state, created_at, repo_id";
 
+impl CopyJob {
+    fn is_active(&self) -> bool {
+        matches!(self.state.as_str(), "starting" | "pending")
+    }
+
+    fn awaiting_submission(&self) -> bool {
+        self.state == "starting" && now().saturating_sub(self.created_at) < COPY_START_GRACE
+    }
+}
+
+enum CopyProgress {
+    Done,
+    Advanced,
+    Waiting,
+    Unknown,
+}
+
+async fn copy_workflow_active(env: &Env, id: i64, create_if_missing: bool) -> bool {
+    match shard_copy_workflow_active(env, id, create_if_missing).await {
+        Ok(active) => active,
+        Err(_) => {
+            console_error!("Unable to reach Workflow for repository copy {id}");
+            false
+        }
+    }
+}
+
+#[wasm_bindgen]
+pub struct RepositoryCopyStep {}
+
+#[wasm_bindgen]
+impl RepositoryCopyStep {
+    pub async fn advance(env: Env, canonical_id: String) -> std::result::Result<JsValue, JsError> {
+        let id = positive_id(&canonical_id)
+            .filter(|id| id.to_string() == canonical_id)
+            .ok_or_else(|| JsError::new("Invalid repository copy job ID"))?;
+        let database = env.d1("DB")?;
+        let Some(job) = db::first(
+            &database,
+            &format!("SELECT {COPY_COLUMNS} FROM repo_copies WHERE id = ?"),
+            &[js_int(id)],
+        ).await? else {
+            return Ok(JsValue::from_str("done"));
+        };
+        let lfs_limit = ScheduledLimits::read(&env)?.lfs_copy_objects;
+        let progress = reconcile_copy(&env, &database, &job, lfs_limit).await?;
+        Ok(JsValue::from_str(match progress {
+            CopyProgress::Done => "done",
+            CopyProgress::Advanced => "advanced",
+            CopyProgress::Waiting => "waiting",
+            CopyProgress::Unknown => return Err(JsError::new("Repository copy storage unavailable")),
+        }))
+    }
+}
+
 #[derive(Template)]
 #[template(path = "repo_copy_form.html")]
 struct CopyForm<'a> {
@@ -609,6 +696,7 @@ async fn start_copy(
     let status_path = format!("{COPIES}/{id}");
     let source_repo = source.map(|repo| repo.storage_id.clone());
     let source_url = source_url.to_owned();
+    let env = state.env.clone();
     let submission = future_to_promise(async move {
         let result = match (credential, &storage) {
             (Some(credential), GitStorage::Native(origin)) => {
@@ -634,7 +722,8 @@ async fn start_copy(
         )
         .await
         .map_err(|_| JsValue::NULL)?;
-        Ok(JsValue::UNDEFINED)
+        let managed = next == "pending" && copy_workflow_active(&env, id, true).await;
+        Ok(JsValue::from_bool(managed))
     });
     // Keep recording the provider outcome if the initiating client disconnects.
     let background = submission.clone();
@@ -643,16 +732,21 @@ async fn start_copy(
             console_error!("Unable to record Git copy submission {id}");
         }
     });
-    if JsFuture::from(submission).await.is_err() {
+    let Ok(managed) = JsFuture::from(submission).await else {
         return redirect(&status_path);
-    }
+    };
 
     let Some(job) = load_copy(state, id).await? else {
         return copy_not_found(state);
     };
-    let limit = ScheduledLimits::read(&state.env)?.lfs_copy_objects;
-    reconcile_copy(&state.env, &state.db()?, &job, limit).await?;
-    if let Some(url) = load_copy(state, id).await?.and_then(|job| ready_path(state, &job)) {
+    let job = if managed.as_bool() != Some(true) && job.is_active() && !job.awaiting_submission() {
+        let limit = ScheduledLimits::read(&state.env)?.lfs_copy_objects;
+        reconcile_copy(&state.env, &state.db()?, &job, limit).await?;
+        load_copy(state, id).await?
+    } else {
+        Some(job)
+    };
+    if let Some(url) = job.and_then(|job| ready_path(state, &job)) {
         return redirect(&url);
     }
     redirect(&status_path)
@@ -749,9 +843,14 @@ async fn copy_status_page(ctx: RouteContext<AppState>, poll: bool) -> Result<Res
     let Some(job) = load_copy(state, id).await? else {
         return copy_not_found(state);
     };
-    if poll {
-        let limit = ScheduledLimits::read(&state.env)?.lfs_copy_objects;
-        let unknown = reconcile_copy(&state.env, &state.db()?, &job, limit).await?;
+    if poll && job.is_active() && !job.awaiting_submission() {
+        let unknown = if copy_workflow_active(&state.env, id, false).await {
+            false
+        } else {
+            let limit = ScheduledLimits::read(&state.env)?.lfs_copy_objects;
+            let progress = reconcile_copy(&state.env, &state.db()?, &job, limit).await?;
+            matches!(progress, CopyProgress::Unknown)
+        };
         let Some(job) = load_copy(state, id).await? else {
             return copy_not_found(state);
         };
@@ -780,8 +879,11 @@ pub(crate) async fn reconcile_pending(env: &Env, limits: &ScheduledLimits) -> Re
     .await?;
     let mut failed = false;
     for job in jobs {
+        if job.awaiting_submission() || copy_workflow_active(env, job.id, true).await {
+            continue;
+        }
         match reconcile_copy(env, &database, &job, limits.lfs_copy_objects).await {
-            Ok(unknown) => failed |= unknown,
+            Ok(progress) => failed |= matches!(progress, CopyProgress::Unknown),
             Err(error) => {
                 failed = true;
                 console_error!("Unable to reconcile Git or LFS copy {}: {error}", job.id);
@@ -798,54 +900,59 @@ pub(crate) async fn reconcile_pending(env: &Env, limits: &ScheduledLimits) -> Re
     Ok(())
 }
 
-/// Returns true when storage could not confirm the operation's current state.
-async fn reconcile_copy(env: &Env, database: &D1Database, job: &CopyJob, lfs_limit: u32) -> Result<bool> {
-    let starting = job.state == "starting";
-    if (!starting && job.state != "pending")
-        || (starting && now().saturating_sub(job.created_at) < COPY_START_GRACE)
-    {
-        return Ok(false);
+async fn reconcile_copy(env: &Env, database: &D1Database, job: &CopyJob, lfs_limit: u32) -> Result<CopyProgress> {
+    if !job.is_active() {
+        return Ok(CopyProgress::Done);
+    }
+    if job.awaiting_submission() {
+        return Ok(CopyProgress::Waiting);
     }
     let storage = match GitStorage::from_env(env, job.git_backend) {
         Ok(storage) => storage,
         Err(error) => {
             console_error!("Unable to open Git storage for copy {}: {error}", job.id);
-            return Ok(true);
+            return Ok(CopyProgress::Unknown);
         }
     };
     let id = [js_int(job.id)];
     let info = match storage.copy_info(&job.storage_id).await {
         Err(CopyError::Missing) if now().saturating_sub(job.created_at) >= COPY_START_GRACE => {
-            db::run(
+            let discarded = db::first::<Identity>(
                 database,
-                "UPDATE repo_copies SET state = 'discard' WHERE id = ? AND state = ? AND lfs_lease_until <= ?",
+                "UPDATE repo_copies SET state = 'discard'
+                 WHERE id = ? AND state = ? AND lfs_lease_until <= ? RETURNING id",
                 &[js_int(job.id), js_text(&job.state), js_int(now())],
             ).await?;
-            return Ok(false);
+            return Ok(if discarded.is_some() { CopyProgress::Done } else { CopyProgress::Waiting });
         }
-        Err(CopyError::Missing | CopyError::Pending) => return Ok(false),
+        Err(CopyError::Missing | CopyError::Pending) => return Ok(CopyProgress::Waiting),
         Err(error) => {
             console_error!("Unable to inspect Git copy {}: {error:?}", job.id);
-            return Ok(true);
+            return Ok(CopyProgress::Unknown);
         }
         Ok(info) if info.name != job.storage_id => {
             console_error!("Git storage returned a mismatched identity for copy {}", job.id);
-            return Ok(true);
+            return Ok(CopyProgress::Unknown);
         }
         Ok(info) => info,
     };
 
-    if starting {
+    if job.state == "starting" {
         db::run(database, "UPDATE repo_copies SET state = 'pending' WHERE id = ? AND state = 'starting'", &id).await?;
     }
-    if job.kind == "fork" {
-        if let Err(error) = copy_lfs_page(env, database, job.id, lfs_limit).await {
-            console_error!("Unable to copy LFS objects for fork {}: {error}", job.id);
-            discard_revoked_copy(database, job.id).await?;
-            return Ok(true);
+    let copied_page = if job.kind == "fork" {
+        match copy_lfs_page(env, database, job.id, lfs_limit).await {
+            Ok(copied) => copied,
+            Err(error) => {
+                console_error!("Unable to copy LFS objects for fork {}: {error}", job.id);
+                discard_revoked_copy(database, job.id).await?;
+                return Ok(CopyProgress::Unknown);
+            }
         }
-    }
-    db::run(
+    } else {
+        false
+    };
+    let published = db::first::<Identity>(
         database,
         "INSERT INTO repos (owner_id, name, description, default_branch, artifacts_repo, artifacts_remote,
                             visibility, forked_from, created_at, updated_at, private_fork, git_backend, lfs_copy_id)
@@ -856,20 +963,27 @@ async fn reconcile_copy(env: &Env, database: &D1Database, job: &CopyJob, lfs_lim
          FROM repo_copies c JOIN repo_copy_access a ON a.id = c.id
          LEFT JOIN repos s ON s.id = c.source_id LEFT JOIN users u ON u.id = s.owner_id
          WHERE c.id = ?1 AND c.state = 'pending' AND a.allowed = 1
-           AND (c.kind = 'import' OR (c.lfs_complete = 1 AND c.lfs_lease_until = 0))",
+           AND (c.kind = 'import' OR (c.lfs_complete = 1 AND c.lfs_lease_until = 0))
+         RETURNING id",
         &[js_int(job.id), js_text(&info.default_branch), js_text(&info.remote), js_int(now())],
     ).await?;
-    discard_revoked_copy(database, job.id).await?;
-    Ok(false)
+    if published.is_some() || discard_revoked_copy(database, job.id).await? {
+        Ok(CopyProgress::Done)
+    } else if copied_page {
+        Ok(CopyProgress::Advanced)
+    } else {
+        Ok(CopyProgress::Waiting)
+    }
 }
 
-async fn discard_revoked_copy(database: &D1Database, id: i64) -> Result<()> {
-    db::run(
+async fn discard_revoked_copy(database: &D1Database, id: i64) -> Result<bool> {
+    db::first::<Identity>(
         database,
         "UPDATE repo_copies SET state = 'discard' WHERE id = ? AND state = 'pending'
-           AND lfs_lease_until <= ? AND id IN (SELECT id FROM repo_copy_access WHERE allowed = 0)",
+           AND lfs_lease_until <= ? AND id IN (SELECT id FROM repo_copy_access WHERE allowed = 0)
+         RETURNING id",
         &[js_int(id), js_int(now())],
-    ).await
+    ).await.map(|row| row.is_some())
 }
 
 #[derive(Deserialize)]
@@ -879,7 +993,7 @@ struct CopyPage {
     lfs_cursor: Option<String>,
 }
 
-async fn copy_lfs_page(env: &Env, database: &D1Database, id: i64, limit: u32) -> Result<()> {
+async fn copy_lfs_page(env: &Env, database: &D1Database, id: i64, limit: u32) -> Result<bool> {
     let checked_at = now();
     let expires = checked_at + lfs::WRITE_LEASE;
     let Some(page) = db::first::<CopyPage>(
@@ -891,7 +1005,7 @@ async fn copy_lfs_page(env: &Env, database: &D1Database, id: i64, limit: u32) ->
                    (SELECT s.lfs_copy_id FROM repos s WHERE s.id = repo_copies.source_id) AS source_copy_id",
         &[js_int(id), js_int(expires), js_int(checked_at)],
     ).await? else {
-        return Ok(());
+        return Ok(false);
     };
 
     let result = lfs::copy_page(
@@ -903,12 +1017,12 @@ async fn copy_lfs_page(env: &Env, database: &D1Database, id: i64, limit: u32) ->
         limit,
     ).await;
     match result {
-        Ok(cursor) => db::run(
+        Ok(cursor) => db::first::<Identity>(
             database,
             "UPDATE repo_copies SET lfs_lease_until = 0, lfs_cursor = ?3, lfs_complete = ?4
-             WHERE id = ?1 AND state = 'pending' AND lfs_lease_until = ?2",
+             WHERE id = ?1 AND state = 'pending' AND lfs_lease_until = ?2 RETURNING id",
             &[js_int(id), js_int(expires), cursor.as_deref().map_or(JsValue::NULL, js_text), js_int(i64::from(cursor.is_none()))],
-        ).await,
+        ).await.map(|row| row.is_some()),
         Err(error) => {
             db::run(
                 database,

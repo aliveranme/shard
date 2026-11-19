@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "shard",
-  "main": "build/index.js",
+  "main": "worker/index.mjs",
   "compatibility_date": "2026-11-17",
   // Preserve dashboard variables that are managed outside this file.
   "keep_vars": true,
@@ -67,6 +67,52 @@
       "ratelimits": [
         { "name": "REQUEST_LIMITER", "namespace_id": "2002", "simple": { "limit": 300, "period": 60 } }
       ]
+    },
+    "managed": {
+      "vars": { "SHARD_LIMIT_PROFILE": "paid" },
+      "artifacts": [{ "binding": "ARTIFACTS", "namespace": "shard-managed" }],
+      "d1_databases": [{ "binding": "DB", "database_name": "shard-managed", "migrations_dir": "migrations" }],
+      "r2_buckets": [{ "binding": "LFS_OBJECTS", "bucket_name": "shard-managed-lfs" }],
+      "ratelimits": [{ "name": "REQUEST_LIMITER", "namespace_id": "2003", "simple": { "limit": 300, "period": 60 } }],
+      "triggers": { "crons": ["0 3 * * *", "* * * * *"] },
+      "version_metadata": { "binding": "SHARD_VERSION" },
+      "durable_objects": { "bindings": [
+        { "name": "MERGE_COORDINATOR", "class_name": "MergeQueueCoordinator" },
+        { "name": "ARTIFACTS_MERGE_CONTAINER", "class_name": "ArtifactsMergeContainer" }
+      ] },
+      "migrations": [{ "tag": "managed-v1", "new_sqlite_classes": ["MergeQueueCoordinator", "ArtifactsMergeContainer"] }],
+      "workflows": [
+        { "name": "shard-managed-copy", "binding": "REPOSITORY_COPY_WORKFLOW", "class_name": "RepositoryCopyWorkflow" },
+        { "name": "shard-managed-release", "binding": "RELEASE_VERIFICATION_WORKFLOW", "class_name": "ReleaseVerification" }
+      ],
+      "containers": [{
+        "class_name": "ArtifactsMergeContainer",
+        "scheduling_policy": "durable_object",
+        "images": { "bridge": { "dockerfile": "containers/git-merge.Dockerfile", "build_context": "." } }
+      }]
+    },
+    "managed-staging": {
+      "vars": { "SHARD_LIMIT_PROFILE": "paid" },
+      "artifacts": [{ "binding": "ARTIFACTS", "namespace": "shard-managed-staging" }],
+      "d1_databases": [{ "binding": "DB", "database_name": "shard-managed-staging", "migrations_dir": "migrations" }],
+      "r2_buckets": [{ "binding": "LFS_OBJECTS", "bucket_name": "shard-managed-staging-lfs" }],
+      "ratelimits": [{ "name": "REQUEST_LIMITER", "namespace_id": "2004", "simple": { "limit": 300, "period": 60 } }],
+      "triggers": { "crons": ["0 3 * * *", "* * * * *"] },
+      "version_metadata": { "binding": "SHARD_VERSION" },
+      "durable_objects": { "bindings": [
+        { "name": "MERGE_COORDINATOR", "class_name": "MergeQueueCoordinator" },
+        { "name": "ARTIFACTS_MERGE_CONTAINER", "class_name": "ArtifactsMergeContainer" }
+      ] },
+      "migrations": [{ "tag": "managed-v1", "new_sqlite_classes": ["MergeQueueCoordinator", "ArtifactsMergeContainer"] }],
+      "workflows": [
+        { "name": "shard-managed-staging-copy", "binding": "REPOSITORY_COPY_WORKFLOW", "class_name": "RepositoryCopyWorkflow" },
+        { "name": "shard-managed-staging-release", "binding": "RELEASE_VERIFICATION_WORKFLOW", "class_name": "ReleaseVerification" }
+      ],
+      "containers": [{
+        "class_name": "ArtifactsMergeContainer",
+        "scheduling_policy": "durable_object",
+        "images": { "bridge": { "dockerfile": "containers/git-merge.Dockerfile", "build_context": "." } }
+      }]
     }
   }
 }

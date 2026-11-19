@@ -4,6 +4,7 @@ import { once } from "node:events";
 import { appendFile, lstat, mkdir, mkdtemp, realpath, rename, rm } from "node:fs/promises";
 import { createServer, STATUS_CODES } from "node:http";
 import { isIP } from "node:net";
+import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -213,13 +214,13 @@ function importUrl(source, hosts) {
   return url.href;
 }
 
-function configuredArtifactsOrigins(origins) {
+function configuredArtifactsOrigins(origins, allowLoopback) {
   const result = new Set();
   for (const origin of origins) {
     const url = URL.parse(origin.trim());
     if (!url || origin.trim() !== url.origin) throw new TypeError("Invalid Artifacts Git origin");
     const hosted = url.protocol === "https:" && !url.port && /^[0-9a-f]{32}\.artifacts\.cloudflare\.net$/.test(url.hostname);
-    const local = url.protocol === "http:" && url.port && ["127.0.0.1", "[::1]"].includes(url.hostname);
+    const local = allowLoopback && url.protocol === "http:" && url.port && ["127.0.0.1", "[::1]"].includes(url.hostname);
     if (!hosted && !local) throw new TypeError("Invalid Artifacts Git origin");
     result.add(url.origin);
   }
@@ -741,20 +742,24 @@ async function smartHttp(req, res, id, action, service, options) {
   }
 }
 
-export async function createGitOrigin({ directory, token, importHosts = DEFAULT_IMPORT_HOSTS, artifactsOrigins = [] }) {
-  if (typeof directory !== "string" || !directory) throw new TypeError("A Git directory is required");
+export async function createGitOrigin({ directory, token, importHosts = DEFAULT_IMPORT_HOSTS, artifactsOrigins = [], bridgeOnly = false }) {
+  if (!bridgeOnly && (typeof directory !== "string" || !directory)) throw new TypeError("A Git directory is required");
   if (typeof token !== "string" || !/^[\x21-\x7e]+$/.test(token)) throw new TypeError("A Git token is required");
-  const hosts = configuredImportHosts(importHosts);
-  const allowedOrigins = configuredArtifactsOrigins(artifactsOrigins);
+  const hosts = bridgeOnly ? undefined : configuredImportHosts(importHosts);
+  const allowedOrigins = configuredArtifactsOrigins(artifactsOrigins, !bridgeOnly);
   const expectedToken = createHash("sha256").update(`Bearer ${token}`).digest();
-  await mkdir(directory, { mode: 0o700, recursive: true });
-  const cwd = await realpath(directory);
-  const execPath = (await gitOutput("--exec-path", [], { cwd })).toString("utf8").replace(/\r?\n$/, "");
-  if (!isAbsolute(execPath)) throw new Error("Invalid Git executable directory");
-  const httpBackend = join(execPath, WINDOWS ? "git-http-backend.exe" : "git-http-backend");
+  if (!bridgeOnly) await mkdir(directory, { mode: 0o700, recursive: true });
+  const cwd = await realpath(bridgeOnly ? tmpdir() : directory);
+  let httpBackend;
+  if (!bridgeOnly) {
+    const execPath = (await gitOutput("--exec-path", [], { cwd })).toString("utf8").replace(/\r?\n$/, "");
+    if (!isAbsolute(execPath)) throw new Error("Invalid Git executable directory");
+    httpBackend = join(execPath, WINDOWS ? "git-http-backend.exe" : "git-http-backend");
+  }
   const version = (await gitOutput("--version", [], { cwd })).toString("ascii");
   const [, major, minor] = /^git version (\d+)\.(\d+)\./.exec(version) ?? [];
   const canWriteTree = Number(major) > 2 || Number(major) === 2 && Number(minor) >= 38;
+  if (bridgeOnly && !canWriteTree) throw new Error("The Artifacts merge bridge requires Git 2.38 or later");
   const mutations = new Set();
   const readers = new Map();
   const writes = new Map();
@@ -1025,6 +1030,12 @@ export async function createGitOrigin({ directory, token, importHosts = DEFAULT_
   }
 
   async function handle(req, res, signal) {
+    if (bridgeOnly) {
+      if (req.method === "GET" && req.url === "/healthz") {
+        return sendJson(res, 200, { protocol: 1, mergeEnabled: allowedOrigins.size > 0 });
+      }
+      if (req.method !== "POST" || req.url !== "/v1/artifacts/merge") throw new HttpError(404);
+    }
     const auth = req.headersDistinct.authorization;
     if (auth?.length !== 1 || !timingSafeEqual(createHash("sha256").update(auth[0]).digest(), expectedToken)) {
       res.setHeader("WWW-Authenticate", "Bearer");
@@ -1106,6 +1117,7 @@ async function main() {
     token: process.env.SHARD_GIT_TOKEN,
     importHosts: process.env.SHARD_GIT_IMPORT_HOSTS?.split(",").filter((host) => host.trim()),
     artifactsOrigins: process.env.SHARD_GIT_ARTIFACTS_ORIGINS?.split(",").filter((origin) => origin.trim()),
+    bridgeOnly: process.env.SHARD_GIT_BRIDGE_ONLY === "1",
   });
   server.listen(port, process.env.SHARD_GIT_HOST ?? "127.0.0.1");
   await once(server, "listening");

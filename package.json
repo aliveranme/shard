@@ -7,6 +7,8 @@
     "dev": "wrangler dev",
     "deploy": "node scripts/deploy.mjs",
     "build": "node scripts/build-worker.mjs",
+    "ci": "node scripts/ci.mjs",
+    "cd": "node scripts/cd.mjs",
     "test": "node --test --test-concurrency=1 tests/*.test.mjs",
     "db:migrate": "wrangler d1 migrations apply DB --local"
   },

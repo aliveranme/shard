@@ -7,18 +7,57 @@ import { parseArgs } from "node:util";
 
 const require = createRequire(import.meta.url);
 const unsetDatabaseId = "00000000-0000-0000-0000-000000000000";
+const databaseIdPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+
+function readD1Rows(output) {
+  const response = JSON.parse(output);
+  if (!Array.isArray(response) || response.length !== 1 || response[0]?.success !== true ||
+      !Array.isArray(response[0].results)) {
+    throw new Error("Unexpected response to the D1 ownership query.");
+  }
+  return response[0].results;
+}
+
+function verifyExistingDatabase(run, database) {
+  const { database_id: id, database_name: name } = database;
+  const query = (sql) => readD1Rows(run([
+    "d1", "execute", "DB", "--remote", "--json", "--command", sql,
+  ], { capture: true }));
+  const schema = query("SELECT type, name, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' " +
+    "AND NOT (type = 'table' AND name = '_cf_KV')");
+  if (!schema.every((row) => row && ["table", "index", "view", "trigger"].includes(row.type) &&
+      typeof row.name === "string" && row.name && typeof row.sql === "string" && row.sql)) {
+    throw new Error("Unexpected schema rows in the D1 ownership query.");
+  }
+  if (schema.length === 0) return;
+
+  const migrationsTable = database.migrations_table || "d1_migrations";
+  const tableSql = (name) => schema.find((row) => row.type === "table" && row.name === name)?.sql ?? "";
+  // These distinctive columns and constraints come from 0001_init.sql and survive later migrations.
+  if (tableSql(migrationsTable) &&
+      /\bartifacts_repo\s+TEXT\s+NOT NULL\s*,/i.test(tableSql("repos")) &&
+      /\bnext_issue_number\s+INTEGER\s+NOT NULL\s+DEFAULT\s+1\s*,/i.test(tableSql("repos")) &&
+      /\bissue_id\s+INTEGER\s+PRIMARY KEY\s+REFERENCES\s+issues\(id\)\s+ON DELETE CASCADE\s*,/i.test(tableSql("pulls")) &&
+      /\bmerge_commit\s+TEXT\b/i.test(tableSql("pulls"))) {
+    const identifier = `"${migrationsTable.replaceAll('"', '""')}"`;
+    const applied = query(`SELECT name FROM ${identifier} WHERE name = '0001_init.sql'`);
+    if (applied.length === 1 && applied[0]?.name === "0001_init.sql") return;
+  }
+  throw new Error(`Refusing to migrate D1 database '${name}' (${id}): its nonempty schema could not be verified as Shard.`);
+}
 
 function deploy() {
   const { values } = parseArgs({ options: {
     config: { type: "string", short: "c" },
     env: { type: "string", short: "e" },
     "secrets-file": { type: "string" },
+    tag: { type: "string" },
     "dry-run": { type: "boolean" },
     outdir: { type: "string" },
     help: { type: "boolean", short: "h" },
   } });
   if (values.help) {
-    console.log("npm run deploy -- [--config PATH] [--env NAME] [--secrets-file PATH] [--dry-run] [--outdir PATH]");
+    console.log("npm run deploy -- [--config PATH] [--env NAME] [--secrets-file PATH] [--tag TAG] [--dry-run] [--outdir PATH]");
     return;
   }
 
@@ -39,6 +78,7 @@ function deploy() {
   const deployArgs = ["deploy"];
   if (values["secrets-file"]) deployArgs.push("--secrets-file", resolve(values["secrets-file"]));
   if (values.outdir) deployArgs.push("--outdir", resolve(values.outdir));
+  if (values.tag) deployArgs.push("--tag", values.tag);
 
   let deploymentConfig = resolve(configPath);
   function run(args, { capture = false, ci = false } = {}) {
@@ -81,14 +121,29 @@ function deploy() {
       const name = database.database_name;
       if (!name) throw new Error("Set database_name on the DB binding for automatic D1 setup.");
       const databases = JSON.parse(run(["d1", "list", "--json"], { capture: true }));
-      const existing = databases.find((candidate) => candidate.name === name);
-      if (existing) database.database_id = existing.uuid;
+      if (!Array.isArray(databases) || !databases.every((candidate) =>
+        typeof candidate?.name === "string" && candidate.name &&
+        typeof candidate.uuid === "string" && databaseIdPattern.test(candidate.uuid) &&
+        candidate.uuid !== unsetDatabaseId)) {
+        throw new Error("Unexpected response to the D1 database list lookup.");
+      }
+      const matches = databases.filter((candidate) => candidate.name === name);
+      if (matches.length > 1) throw new Error(`Multiple D1 databases are named '${name}'.`);
+      const [existing] = matches;
+      if (existing) {
+        // Wrangler resolves the first matching name or binding, then uses its configured UUID.
+        if (target.d1_databases.find((db) => db.binding === "DB" || db.database_name === "DB") !== database) {
+          throw new Error("Another D1 database shadows the DB binding in Wrangler.");
+        }
+        database.database_id = existing.uuid;
+      }
 
       // Keep the copy beside the source so asset, build and migration paths still resolve.
       const copy = join(dirname(deploymentConfig), `.wrangler.deploy-${randomUUID()}.json`);
       writeFileSync(copy, JSON.stringify(rawConfig, null, 2) + "\n", { flag: "wx" });
       temporaryConfig = deploymentConfig = copy;
-      if (!existing) run(["d1", "create", name, "--binding", "DB"]);
+      if (existing) verifyExistingDatabase(run, database);
+      else run(["d1", "create", name, "--binding", "DB"]);
     }
     const migrationOutput = run(["d1", "migrations", "apply", "DB", "--remote"], { capture: true, ci: true });
     process.stdout.write(migrationOutput);

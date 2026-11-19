@@ -4,6 +4,9 @@
 
 - Source checkouts and prebuilt archives share one deploy command. It creates or reuses the selected D1 database, applies migrations and then publishes the Worker. A first deploy can upload Worker secrets with `--secrets-file`.
 - Shipped Wrangler configurations preserve dashboard-managed Worker variables across deployments.
+- Automatic D1 reuse by name checks for an empty schema or an existing Shard database before applying migrations.
+- The managed Cloudflare environments coordinate protected merges in Durable Objects, resume repository copies in Workflows, and run divergent Artifacts merges in a Git container.
+- Workers Builds can run the test suite and container smoke check, then promote the same commit through staging and production with a release verification Workflow in each environment.
 
 ## 0.2.0
 

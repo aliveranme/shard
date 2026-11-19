@@ -49,8 +49,8 @@ jobs:
           package_name="shard-${RELEASE_TAG}-worker"
           export PACKAGE_DIR="$RUNNER_TEMP/$package_name"
           mkdir -p "$PACKAGE_DIR/scripts"
-          cp -R build static migrations "$PACKAGE_DIR/"
-          cp .node-version package.json package-lock.json CHANGELOG.md "$PACKAGE_DIR/"
+          cp -R build static migrations worker containers "$PACKAGE_DIR/"
+          cp .node-version .dockerignore package.json package-lock.json CHANGELOG.md "$PACKAGE_DIR/"
           cp scripts/deploy.mjs scripts/git-origin.mjs scripts/git-lfs-r2-multipart.mjs "$PACKAGE_DIR/scripts/"
           mise exec -- node <<'JS'
           const { writeFileSync } = require('node:fs');

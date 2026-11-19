@@ -182,6 +182,14 @@ pub async fn record(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
         ])?
         .first::<i64>(Some("repo_id"))
         .await?;
+    if recorded.is_some() && matches!(check.state, CheckState::Success) {
+        let (env, repo_id, head) = (state.env.clone(), repo.id, hash.to_owned());
+        state.worker_ctx.wait_until(async move {
+            if crate::branch_rules::wake_for_check(&env, repo_id, &head).await.is_err() {
+                console_log!("event=merge_check_wake_failed repo_id={repo_id}");
+            }
+        });
+    }
     empty(if recorded.is_some() { 204 } else { 404 })
 }
 

@@ -2,7 +2,7 @@ use crate::artifacts::{self, Artifacts};
 use crate::git_wire;
 use crate::i18n::RepoText;
 use crate::models::Repo;
-use crate::native_git::{NativeGit, NativeRepo, RemoteRepo, WriteError};
+use crate::native_git::{ArtifactsMergeTransport, NativeGit, NativeRepo, RemoteRepo, WriteError};
 use js_sys::Uint8Array;
 use serde::Deserialize;
 use wasm_bindgen_futures::JsFuture;
@@ -302,7 +302,7 @@ impl RepoHandle {
                 Ok(head.to_owned())
             }
             (Self::Artifacts(repo), source @ (None | Some((Self::Artifacts(_), _)))) => {
-                let native = NativeGit::from_env(env).map_err(|_| WriteError::Unsupported)?;
+                let transport = ArtifactsMergeTransport::from_env(env).await?;
                 let remote = repo.remote().await.map_err(|_| WriteError::Unavailable)?;
                 let token = repo.create_token("write", 300).await.map_err(|_| WriteError::Unavailable)?;
                 let target = RemoteRepo { remote: &remote, token: &token };
@@ -313,7 +313,7 @@ impl RepoHandle {
                     None
                 };
                 let source = source_credentials.as_ref().map(|(remote, token)| RemoteRepo { remote, token });
-                native.merge_remote(reference, base, head, &target, source.as_ref()).await
+                transport.merge_remote(reference, base, head, &target, source.as_ref()).await
             }
             _ => Err(WriteError::Unsupported),
         }

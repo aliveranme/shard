@@ -3,7 +3,7 @@
 Living record of what works, what is missing, and how it was verified.
 Update this file whenever a milestone lands or a limitation changes.
 
-**Snapshot:** 2026-11-19 · Cloudflare deployment and execution service evaluation · local development
+**Snapshot:** 2026-11-19 · Managed Cloudflare execution and staged releases · local development
 
 | Item | Value |
 |---|---|
@@ -11,7 +11,7 @@ Update this file whenever a milestone lands or a limitation changes.
 | Tooling | Node 26.13.1, Wrangler 4.164.0, mise |
 | Storage | D1 with Cloudflare Artifacts by default or an authenticated native Git origin. Both environments use a private R2 bucket for LFS objects. |
 | UI | Server-rendered Askama templates using `static/css/theme.css` and `static/css/shard.css` |
-| Deployment | The unified deploy command passed loopback Cloudflare API checks and packaged dry runs for Artifacts and native Git. Hosted staging verification is pending. |
+| Deployment | Default and native deployment use the unified deploy command. Managed deployment uses Workers Builds, isolated staging and production bindings, and a release Workflow for each deployment. Hosted verification is pending. |
 | Source | [aliveranme/shard](https://github.com/aliveranme/shard) |
 
 ## Verified locally
@@ -36,6 +36,7 @@ Update this file whenever a milestone lands or a limitation changes.
 | Forge workflows | Writers draft and publish commit-pinned releases from Git tags. Owners manage issue templates. Users can add issue reactions, watch repositories and list their stars. |
 | Notifications and integrations | The inbox enforces repository access. A CI context has one current result per commit, shown on commit details and reviewed pull requests. Owners manage signed webhooks with stable event IDs, delivery IDs, bodies and signatures across retries. Push observation records ref changes, PR refresh and Webhook delivery in one D1 transaction. The minute cron checks live refs for unfinished pushes. |
 | Maintenance | Per-source limits, `X-Request-ID` correlation, and daily removal of expired credentials, throttle windows and email links. Free and Paid profiles set minute-cron budgets for copies, cleanup, unfinished pushes, PR refresh, the merge queue and Webhooks. |
+| Managed execution | A Durable Object alarm checks the protected queue on enqueue and after a passing check. A copy Workflow publishes forks after their LFS pages finish. D1 retains both jobs and the minute cron recovers outstanding work. |
 | Backups | Rehearsed isolated D1 SQL restore, Git bundle restore with matching refs and object IDs, and byte-identical R2 downloads from restored original and fork namespaces. |
 | UI and development | The shared theme follows system appearance. Geist and Shard Han set proportional UI text with tabular figures. JetBrains Mono sets code and Git identifiers, with two-cell Han glyphs in code. Buttons and form controls use calibrated font metrics. The refs grid marks default branches and wraps full annotated-tag object IDs on narrow screens. |
 | Select controls | Themed pickers use native form and keyboard behavior. Browsers without `base-select` use their system picker. |
@@ -45,20 +46,20 @@ Update this file whenever a milestone lands or a limitation changes.
 
 | Area | Requirement |
 |---|---|
-| Deployment | Artifacts staging needs Workers Paid and its own namespace. Native staging needs an HTTPS Git origin and persistent storage. Use separate D1 and R2 instances and verify hosted Git operations, import, scheduled delivery and backup restore with live bindings. |
+| Deployment | Verify hosted managed releases and Artifacts operations in a separate Workers Paid environment. Use isolated D1, R2 and Artifacts state. Native staging needs an HTTPS Git origin and persistent storage. |
 | Large LFS uploads | Verify presigned S3 uploads with a hosted private R2 bucket. Objects above the single-PUT ceiling require a hosted check of whole-object hashing, conditional multipart publication, fork copy throughput and the Worker CPU budget. |
 | Email | An onboarded sending domain, an `EMAIL` binding, and an available mailbox to verify real delivery. |
-| Web merges | Divergent and cross-repository Artifacts merges need the configured native Git bridge. Divergent merges require Git 2.38+. Mixed-backend Web merges require manual integration. |
+| Web merges | Verify divergent and cross-repository merges against hosted Artifacts through the managed Git container. Standalone Artifacts deployments use an external Git 2.38+ bridge. Mixed-backend Web merges require manual integration. |
 | Repository search | Scans one selected snapshot with explicit limits. A persistent index and whole-history search remain outside the current search scope. |
 | Git protocol | Artifacts switches through Shard to the classic advertisement when HEAD is overridden. Production partial clone and fetch compatibility require verification. Provider-side updates that bypass Shard need separate event ingestion. |
 | Operations | Live metrics, token-list pagination, and further CSP tightening after moving inline styles. |
 
-Architecture decisions and provider evidence are recorded in [PLAN.md](PLAN.md). The [execution service evaluation](PLAN.md#optional-cloudflare-execution-services) covers branch coordination, copy recovery and native Git compute.
+Architecture, service boundaries, and operational constraints are recorded in [PLAN.md](PLAN.md#optional-cloudflare-execution-services). Managed CI/CD settings are in the [deployment guide](README.md#deploy-with-managed-cloudflare-services).
 
 ## Cloudflare Artifacts constraints (verified 2026-11-17)
 
 - Workers binding: namespace `create/get/list/import/delete`; repo `info/createToken/listTokens/revokeToken/fork/log/readCommit/readTree/readBlob/readFile`.
-- Shard uses the binding for object and history reads and Git HTTPS for ref discovery and supported ref mutations. The optional native bridge handles Artifacts merges that need new Git objects.
+- Shard uses the binding for object and history reads and Git HTTPS for ref discovery and supported ref mutations. A Git container or an external native bridge handles Artifacts merges that need new Git objects.
 - Commit metadata uses `treeHash`, `authoredAt`, `committedAt`; tree entries are `{ name, mode, type, hash }`.
 - Git tokens: Bearer, or Basic with the token secret before `?expires=`; write scope required for `git-receive-pack` including its `info/refs` advertisement.
 - Artifacts requires Workers Paid; local simulator requires Wrangler ≥ 4.163 and Git ≥ 2.32.
@@ -136,6 +137,10 @@ Architecture decisions and provider evidence are recorded in [PLAN.md](PLAN.md).
 | 2026-11-19 | Release notes and prebuilt archive rehearsal | The notes extractor selected `0.1.0` and `0.2.0` independently and rejected an undocumented prerelease and an invalid tag. The archive contained the migration, client adapter and changelog. Wrangler dry run passed for both environments. |
 | 2026-11-19 | Unified deployment against an isolated Cloudflare API | Wrangler created missing D1 and R2 resources, applied migrations before upload and reused an existing database in native mode. Upload metadata preserved dashboard text, JSON and secrets, and carried the native secret on first deploy. An explicit UUID took precedence. A failed migration prevented publication, and mismatched R2 bucket settings stopped before remote requests. |
 | 2026-11-19 | Prebuilt deploy command | The archive installed its pinned npm dependencies independently. Dry runs through the deploy script resolved both environments, and the archive's `npm run deploy -- --dry-run` resolved the default bindings. |
+| 2026-11-19 | `npm run ci -- --container` | All 46 tests passed, including automatic D1 reuse and rejection, protected merge alarms, and a multi-page LFS fork published by a Workflow. The Docker image started, reported bridge protocol 1, and returned HTTP 401 to an unauthenticated merge. |
+| 2026-11-19 | `npm run cd -- --dry-run` and isolated release gate | Both managed bundles built their Git image and resolved independent bindings. With real Wrangler Workflow commands against a loopback API, production followed matching staging success and was skipped on staging error, wrong revision or a non-production branch. |
+| 2026-11-19 | Release Workflow on Linux with Docker | The local Workflow checked the configured version tag, D1, R2 and CSS, then started the actual Git image through its Durable Object and verified readiness. It rejected an invalid release tag. |
+| 2026-11-19 | Managed prebuilt deployment dry run | The release archive layout supplied the Worker entrypoint, Wasm, migrations and Docker context without a local Rust build. Wrangler built the merge image and bundled `managed-staging`. |
 
 ## How to update
 

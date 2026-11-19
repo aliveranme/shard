@@ -9,9 +9,11 @@ use crate::templates::{error_response, render, Chrome};
 use crate::{db, git_activity, pull_review, util};
 use askama::Template;
 use serde::Deserialize;
-use worker::{d1::D1Database, Env, Request, Response, Result, RouteContext};
+use worker::{durable_object, d1::D1Database, DurableObject, Env, Error, Method, ObjectNamespace, Request, RequestInit, Response, Result, RouteContext, State};
 
 const CLAIM_SECONDS: i64 = 300;
+const MERGE_COORDINATOR: &str = "MERGE_COORDINATOR";
+const WAIT_SECONDS: i64 = 30;
 
 #[derive(Template)]
 #[template(path = "branch_rules.html")]
@@ -245,7 +247,7 @@ pub(crate) async fn request_merge(_req: Request, ctx: RouteContext<AppState>) ->
     if enqueued.is_some() {
         let env = state.env.clone();
         state.worker_ctx.wait_until(async move {
-            if run_entry(&env, issue_id).await.is_err() {
+            if signal_or_run(&env, repo.id, &pull.base_branch, issue_id).await.is_err() {
                 worker::console_log!("event=merge_queue_item_failed issue_id={issue_id}");
             }
         });
@@ -256,7 +258,7 @@ pub(crate) async fn request_merge(_req: Request, ctx: RouteContext<AppState>) ->
 pub(crate) async fn process_queue(env: &Env, limit: i64) -> Result<()> {
     let database = env.d1("DB")?;
     let entries = db::all::<EntryId>(&database,
-        "SELECT issue_id FROM merge_queue q
+        "SELECT issue_id, repo_id, base_branch FROM merge_queue q
          WHERE ((q.state = 'queued' AND NOT EXISTS (
                   SELECT 1 FROM merge_queue earlier
                   WHERE earlier.repo_id = q.repo_id AND earlier.base_branch = q.base_branch AND
@@ -267,7 +269,7 @@ pub(crate) async fn process_queue(env: &Env, limit: i64) -> Result<()> {
         &[util::js_int(util::now() - CLAIM_SECONDS), util::js_int(limit)],
     ).await?;
     for entry in entries {
-        if run_entry(env, entry.issue_id).await.is_err() {
+        if signal_or_run(env, entry.repo_id, &entry.base_branch, entry.issue_id).await.is_err() {
             worker::console_log!("event=merge_queue_item_failed issue_id={}", entry.issue_id);
         }
     }
@@ -275,7 +277,135 @@ pub(crate) async fn process_queue(env: &Env, limit: i64) -> Result<()> {
 }
 
 #[derive(Deserialize)]
-struct EntryId { issue_id: i64 }
+struct EntryId {
+    issue_id: i64,
+    repo_id: i64,
+    base_branch: String,
+}
+
+async fn signal_or_run(env: &Env, repo_id: i64, branch: &str, issue_id: i64) -> Result<()> {
+    if let Ok(namespace) = env.durable_object(MERGE_COORDINATOR) {
+        if signal(&namespace, repo_id, branch).await.is_ok() {
+            return Ok(());
+        }
+        worker::console_log!("event=merge_coordinator_unavailable repo_id={repo_id}");
+    }
+    run_entry(env, issue_id).await
+}
+
+async fn signal(namespace: &ObjectNamespace, repo_id: i64, branch: &str) -> Result<()> {
+    let name = format!("{repo_id}:refs/heads/{branch}");
+    let stub = namespace.get_by_name(&name)?;
+    let init = RequestInit { method: Method::Post, body: Some(name.into()), ..Default::default() };
+    let response = stub.fetch_with_request(Request::new_with_init("https://internal/wake", &init)?).await?;
+    if response.status_code() == 202 {
+        Ok(())
+    } else {
+        Err(Error::RustError("Merge coordinator did not accept the wake request".into()))
+    }
+}
+
+pub(crate) async fn wake_for_check(env: &Env, repo_id: i64, head: &str) -> Result<()> {
+    let Ok(namespace) = env.durable_object(MERGE_COORDINATOR) else { return Ok(()) };
+    let database = env.d1("DB")?;
+    let limit = crate::limits::ScheduledLimits::read(env)?.merges;
+    #[derive(Deserialize)]
+    struct Branch { base_branch: String }
+    let branches = db::all::<Branch>(&database,
+        "SELECT DISTINCT q.base_branch FROM merge_queue q JOIN pulls p ON p.issue_id = q.issue_id
+         WHERE q.repo_id = ?1 AND q.state = 'queued' AND p.head_commit = ?2
+         ORDER BY q.base_branch LIMIT ?3",
+        &[util::js_int(repo_id), util::js_text(head), util::js_int(limit)],
+    ).await?;
+    for branch in branches {
+        signal(&namespace, repo_id, &branch.base_branch).await?;
+    }
+    Ok(())
+}
+
+#[durable_object]
+pub struct MergeQueueCoordinator {
+    state: State,
+    env: Env,
+}
+
+#[derive(Deserialize)]
+struct BranchJob { issue_id: i64, state: String, changed_at: i64 }
+
+impl MergeQueueCoordinator {
+    async fn arm(&self, delay_seconds: i64) -> Result<()> {
+        let at = (util::now() + delay_seconds) * 1000;
+        let storage = self.state.storage();
+        if storage.get_alarm().await?.is_none_or(|current| current > at) {
+            storage.set_alarm(std::time::Duration::from_secs(delay_seconds as u64)).await?;
+        }
+        Ok(())
+    }
+}
+
+fn branch_key(key: &str) -> Option<(i64, &str)> {
+    let (id, reference) = key.split_once(':')?;
+    let id: i64 = id.parse().ok()?;
+    let branch = reference.strip_prefix("refs/heads/")?;
+    (id > 0 && valid_ref(branch)).then_some((id, branch))
+}
+
+async fn first_branch_job(database: &D1Database, repo_id: i64, branch: &str) -> Result<Option<BranchJob>> {
+    db::first(database,
+        "SELECT issue_id, state, changed_at FROM merge_queue
+         WHERE repo_id = ?1 AND base_branch = ?2 AND state IN ('running', 'queued')
+         ORDER BY state = 'running' DESC, queued_at, issue_id LIMIT 1",
+        &[util::js_int(repo_id), util::js_text(branch)],
+    ).await
+}
+
+impl DurableObject for MergeQueueCoordinator {
+    fn new(state: State, env: Env) -> Self {
+        Self { state, env }
+    }
+
+    async fn fetch(&self, mut req: Request) -> Result<Response> {
+        if req.method() != Method::Post || req.path() != "/wake" {
+            return Ok(Response::empty()?.with_status(404));
+        }
+        let key = req.text().await?;
+        if branch_key(&key).is_none() {
+            return Ok(Response::empty()?.with_status(400));
+        }
+        let storage = self.state.storage();
+        match storage.get::<String>("branch").await? {
+            Some(current) if current != key => return Ok(Response::empty()?.with_status(409)),
+            Some(_) => (),
+            None => storage.put("branch", key).await?,
+        }
+        self.arm(0).await?;
+        Ok(Response::empty()?.with_status(202))
+    }
+
+    async fn alarm(&self) -> Result<Response> {
+        let key = self.state.storage().get::<String>("branch").await?;
+        let Some((repo_id, branch)) = key.as_deref().and_then(branch_key) else { return Response::empty() };
+        let database = self.env.d1("DB")?;
+        let Some(job) = first_branch_job(&database, repo_id, branch).await? else { return Response::empty() };
+        let recovery_delay = job.changed_at + CLAIM_SECONDS + 1 - util::now();
+        if job.state == "running" && recovery_delay > 0 {
+            self.arm(recovery_delay).await?;
+            return Response::empty();
+        }
+        run_entry(&self.env, job.issue_id).await?;
+        if let Some(next) = first_branch_job(&database, repo_id, branch).await? {
+            let delay = if next.state == "running" {
+                (next.changed_at + CLAIM_SECONDS + 1 - util::now()).max(0)
+            } else if next.issue_id == job.issue_id && job.state == "queued" {
+                WAIT_SECONDS
+            } else {
+                0
+            };
+            self.arm(delay).await?;
+        }
+        Response::empty()
+    }
+}
 
 #[derive(Deserialize)]
 struct Actor { id: i64, is_admin: i64 }
