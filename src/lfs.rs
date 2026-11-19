@@ -1,4 +1,4 @@
-//! Backend-independent Git LFS basic transfers.
+//! Backend-independent Git LFS transfers.
 use crate::ctx::AppState;
 use crate::handlers::common::{repo_role, RepoRole};
 use crate::{auth, db, limits, util};
@@ -9,6 +9,9 @@ use wasm_bindgen::{prelude::wasm_bindgen, JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use worker::web_sys::ReadableStreamDefaultReader;
 use worker::*;
+
+#[path = "lfs_remote.rs"]
+mod remote;
 
 const MEDIA: &str = "application/vnd.git-lfs+json";
 const BINARY: &str = "application/octet-stream";
@@ -43,6 +46,7 @@ const MISSING: HttpError = (404, "LFS object not found");
 const INVALID_OBJECT: HttpError = (422, "Invalid SHA-256 object ID or size");
 const WRONG_SIZE: HttpError = (422, "Object size does not match");
 const TOO_LARGE: HttpError = (413, "LFS object exceeds the configured upload limit");
+const BAD_DIGEST: HttpError = (422, "Object content does not match its SHA-256 ID");
 
 #[derive(Deserialize)]
 struct Repository {
@@ -118,13 +122,28 @@ pub async fn batch(req: Request, ctx: RouteContext<AppState>) -> Result<Response
     if batch.hash_algo.as_deref().is_some_and(|hash| hash != "sha256") {
         return failure((409, "Only SHA-256 object IDs are supported"));
     }
-    if batch.transfers.is_some_and(|names| !names.iter().any(|name| name == "basic")) {
-        return failure((422, "The basic transfer adapter is required"));
+    let upload = batch.operation.writes().then(|| limits::LfsLimits::read(&ctx.data.env)).transpose()?;
+    let mode = upload.as_ref().map(|settings| settings.mode);
+    let adapter = if mode == Some(limits::LfsMode::Multipart) { remote::MULTIPART_ADAPTER } else { "basic" };
+    if !batch.transfers.as_ref().map_or(adapter == "basic", |names| names.iter().any(|name| name == adapter)) {
+        let message = if adapter == "basic" { "The basic transfer adapter is required" } else {
+            "Configure the shard-r2-multipart Git LFS upload adapter"
+        };
+        return failure((422, message));
     }
     if batch.objects.len() > MAX_OBJECTS {
         return failure((413, "LFS batches accept at most 100 objects"));
     }
-    let upload_limit = batch.operation.writes().then(|| limits::lfs_object_bytes(&ctx.data.env)).transpose()?;
+    let is_remote = matches!(mode, Some(limits::LfsMode::Direct | limits::LfsMode::Multipart));
+    let remote_upload = if is_remote {
+        let Some(authorization) = util::header(&req, "authorization") else { return failure(CREDENTIALS) };
+        match remote::S3::read(&ctx.data.env) {
+            Ok(s3) => Some((s3, authorization)),
+            Err(error) => return failure(error),
+        }
+    } else {
+        None
+    };
 
     let bucket = match ctx.data.env.bucket("LFS_OBJECTS") {
         Ok(bucket) => bucket,
@@ -134,20 +153,42 @@ pub async fn batch(req: Request, ctx: RouteContext<AppState>) -> Result<Response
     let Some(path) = url.path().strip_suffix("/batch") else {
         return failure(HIDDEN);
     };
-    // Keep actions on the batch origin and leave credentials to the LFS client.
     let prefix = format!("{}{path}/{}", url.origin().ascii_serialization(), repo.id);
     let object_prefix = Namespace::for_repo(repo.id, repo.lfs_copy_id).prefix();
     let mut objects = Vec::with_capacity(batch.objects.len());
     for object in batch.objects {
         let mut entry = json!(object);
-        match batch_object(&bucket, &object_prefix, &prefix, &object, upload_limit).await {
-            Ok(Some(actions)) => entry["actions"] = actions,
+        let actions = match batch_object(&bucket, &object_prefix, &prefix, &object, upload.as_ref()).await {
+            Ok(Some((href, size))) => match (mode, &remote_upload) {
+                (Some(limits::LfsMode::Direct), Some((s3, authorization))) => {
+                    remote::direct_actions(s3, repo.id, &object.oid, size, &href, authorization).await.map(Some)
+                }
+                (Some(limits::LfsMode::Multipart), Some((_, authorization))) => Ok(Some(json!({
+                    "upload": {"href": format!("{href}/multipart"), "header": {"Authorization": authorization}},
+                }))),
+                (Some(limits::LfsMode::Proxy), _) => Ok(Some(json!({
+                    "upload": {"href": href, "header": {"Content-Type": BINARY}},
+                    "verify": {"href": format!("{href}/verify")},
+                }))),
+                (None, _) => Ok(Some(json!({"download": {"href": href}}))),
+                _ => Err(STORAGE),
+            },
+            Ok(None) => Ok(None),
+            Err(error) => Err(error),
+        };
+        match actions {
+            Ok(Some(actions)) => {
+                entry["actions"] = actions;
+                if mode == Some(limits::LfsMode::Direct) {
+                    entry["authenticated"] = json!(true);
+                }
+            }
             Ok(None) => {}
             Err((code, message)) => entry["error"] = json!({"code": code, "message": message}),
         }
         objects.push(entry);
     }
-    json_response(200, &json!({"transfer": "basic", "hash_algo": "sha256", "objects": objects}))
+    json_response(200, &json!({"transfer": adapter, "hash_algo": "sha256", "objects": objects}))
 }
 
 async fn batch_object(
@@ -155,8 +196,8 @@ async fn batch_object(
     object_prefix: &str,
     prefix: &str,
     spec: &ObjectSpec,
-    upload_limit: Option<u64>,
-) -> std::result::Result<Option<serde_json::Value>, HttpError> {
+    upload: Option<&limits::LfsLimits>,
+) -> std::result::Result<Option<(String, u64)>, HttpError> {
     let size = u64::try_from(spec.size).map_err(|_| INVALID_OBJECT)?;
     validate_oid(&spec.oid)?;
     let exists = match bucket.head(format!("{object_prefix}{}", spec.oid)).await.map_err(|_| STORAGE)? {
@@ -164,17 +205,13 @@ async fn batch_object(
         Some(_) => true,
         None => false,
     };
-    let href = format!("{prefix}/{}/{size}", spec.oid);
-    match (upload_limit, exists) {
-        (Some(_), true) => Ok(None),
-        (Some(limit), false) if size > limit => Err(TOO_LARGE),
-        (Some(_), false) => Ok(Some(json!({
-            "upload": {"href": href, "header": {"Content-Type": BINARY}},
-            "verify": {"href": format!("{href}/verify")},
-        }))),
-        (None, true) => Ok(Some(json!({"download": {"href": href}}))),
-        (None, false) => Err(MISSING),
+    match (upload, exists) {
+        (Some(_), true) => return Ok(None),
+        (Some(settings), false) if size > settings.max_bytes => return Err(TOO_LARGE),
+        (None, false) => return Err(MISSING),
+        _ => {}
     }
+    Ok(Some((format!("{prefix}/{}/{size}", spec.oid), size)))
 }
 
 pub async fn upload(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
@@ -182,7 +219,11 @@ pub async fn upload(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
         Ok(target) => target,
         Err(error) => return failure(error),
     };
-    if size > limits::lfs_object_bytes(&ctx.data.env)? {
+    let settings = limits::LfsLimits::read(&ctx.data.env)?;
+    if settings.mode != limits::LfsMode::Proxy {
+        return failure((405, "Use the upload action returned by the LFS Batch API"));
+    }
+    if size > settings.max_bytes {
         return failure(TOO_LARGE);
     }
     let body = req.inner().body();
@@ -198,18 +239,9 @@ pub async fn upload(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
     if body.is_none() && size != 0 {
         return failure(WRONG_SIZE);
     }
-    #[derive(Deserialize)]
-    struct Lease {
-        id: i64,
-    }
     let database = ctx.data.db()?;
     let expires = util::now() + WRITE_LEASE;
-    let Some(lease) = db::first::<Lease>(
-        &database,
-        "INSERT INTO repo_lfs_uploads (repo_id, expires_at)
-         SELECT id, ?2 FROM repos WHERE id = ?1 RETURNING id",
-        &[util::js_int(repo_id), util::js_int(expires)],
-    ).await? else {
+    let Some(lease) = acquire_write(&database, repo_id, expires).await? else {
         return failure(HIDDEN);
     };
     let put = async {
@@ -220,19 +252,14 @@ pub async fn upload(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
         put_object(&bucket, &key, data, oid).await
     }
     .await;
-    db::run(
-        &database,
-        "DELETE FROM repo_lfs_uploads WHERE id = ?",
-        &[util::js_int(lease.id)],
-    )
-    .await?;
+    release_write(&database, lease).await?;
     match put {
         Ok(Some(_)) => empty(),
         Ok(None) => check_stored(&bucket, key, size).await,
         Err(error) => {
             let message = error.to_string();
             if message.ends_with("(10037)") {
-                failure((422, "Object content does not match its SHA-256 ID"))
+                failure(BAD_DIGEST)
             } else if message.ends_with("(10013)") || message.ends_with("(10054)") {
                 failure(WRONG_SIZE)
             } else {
@@ -240,6 +267,23 @@ pub async fn upload(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
             }
         }
     }
+}
+
+async fn acquire_write(database: &d1::D1Database, repo_id: i64, expires: i64) -> Result<Option<i64>> {
+    #[derive(Deserialize)]
+    struct Lease {
+        id: i64,
+    }
+    Ok(db::first::<Lease>(
+        database,
+        "INSERT INTO repo_lfs_uploads (repo_id, expires_at)
+         SELECT id, ?2 FROM repos WHERE id = ?1 RETURNING id",
+        &[util::js_int(repo_id), util::js_int(expires)],
+    ).await?.map(|lease| lease.id))
+}
+
+async fn release_write(database: &d1::D1Database, id: i64) -> Result<()> {
+    db::run(database, "DELETE FROM repo_lfs_uploads WHERE id = ?", &[util::js_int(id)]).await
 }
 
 pub async fn download(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
@@ -265,7 +309,7 @@ pub async fn download(req: Request, ctx: RouteContext<AppState>) -> Result<Respo
 }
 
 pub async fn verify(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
-    let Transfer { bucket, key, oid, size, .. } = match transfer(&req, &ctx, Operation::Upload).await {
+    let target = match transfer(&req, &ctx, Operation::Upload).await {
         Ok(target) => target,
         Err(error) => return failure(error),
     };
@@ -273,10 +317,28 @@ pub async fn verify(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
         Ok(value) => value,
         Err(error) => return failure(error),
     };
-    if spec.oid != oid || u64::try_from(spec.size).ok() != Some(size) {
+    if spec.oid != target.oid || u64::try_from(spec.size).ok() != Some(target.size) {
         return failure(INVALID_OBJECT);
     }
-    check_stored(&bucket, key, size).await
+    if let Some(stage) = util::query_param(&req, "stage") {
+        return remote::verify_direct(&ctx.data, &target, &stage).await;
+    }
+    check_stored(&target.bucket, target.key, target.size).await
+}
+
+pub async fn multipart(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
+    let target = match transfer(&req, &ctx, Operation::Upload).await {
+        Ok(target) => target,
+        Err(error) => return failure(error),
+    };
+    let settings = limits::LfsLimits::read(&ctx.data.env)?;
+    if settings.mode != limits::LfsMode::Multipart {
+        return failure((405, "Multipart LFS uploads are disabled"));
+    }
+    if target.size > settings.max_bytes {
+        return failure(TOO_LARGE);
+    }
+    remote::multipart(&req, &ctx, &target).await
 }
 
 async fn check_stored(bucket: &Bucket, key: String, size: u64) -> Result<Response> {
@@ -420,6 +482,16 @@ pub(crate) async fn copy_page(
                 continue;
             }
             return Err(Error::RustError("LFS fork object size mismatch".into()));
+        }
+        if size > limits::R2_SINGLE_PUT_BYTES {
+            let s3 = remote::S3::read(env).map_err(|_| Error::RustError(STORAGE.1.into()))?;
+            let timeout = remote::time_left(expires - WRITE_GRACE)?;
+            if !s3.copy(&source_key, &target_key, size, &entry.http_etag(), timeout).await?
+                && !bucket.head(&target_key).await?.is_some_and(|object| object.size() == size)
+            {
+                return Err(Error::RustError("LFS fork object was not stored".into()));
+            }
+            continue;
         }
         let object = bucket.get(&source_key).execute().await?
             .filter(|object| object.size() == size)

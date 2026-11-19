@@ -932,13 +932,19 @@ struct Cleanup {
 }
 
 async fn reconcile_cleanup(env: &Env, database: &D1Database, checked_at: i64, limits: &ScheduledLimits) -> Result<()> {
-    db::run(
-        database,
-        "DELETE FROM repo_lfs_uploads WHERE id IN (
-             SELECT id FROM repo_lfs_uploads WHERE expires_at <= ? ORDER BY expires_at LIMIT 256
-         )",
-        &[js_int(checked_at)],
-    ).await?;
+    let cutoff = [js_int(checked_at)];
+    database.batch(vec![
+        database.prepare(
+            "DELETE FROM repo_lfs_uploads WHERE id IN (
+                 SELECT id FROM repo_lfs_uploads WHERE expires_at <= ? ORDER BY expires_at LIMIT 256
+             )",
+        ).bind(&cutoff)?,
+        database.prepare(
+            "DELETE FROM repo_lfs_multipart WHERE attempt IN (
+                 SELECT attempt FROM repo_lfs_multipart WHERE expires_at <= ? ORDER BY expires_at LIMIT 32
+             )",
+        ).bind(&cutoff)?,
+    ]).await?;
     let jobs: Vec<Cleanup> = db::all(
         database,
         "UPDATE repo_storage_cleanup SET due_at = ?2

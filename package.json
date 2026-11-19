@@ -1,7 +1,7 @@
 {
   "name": "shard",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Shard - a self-hosted, Cloudflare-native Git forge",
   "scripts": {
     "dev": "wrangler dev",
@@ -16,6 +16,10 @@
         "description": "Stores accounts, repository metadata, issues and pull requests. The deploy script applies the schema."
       }
     }
+  },
+  "dependencies": {
+    "@xmldom/xmldom": "0.9.12",
+    "aws4fetch": "1.0.20"
   },
   "devDependencies": {
     "wrangler": "4.164.0"

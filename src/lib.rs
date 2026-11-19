@@ -198,6 +198,7 @@ fn routes(router: Router<AppState>) -> Router<AppState> {
         .put_async("/:owner/:repo/info/lfs/objects/:repo_id/:oid/:size", lfs::upload)
         .get_async("/:owner/:repo/info/lfs/objects/:repo_id/:oid/:size", lfs::download)
         .post_async("/:owner/:repo/info/lfs/objects/:repo_id/:oid/:size/verify", lfs::verify)
+        .post_async("/:owner/:repo/info/lfs/objects/:repo_id/:oid/:size/multipart", lfs::multipart)
 }
 
 #[event(fetch)]

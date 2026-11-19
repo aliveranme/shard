@@ -1,7 +1,8 @@
 use worker::{Env, Error, Result};
 
 const DEFAULT_LFS_BYTES: u64 = 100_000_000;
-const R2_SINGLE_PUT_BYTES: u64 = (5 * 1024 - 5) * 1024 * 1024;
+pub(crate) const R2_SINGLE_PUT_BYTES: u64 = (5 * 1024 - 5) * 1024 * 1024;
+const R2_OBJECT_BYTES: u64 = (5 * 1024 - 5) * 1024 * 1024 * 1024;
 
 #[derive(Clone, Copy)]
 enum Profile {
@@ -61,14 +62,47 @@ impl ScheduledLimits {
     }
 }
 
-pub(crate) fn lfs_object_bytes(env: &Env) -> Result<u64> {
-    let maximum = match Profile::read(env)? {
-        Profile::Free => DEFAULT_LFS_BYTES,
-        Profile::Paid => R2_SINGLE_PUT_BYTES,
-    };
-    let Ok(configured) = env.var("SHARD_LFS_MAX_BYTES") else {
-        return Ok(DEFAULT_LFS_BYTES);
-    };
-    configured.to_string().parse().ok().filter(|value| (1..=maximum).contains(value))
-        .ok_or_else(|| Error::RustError(format!("SHARD_LFS_MAX_BYTES must be between 1 and {maximum}")))
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LfsMode {
+    Proxy,
+    Direct,
+    Multipart,
+}
+
+pub(crate) struct LfsLimits {
+    pub(crate) mode: LfsMode,
+    pub(crate) max_bytes: u64,
+}
+
+impl LfsLimits {
+    pub(crate) fn read(env: &Env) -> Result<Self> {
+        let configured = env.var("SHARD_LFS_UPLOAD_MODE").ok().map(|value| value.to_string());
+        let (mode, maximum, default) = match configured.as_deref() {
+            None | Some("proxy") => {
+                let maximum = match Profile::read(env)? {
+                    Profile::Free => DEFAULT_LFS_BYTES,
+                    Profile::Paid => R2_SINGLE_PUT_BYTES,
+                };
+                (LfsMode::Proxy, maximum, DEFAULT_LFS_BYTES)
+            }
+            Some("r2-direct") => (LfsMode::Direct, R2_SINGLE_PUT_BYTES, R2_SINGLE_PUT_BYTES),
+            Some("r2-multipart") => {
+                // Above one PUT, verification hashes the R2 stream in the Worker.
+                let maximum = match Profile::read(env)? {
+                    Profile::Free => R2_SINGLE_PUT_BYTES,
+                    Profile::Paid => R2_OBJECT_BYTES,
+                };
+                (LfsMode::Multipart, maximum, maximum)
+            }
+            Some(_) => return Err(Error::RustError(
+                "SHARD_LFS_UPLOAD_MODE must be proxy, r2-direct or r2-multipart".into(),
+            )),
+        };
+        let max_bytes = match env.var("SHARD_LFS_MAX_BYTES") {
+            Ok(value) => value.to_string().parse().ok().filter(|value| (1..=maximum).contains(value))
+                .ok_or_else(|| Error::RustError(format!("SHARD_LFS_MAX_BYTES must be between 1 and {maximum}")))?,
+            Err(_) => default,
+        };
+        Ok(Self { mode, max_bytes })
+    }
 }

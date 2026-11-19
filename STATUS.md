@@ -3,7 +3,7 @@
 Living record of what works, what is missing, and how it was verified.
 Update this file whenever a milestone lands or a limitation changes.
 
-**Snapshot:** 2026-11-19 · Git storage, deployment limits and recovery · local development
+**Snapshot:** 2026-11-19 · Git LFS uploads and release packaging · local development
 
 | Item | Value |
 |---|---|
@@ -27,7 +27,7 @@ Update this file whenever a milestone lands or a limitation changes.
 | Repository lifecycle | Rename and accepted transfers preserve Web and Git routes. Forks preserve Git refs. The native origin imports private sources over Basic or Bearer HTTPS and publishes them privately. The minute cron reconciles pending copies. Portable metadata import applies each bundle atomically. |
 | Default branch and refs | Settings update the branch selected by new clones through Shard. Owners can create branches and lightweight tags from commit IDs, and delete individual refs after confirming their names. |
 | Git transport | Smart HTTP request and response bodies are streamed. Private clone requires a credential, and push also requires write scope and repository write access. |
-| Git LFS | Both Git backends authorize Batch and basic transfers by repository visibility and token scope. Uploads validate SHA-256 and length. Forks publish after copying objects to independent R2 keys. Deletion removes access immediately and schedules paged storage cleanup. |
+| Git LFS | Both Git backends enforce repository and token permissions. The default Worker upload is 100 MB. Standard Git LFS can use a presigned R2 PUT. The packaged multipart adapter resumes from recorded parts and verifies the whole object before publication. Forks use independent R2 keys, and deletion removes access immediately and schedules cleanup. |
 | Native Git origin | The native environment supports Git push, clone, fetch, ref browsing, raw downloads, pull request diffs and access revocation. Forked refs and files stay readable after source deletion. Same-origin PRs use commit-pinned merge-base, file comparison and ancestry requests. Authenticated origin controls set HEAD, update refs against an expected tip, merge reviewed commits and import private HTTPS repositories. |
 | Code browsing | Branch and tag inventory, branch-scoped trees and files, cursor-paginated first-parent history, parent links, and commit-pinned source TAR downloads. Text previews read at most 256 KiB. README links and images use the displayed commit, and raw downloads stream full files. |
 | Pull requests | Common-ancestor diffs support source and target branches in distinct repositories. Accepted branch pushes schedule refreshes. Reviews retain the saved comparison and line. Protected branches require the configured approvals and checks. The queue advanced an Artifacts branch by fast-forward and created a two-parent merge from a fork on the native origin. |
@@ -46,6 +46,7 @@ Update this file whenever a milestone lands or a limitation changes.
 | Area | Requirement |
 |---|---|
 | Deployment | Artifacts staging needs Workers Paid and its own namespace. Native staging needs an HTTPS Git origin and persistent storage. Use separate D1 and R2 instances and verify hosted Git operations, import, scheduled delivery and backup restore with live bindings. |
+| Large LFS uploads | Verify presigned S3 uploads with a hosted private R2 bucket. Objects above the single-PUT ceiling require a hosted check of whole-object hashing, conditional multipart publication, fork copy throughput and the Worker CPU budget. |
 | Email | An onboarded sending domain, an `EMAIL` binding, and an available mailbox to verify real delivery. |
 | Web merges | Divergent and cross-repository Artifacts merges need the configured native Git bridge. Divergent merges require Git 2.38+. Mixed-backend Web merges require manual integration. |
 | Repository search | Scans one selected snapshot with explicit limits. A persistent index and whole-history search remain outside the current search scope. |
@@ -131,6 +132,8 @@ Architecture decisions and provider evidence are recorded in [PLAN.md](PLAN.md).
 | 2026-11-19 | `mise run test` for both Git backends | The Wasm build and all 29 tests passed. A cross-repository native PR used one merge-base and one file comparison request. A private LFS fork remained readable after source cleanup. A scheduled check recovered a ref event after its D1 write was interrupted. |
 | 2026-11-19 | Prebuilt Worker dry run | Both packaged configurations resolved their bindings. Artifacts used the Paid profile and native used Free. |
 | 2026-11-19 | Isolated D1 and R2 restore | The local SQL export placed a trigger ahead of its view. After reordering those statements in the import copy, the restored trigger recorded a ref update. The Worker served exact object bytes from both restored LFS namespaces. |
+| 2026-11-19 | Wasm release build and isolated Git LFS tests | The 29 existing HTTP and native Git regressions passed. Two new cases exercised the real Git LFS client against Miniflare's signed S3 endpoint. A staged direct upload stayed hidden before verification. Multipart resumed after the first of two parts and rejected a wrong whole-object SHA-256. |
+| 2026-11-19 | Release notes and prebuilt archive rehearsal | The notes extractor selected `0.1.0` and `0.2.0` independently and rejected an undocumented prerelease and an invalid tag. The archive contained the migration, client adapter and changelog. Wrangler dry run passed for both environments. |
 
 ## How to update
 

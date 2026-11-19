@@ -21,20 +21,25 @@ jobs:
     timeout-minutes: 20
     env:
       WRANGLER_SEND_METRICS: "false"
+    outputs:
+      prerelease: ${{ steps.notes.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - name: Validate version tag
+      - uses: jdx/mise-action@v5
+      - name: Extract release notes
+        id: notes
         shell: bash
         run: |
-          number='(0|[1-9][0-9]*)'
-          identifier="($number|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
-          if [[ ! "$RELEASE_TAG" =~ ^v$number\.$number\.$number(-$identifier(\.$identifier)*)?$ ]]; then
-            echo 'Use vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-PRERELEASE.' >&2
-            exit 1
+          mkdir -p "$RUNNER_TEMP/release"
+          mise exec -- node scripts/release-notes.mjs "$RELEASE_TAG" > "$RUNNER_TEMP/release/release-notes.md"
+          version_without_build=${RELEASE_TAG%%+*}
+          if [[ "$version_without_build" == *-* ]]; then
+            echo 'prerelease=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'prerelease=false' >> "$GITHUB_OUTPUT"
           fi
-      - uses: jdx/mise-action@v5
       - run: mise run setup
       - run: mise run check
       - run: mise run test
@@ -43,9 +48,10 @@ jobs:
         run: |
           package_name="shard-${RELEASE_TAG}-worker"
           export PACKAGE_DIR="$RUNNER_TEMP/$package_name"
-          mkdir -p "$PACKAGE_DIR/scripts" "$RUNNER_TEMP/release"
+          mkdir -p "$PACKAGE_DIR/scripts"
           cp -R build static migrations "$PACKAGE_DIR/"
-          cp scripts/git-origin.mjs "$PACKAGE_DIR/scripts/"
+          cp CHANGELOG.md "$PACKAGE_DIR/"
+          cp scripts/git-origin.mjs scripts/git-lfs-r2-multipart.mjs "$PACKAGE_DIR/scripts/"
           mise exec -- node <<'JS'
           const { writeFileSync } = require('node:fs');
           const { join } = require('node:path');
@@ -55,6 +61,7 @@ jobs:
           writeFileSync(join(process.env.PACKAGE_DIR, 'wrangler.json'), JSON.stringify(rawConfig, null, 2) + '\n');
           JS
           mise exec -- node node_modules/wrangler/bin/wrangler.js deploy --config "$PACKAGE_DIR/wrangler.json" --dry-run --outdir "$RUNNER_TEMP/bundled"
+          mise exec -- node node_modules/wrangler/bin/wrangler.js deploy --config "$PACKAGE_DIR/wrangler.json" --env native --dry-run --outdir "$RUNNER_TEMP/bundled-native"
           cd "$RUNNER_TEMP/release"
           tar -C "$RUNNER_TEMP" -czf "$package_name.tar.gz" "$package_name"
           sha256sum "$package_name.tar.gz" > "$package_name.tar.gz.sha256"
@@ -83,6 +90,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          RELEASE_PRERELEASE: ${{ needs.package.outputs.prerelease }}
         run: |
           package_name="shard-${RELEASE_TAG}-worker.tar.gz"
           sha256sum --check "$package_name.sha256"
@@ -90,12 +98,13 @@ jobs:
           if [[ "$draft" == false ]]; then
             exit 0
           fi
-          flags=()
-          if [[ "$RELEASE_TAG" == *-* ]]; then
-            flags+=(--prerelease --latest=false)
+          flags=(--prerelease=false)
+          if [[ "$RELEASE_PRERELEASE" == true ]]; then
+            flags=(--prerelease --latest=false)
           fi
+          notes=(--title "Shard $RELEASE_TAG" --notes-file release-notes.md)
           if [[ "$draft" != true ]]; then
-            gh release create "$RELEASE_TAG" --draft --verify-tag --generate-notes "${flags[@]}"
+            gh release create "$RELEASE_TAG" --draft --verify-tag "${notes[@]}"
           fi
           gh release upload "$RELEASE_TAG" "$package_name" "$package_name.sha256" --clobber
-          gh release edit "$RELEASE_TAG" --draft=false "${flags[@]}"
+          gh release edit "$RELEASE_TAG" --draft=false "${notes[@]}" "${flags[@]}"

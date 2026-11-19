@@ -20,7 +20,7 @@ pub fn is_git_request(req: &Request) -> bool {
                 (Some("objects"), Some("batch")) => parts.next().is_none(),
                 (Some("objects"), Some(_)) => match (parts.next(), parts.next(), parts.next()) {
                     (Some(_), Some(_), None) => true,
-                    (Some(_), Some(_), Some("verify")) => parts.next().is_none(),
+                    (Some(_), Some(_), Some("verify" | "multipart")) => parts.next().is_none(),
                     _ => false,
                 },
                 _ => false,

@@ -116,22 +116,24 @@ same settings in `wrangler.json`.
 | Merge queue entries per tick | 1 | 12 |
 | Webhook deliveries per tick, per delivery mechanism | 1 | 16 |
 
-`SHARD_LFS_MAX_BYTES` defaults to `100000000` in both profiles. In `free`,
-the configured value can be lowered. In `paid`, it can also be raised to
-the lower of the upload domain's request limit and R2's single-PUT limit
-of `5363466240` bytes. The setting governs new uploads. The domain's Free
-and Pro plans accept 100 MB and Business accepts 200 MB. Workers Free has
-10 ms of CPU per HTTP or cron invocation and 50 external subrequests per
-invocation. D1 Free allows 50 queries per Worker invocation and 100,000
-written rows per day across the account. Workers and R2 usage continue to
+The default Git LFS mode (`proxy`) streams uploads through the Worker. Its
+`SHARD_LFS_MAX_BYTES` default is `100000000`. The `free` profile can lower it.
+The `paid` profile can raise it up to the lower of the domain's request-body
+limit and R2's single-PUT limit of `5363466240` bytes. The domain's Free and
+Pro plans accept 100 MB and Business accepts 200 MB. The two R2 upload modes
+use the [limits below](#git-lfs-upload-modes).
+
+Workers Free has 10 ms of CPU per HTTP or cron invocation and 50 external
+subrequests per invocation. D1 Free allows 50 queries per Worker invocation
+and 100,000 written rows per day across the account. Workers and R2 usage
 follow their account and zone settings when you change the Shard profile.
 [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) · [D1 limits](https://developers.cloudflare.com/d1/platform/limits/) · [R2 limits](https://developers.cloudflare.com/r2/platform/limits/)
 
 Active Worker HTTP requests can stream while the client is connected.
 An HTTPS origin behind Cloudflare's proxy has a default 125-second read
 timeout and 30-second write timeout. Configure the origin proxy to send
-and receive streams. Shard gives each LFS upload 15 minutes for its body
-and tracks unfinished pushes in D1 for scheduled recovery.
+and receive streams. Shard gives each proxied LFS upload 15 minutes for its
+body and tracks unfinished Git pushes in D1 for scheduled recovery.
 [Worker duration](https://developers.cloudflare.com/workers/platform/limits/#duration) · [Proxy timeouts](https://developers.cloudflare.com/fundamentals/reference/connection-limits/)
 
 ### Deploy from GitHub or GitLab
@@ -248,11 +250,16 @@ Shard 是部署在 Cloudflare 上的自托管 Git 平台，适用于个人项目
 
 ## Project releases
 
-Pushing a tag such as `v0.1.0` or `v0.1.0-rc.1` runs the release workflow. It
-checks the Worker, runs the isolated Git and HTTP tests, and attaches a
-prebuilt Worker archive and SHA-256 checksum to the GitHub release.
-Suffixes such as `-rc.1` mark prereleases. The workflow runs Wrangler's dry
-run against the archive before publishing it.
+Add an exact `## <version>` section to [CHANGELOG.md](CHANGELOG.md) in the
+tagged commit. Pushing `v0.2.0` publishes that version's notes. A prerelease
+such as `v0.2.0-rc.1` requires its own `## 0.2.0-rc.1` section and is marked
+as a prerelease on GitHub. Check the selected notes locally with
+`mise exec -- node scripts/release-notes.mjs v0.2.0`.
+
+The workflow type-checks and builds the Worker, runs the isolated regressions,
+and dry-runs both deployment environments from the prebuilt package. It
+checks the archive's SHA-256 and uploads the archive and checksum to a draft
+before publishing the GitHub Release.
 
 To deploy the prebuilt archive, verify its checksum and extract it. Use the
 pinned Node version from [`.node-version`](.node-version) and set the D1 name
@@ -323,16 +330,73 @@ as referrer. Git smart HTTP returns an empty HTTP 404 for a missing `.git` repos
 ### Git LFS
 
 Install Git LFS and use the regular Shard HTTPS remote. `git lfs track` stores
-pointers in Git, while the LFS Batch endpoint transfers the files using the
-basic adapter. Uploads require a write-scoped token and repository write access.
-Public objects can be downloaded anonymously. Private downloads require a
-repository grant. Each object is scoped to its repository and checked against
-the declared SHA-256 and size. A batch can contain up to 100 objects. New
-uploads follow the [deployment limit](#deployment-limits). A fork publishes
-after its LFS objects have been copied to the fork's own R2 namespace. Repo
-deletion removes access immediately and schedules Git and R2 cleanup.
-Copy LFS objects separately for external Git imports and mirrors.
+pointers in Git and the Batch endpoint negotiates object transfers. Uploads
+require a write-scoped token and repository write access. Downloads use the
+Basic adapter in every mode. Public objects can be downloaded anonymously
+and private downloads require a repository grant.
+
+Each object is scoped to its repository and verified against its declared
+SHA-256 and size. A batch can contain up to 100 objects. A fork publishes
+after copying its LFS objects into an independent R2 namespace. Repository
+deletion removes access immediately and schedules Git and R2 cleanup. Copy
+LFS objects separately for external Git imports and mirrors.
 [Git LFS Batch API](https://github.com/git-lfs/git-lfs/blob/main/docs/api/batch.md)
+
+#### Git LFS upload modes
+
+Set `SHARD_LFS_UPLOAD_MODE` in `vars` for Artifacts or `env.native.vars` for
+the native origin. Apply D1 migration `0026_lfs_multipart.sql` when upgrading.
+
+| Mode | Client | New object limit |
+| --- | --- | --- |
+| `proxy` (default) | Standard Git LFS | 100,000,000 bytes by default. The [deployment limit](#deployment-limits) also applies. |
+| `r2-direct` | Standard Git LFS | 5,363,466,240 bytes per single PUT. A failed PUT restarts the object. |
+| `r2-multipart` | Git LFS with the Shard upload adapter | 5,363,466,240 bytes with `free`. With `paid`, R2 permits up to 4.995 TiB per object. Set a practical limit for the verifier and origin throughput. |
+
+Set `SHARD_LFS_MAX_BYTES` in bytes to lower either R2 mode's limit. Uploads
+in both R2 modes go from the client to the R2 S3 endpoint and bypass the
+Shard domain's request-body size limit. Multipart uploads can resume recorded
+parts for up to six days. The complete operation verifies the file before
+it becomes visible in the repository. With large objects above the single
+PUT ceiling, the Worker streams the staged object through SHA-256 and uses
+R2 multipart copy to publish it. Budget CPU and wall time for this step and
+for copying objects into forks. Each publication has a 15-minute window.
+
+Both R2 modes use the following settings in the same Worker environment.
+
+| Setting | Value |
+| --- | --- |
+| `SHARD_LFS_R2_ENDPOINT` | The bucket's HTTPS S3 endpoint, such as `https://<account-id>.r2.cloudflarestorage.com` |
+| `SHARD_LFS_R2_BUCKET` | The same private bucket as `LFS_OBJECTS` |
+| `SHARD_LFS_R2_ACCESS_KEY_ID` | Worker secret for a bucket-scoped R2 Object Read & Write credential |
+| `SHARD_LFS_R2_SECRET_ACCESS_KEY` | Worker secret for that credential |
+
+Add a bucket lifecycle rule for `lfs-incoming/` that expires staged objects
+and aborts incomplete multipart uploads after seven days. For example, use
+the R2 dashboard or run the following command with the configured bucket.
+
+```sh
+npx --yes wrangler@4.164.0 r2 bucket lifecycle add "$SHARD_LFS_R2_BUCKET" shard-lfs-staging lfs-incoming/ --expire-days 7 --abort-multipart-days 7
+```
+
+Published objects live under `lfs/`. Keep the S3 settings available
+after changing modes if repositories contain objects above the single-PUT
+limit, since large fork copies still use the S3 API.
+[R2 API credentials](https://developers.cloudflare.com/r2/api/tokens/) · [R2 lifecycle rules](https://developers.cloudflare.com/r2/buckets/object-lifecycles/)
+
+For `r2-multipart`, install the pinned Node version and configure the
+packaged `scripts/git-lfs-r2-multipart.mjs` in each Git checkout.
+
+```sh
+git config --local lfs.customtransfer.shard-r2-multipart.path node
+git config --local lfs.customtransfer.shard-r2-multipart.args '"/absolute/path/to/scripts/git-lfs-r2-multipart.mjs"'
+git config --local lfs.customtransfer.shard-r2-multipart.direction upload
+```
+
+Use the same `git push` and `git lfs push` commands after setup. The adapter
+uses Shard only for control requests. It streams missing parts to R2 and
+reports success after Shard verifies and publishes the assembled object.
+[Git LFS custom transfers](https://github.com/git-lfs/git-lfs/blob/main/docs/custom-transfers.md)
 
 ## Images and issue references
 
