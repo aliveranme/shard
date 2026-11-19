@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { PackIndex, parseCommit, parseTagTarget, parseTree, readPackedObject } from "./git-r2-pack.mjs";
+import { uploadPack } from "../node_modules/durable-git/src/git/protocol.ts";
 import { gitR2S3 } from "../src/lfs_s3.js";
 import { shard_receive_report, shard_receive_request } from "../src/git_wire.js";
 
@@ -37,6 +38,9 @@ const MAX_DIRECT_INDEX = 32 * MiB;
 const MAX_DIRECT_FILE = 32 * MiB;
 const MAX_DIRECT_COMMIT = 256 * 1024;
 const MAX_DIRECT_CACHE = MiB;
+const MAX_DIRECT_UPLOAD = MiB;
+const MAX_DIRECT_OBJECTS = 200_000;
+const OBJECT_TYPES = [null, "commit", "tree", "blob", "tag"];
 const REPORT_TYPE = "application/x-git-receive-pack-result";
 const INGEST_TYPE = "application/x-git-receive-pack-request";
 
@@ -165,6 +169,7 @@ export class R2GitRepository extends DurableObject {
   #sessionToken;
   #directReads;
   #indexes = new Map();
+  #counts = new Map();
 
   constructor(ctx, env) {
     super(ctx, env);
@@ -877,13 +882,95 @@ export class R2GitRepository extends DurableObject {
     return null;
   }
 
-  async #directAdvertisement(repository) {
+  async #findObject(oid, packs) {
+    if (!OID.test(oid)) return null;
+    for (const key of packs) {
+      let index;
+      try {
+        index = await this.#packIndex(key);
+      } catch {
+        continue;
+      }
+      const offset = index.find(oid);
+      if (offset !== null) return { key, offset };
+    }
+    return null;
+  }
+
+  async #objectCount(packs) {
+    let total = 0;
+    for (const key of packs) {
+      let count = this.#counts.get(key);
+      if (count === undefined) {
+        try {
+          count = (await this.#packIndex(key)).count;
+          this.#counts.set(key, count);
+        } catch {
+          count = 0;
+        }
+      }
+      total += count;
+    }
+    return total;
+  }
+
+  #uploadStore(repository, count) {
+    const typeName = (type) => OBJECT_TYPES[type];
+    const object = async (oid) => {
+      const cached = await this.#readObject(oid, 0, repository.packs);
+      return cached ? { type: typeName(cached.type), data: cached.data } : null;
+    };
+    return {
+      head: () => repository.head,
+      resolveHead: () => repository.refs.find((ref) => ref.name === repository.head)?.oid ?? null,
+      refs: () => repository.refs.map((ref) => ({ name: ref.name, target: ref.oid })),
+      get: object,
+      has: async (oid) => (await this.#findObject(oid, repository.packs)) !== null,
+      typeAndSize: async (oid) => {
+        const value = await object(oid);
+        return value ? { type: value.type, size: value.data.length } : null;
+      },
+      objectCount: () => count,
+      reachableCacheValid: () => false,
+      loadReachable: () => null,
+      saveReachable: async () => {},
+      reachableVersion: () => String(repository.revision),
+      packs: {
+        lookup: () => null,
+        readRaw: async () => { throw new Error("Raw pack copy is unavailable"); },
+        totalPackBytes: () => 0,
+        rawCacheWindow: () => 1,
+      },
+    };
+  }
+
+  async #directUploadPack(repository, request) {
+    const declared = Number(request.headers.get("content-length") ?? "0");
+    if (Number.isFinite(declared) && declared > MAX_DIRECT_UPLOAD) return null;
+    const count = await this.#objectCount(repository.packs);
+    if (count > MAX_DIRECT_OBJECTS) return null;
+    const body = new Uint8Array(await request.arrayBuffer());
+    if (body.length > MAX_DIRECT_UPLOAD) throw new GitHttpError(413, "Git upload request is too large");
+    return await uploadPack(this.#uploadStore(repository, count), body);
+  }
+
+  async #directAdvertisement(repository, v2 = false) {
     const encoder = new TextEncoder();
     const packet = (text) => {
       const length = encoder.encode(text).byteLength + 4;
       if (length > 0xffff) throw new GitHttpError(413, "Git advertisement is too large");
       return length.toString(16).padStart(4, "0") + text;
     };
+    if (v2) {
+      return new Response(
+        packet("version 2\n") + packet("agent=shard/0.3.1\n") +
+        packet("ls-refs\n") + packet("fetch=shallow\n") + "0000",
+        { headers: {
+          "Cache-Control": "no-store",
+          "Content-Type": "application/x-git-upload-pack-advertisement",
+        } },
+      );
+    }
     const head = repository.refs.find((ref) => ref.name === repository.head);
     let body = packet("# service=git-upload-pack\n") + "0000";
     if (head) {
@@ -1257,16 +1344,33 @@ export class R2GitRepository extends DurableObject {
       } else if (command && ["ref", "head", "merge"].includes(action) && request.method === "POST" && !url.search) {
         return await this.#mutate(repository, url.pathname, request);
       } else if (smart && action === "info/refs" && request.method === "GET" &&
-        url.searchParams.get("service") === "git-upload-pack" &&
-        !(request.headers.get("git-protocol") ?? "").toLowerCase().includes("version=2") &&
-        this.#directReads) {
+        url.searchParams.get("service") === "git-upload-pack" && this.#directReads) {
+        const v2 = (request.headers.get("git-protocol") ?? "").toLowerCase().includes("version=2");
         try {
-          return await this.#directAdvertisement(repository);
+          return await this.#directAdvertisement(repository, v2);
         } catch (error) {
           if (error instanceof GitHttpError) throw error;
           console.error("R2 direct advertisement failed", error?.message);
         }
         return await this.#read(repository, url, request, false);
+      } else if (smart && action === "git-upload-pack" && request.method === "POST" &&
+        !url.search && this.#directReads) {
+        const fallback = request.clone();
+        try {
+          const direct = await this.#directUploadPack(repository, request);
+          if (direct) {
+            const headers = new Headers(direct.headers);
+            headers.set("X-Shard-R2-Read", "direct");
+            return new Response(direct.body, { status: direct.status, statusText: direct.statusText, headers });
+          }
+        } catch (error) {
+          if (error instanceof GitHttpError) throw error;
+          console.error("R2 direct upload-pack failed", error?.message);
+        }
+        const response = await this.#read(repository, url, fallback, false);
+        const headers = new Headers(response.headers);
+        headers.set("X-Shard-R2-Read", "container");
+        return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
       } else if (!smart && request.method === "GET" && this.#directReads && DIRECT_ACTIONS.has(action)) {
         try {
           const direct = await this.#directRead(repository, action, url);

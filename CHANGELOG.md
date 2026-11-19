@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- R2 Git web reads resolve commits, trees, blobs, files and first-parent history directly from R2 pack indexes. The container remains for writes, merges, comparisons and Smart HTTP.
+- R2 Git web reads resolve commits, trees, blobs, files and first-parent history directly from R2 pack indexes. Clone and fetch generate the transfer pack in the Worker; the container remains for pushes, merges, comparisons, imports and compaction.
 - The R2 Durable Object persists its container token across restarts and keeps an idle container for 10 minutes by default (`SHARD_GIT_R2_IDLE_MS`).
 - README images are cached by visibility, and `static/_headers` gives fonts, images and CSS browser cache lifetimes.
 - `SHARD_REGISTRATION=closed` disables signup while existing accounts keep signing in. Guest navigation and the signup page follow the setting.

@@ -442,11 +442,17 @@ read-only R2 mount. A repository's Durable Object publishes the pack list and
 refs in one transaction. Forks copy immutable packs to independent R2 keys.
 
 Web reads resolve commits, trees, blobs, files and first-parent history
-directly from the R2 pack and index files. The container handles writes,
-merges, comparisons and Smart HTTP pack transfer. Set
-`SHARD_R2_DIRECT_READS=0` to fall back to the container for every read. The
-Durable Object persists its container session token, and
-`SHARD_GIT_R2_IDLE_MS` keeps an active container for 10 minutes by default.
+directly from the R2 pack and index files. Clone and fetch generate their pack
+through the Worker from those same packs. The container handles pushes, merges,
+comparisons, imports and pack compaction. Set `SHARD_R2_DIRECT_READS=0` to fall
+back to the container for every read. The Durable Object persists its container
+session token, and `SHARD_GIT_R2_IDLE_MS` keeps an active container for 10
+minutes by default.
+
+Shard's deployment target is Git hosting entirely on Cloudflare. The native Git
+origin remains a compatibility backend for existing deployments, but it is not
+the project's recommended direction and is not used to solve container cold
+starts.
 
 When at least eight packs are present, background maintenance can combine up
 to 16 small pack/index pairs within a 256 MiB input budget. Git keeps all their
