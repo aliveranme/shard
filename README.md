@@ -111,7 +111,7 @@ push over HTTPS, open pull requests, and use issues and reviews immediately.
 | `--env native` (`shard-native`, hybrid) | Bare repositories on a Git server you operate. A direct Git hostname can route pack transfers to that server. | Full same-origin merges with Git 2.38+ | R2 proxy or multipart via `deploy:paid` | Workers Free or Paid, D1 and R2 on Cloudflare. Supply an HTTPS Git origin and persistent storage. |
 
 Give each instance separate D1, Git storage, and any R2 resources.
-See the [Chinese deployment and capacity guide](docs/deployment-capacity.md) for Dashboard setup, prebuilt releases, the Free deploy button, and multipart sizing.
+See the [Chinese Cloudflare Dashboard manual](docs/configuration.zh-CN.md) for setup and upgrades, and the [deployment capacity guide](docs/deployment-capacity.md) for Git and LFS limits.
 [Durable Object limits](https://developers.cloudflare.com/durable-objects/platform/limits/) · [Artifacts pricing](https://developers.cloudflare.com/artifacts/platform/pricing/) · [Enable R2](https://developers.cloudflare.com/r2/buckets/create-buckets/)
 
 ### Deploy from GitHub or GitLab
@@ -637,13 +637,13 @@ in D1 so Cron can reconcile them after a disconnect.
 
 Shard 是部署在 Cloudflare 上的自托管 Git 平台，适用于个人项目和小团队。D1 保存账户、权限、议题和审查记录。默认 Free 部署使用 SQLite Durable Objects，也可选择 Artifacts、Cloudflare 托管的 R2 Git 或自有原生 Git 源站。界面语言可在页脚或账号设置中切换。
 
-[部署配置、资源限制与扩容空间](docs/deployment-capacity.md) 提供 Dashboard、Release 包和 Free 一键按钮的逐步教程，以及 Git 与 LFS 的分片计算和并发边界。
+[Cloudflare Dashboard 中文配置手册](docs/configuration.zh-CN.md) 按面板逐项说明部署参数、私有仓库自动更新、各环境的资源绑定、变量与密钥、域名和升级验证。[资源限制与扩容空间](docs/deployment-capacity.md) 详列 Git 与 LFS 的容量、分片和并发边界。
 
-点击 **Deploy to Cloudflare**，在「设置您的应用程序」中选择 Git 帐户，勾选「创建专用 Git 存储库」，确认 Worker 和 D1 数据库后部署。Cloudflare 会绑定新仓库，之后推送到该仓库的生产分支就会自动更新同一个 Worker，并在原 D1 数据库上应用迁移。命令行可在登录 Wrangler 后执行 `mise run deploy`。需要 Git LFS 时可绑定私有 `LFS_OBJECTS` R2 存储桶。[Free 一键部署步骤](docs/deployment-capacity.md#free-一键部署按钮)
+点击 **Deploy to Cloudflare**，在「设置您的应用程序」中选择 Git 帐户，勾选「创建专用 Git 存储库」，确认 Worker 和 D1 数据库后部署。Cloudflare 会绑定新仓库，之后推送到该仓库的生产分支就会自动更新同一个 Worker，并在原 D1 数据库上应用迁移。[Free 一键部署字段与步骤](docs/configuration.zh-CN.md#free-一键部署与自动更新)
 
 在本地试用无需 Cloudflare 账号。安装 Git 2.32 或更高版本和 mise 后，运行 `mise install`、`mise run setup`、`mise run dev`，打开 `http://localhost:8787`。
 
-线上变量和密钥可在 Cloudflare 的 **Workers & Pages → 对应 Worker → Settings → Variables and Secrets** 中设置。控制台维护的文本变量应从该环境的 Wrangler `vars` 中移除，默认部署会保留这些变量。[变量与密钥配置](#worker-variables-and-secrets)
+线上变量和密钥可在 Cloudflare 的 **Workers & Pages → 对应 Worker → Settings → Variables and Secrets** 中设置。控制台维护的文本变量应从该环境的 Wrangler `vars` 中移除，默认部署会保留这些变量。[Dashboard 变量与密钥配置](docs/configuration.zh-CN.md#在-dashboard-添加运行时变量与密钥)
 
 Paid 环境可运行 `npm run deploy:paid -- --secrets-file .env.deploy.paid`，默认启用 R2 分片上传。已有 Artifacts 实例通过 `--env artifacts` 升级并保留原来的资源绑定。自管 Git 服务器可使用 `--env native`。[Paid 部署说明](#deploy-paid-with-r2-multipart-uploads) · [原生 Git 部署说明](#deploy-with-a-native-git-origin)
 

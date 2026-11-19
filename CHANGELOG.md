@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added a Chinese Cloudflare Dashboard manual covering private deployment repositories, Workers Builds, resource bindings and credentials, every deployment environment, and upgrade verification.
+
 ## 0.3.1
 
 ### Storage and deployment

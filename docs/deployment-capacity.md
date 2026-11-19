@@ -2,6 +2,8 @@
 
 选择部署时先确认需要扩大的是单次 Git push、整个仓库、单个 LFS 对象，还是搜索、合并和后台作业的吞吐。Workers 套餐决定计算和服务额度，域名套餐决定经 Cloudflare 入口的单请求体积，Git 存储后端决定 pack 和仓库容量。下文使用 Cloudflare 原文的 MB、GB 与 MiB、GiB，两个单位体系分别按十进制和二进制计量。[Workers 限制](https://developers.cloudflare.com/workers/platform/limits/) · [Artifacts 限制](https://developers.cloudflare.com/artifacts/platform/limits/)
 
+首次部署可先看 [Cloudflare Dashboard 中文配置手册](configuration.zh-CN.md)，其中有一键部署字段、Git 绑定、构建令牌和各环境的逐项操作。
+
 ## 三种部署入口
 
 新建小型实例可用 Free 按钮。已有 GitHub 或 GitLab 仓库、希望提交后自动发布时，用 Dashboard 连接 Git。希望部署固定版本并跳过 Rust 构建时，用 Release 预构建包。需要 Cloudflare 托管的大 Git push 时选择 `r2`。已有带持久盘的 Git 主机，可用 `native` 直连，让标准 Git 直接传大 pack。

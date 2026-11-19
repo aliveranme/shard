@@ -61,6 +61,7 @@ Update this file whenever a milestone lands or a limitation changes.
 
 Architecture, service boundaries, and operational constraints are recorded in [PLAN.md](PLAN.md#optional-cloudflare-execution-services). Managed CI/CD settings are in the [deployment guide](README.md#deploy-with-managed-cloudflare-services).
 The [deployment capacity guide](docs/deployment-capacity.md) covers Dashboard setup, prebuilt releases, the Free button, and the multipart sizing and concurrency model for Git and LFS.
+The [Chinese Cloudflare Dashboard manual](docs/configuration.zh-CN.md) documents the one-click form, connected repositories, each deployment environment, bindings, credentials, and upgrade verification.
 
 ## Cloudflare Artifacts constraints (verified 2026-11-17)
 
@@ -175,6 +176,7 @@ The [deployment capacity guide](docs/deployment-capacity.md) covers Dashboard se
 | 2026-11-19 | Managed CD rollback fixture and Wrangler preflight | All 29 CD checks and 52 deploy checks passed. The local fixture exercised post-activation failures, exact version restoration, competing publishes and failed rollback verification. The managed and staging dry runs built the bridge image and resolved their separate bindings. |
 | 2026-11-19 | R2 Git compaction and recovery in Docker/FUSE | The integration passed with real Git and Miniflare. A concurrent push invalidated the first compaction, and a later compaction reduced the manifest while retaining a deleted branch's saved review. Restored D1 and R2 state into fresh Durable Objects. A missing index and invalid ref were rejected. The private repository and fork cloned, passed `git fsck --full`, and returned byte-identical LFS data. The recovery Worker configuration bundled in Wrangler dry-run. |
 | 2026-11-19 | Free private-repository deployment | The Cloudflare setup panel displayed the private repository option, the D1 selector, `npm run build` and `npm run deploy`. All 84 local deployment checks passed. The Workers Builds fixture used the same Worker and D1 UUID for the initial deployment and a production push, with a different commit tag for each. |
+| 2026-11-19 | Chinese Dashboard manual | Checked the live setup form and its root directory, commands and token selector. Verified 30 relative links and heading anchors, parsed three dotenv examples and bundled the Free and native configuration examples with Wrangler dry-run. |
 
 ## How to update
 
