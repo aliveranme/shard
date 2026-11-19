@@ -133,7 +133,7 @@ export async function shard_receive_request(body, encoding) {
         sideband = capabilities.includes("side-band-64k");
         report = capabilities.includes("report-status") || capabilities.includes("report-status-v2");
       }
-      const match = /^([a-f0-9]{40}) ([a-f0-9]{40}) (refs\/[^\s\0]+)$/.exec(command);
+      const match = /^([a-f0-9]{40}) ([a-f0-9]{40}) (refs\/[^\x00-\x20\x7f]+)$/.exec(command);
       if (!match || seen.has(match[3])) throw new Error("Invalid Git receive command");
       const [, before, after, name] = match;
       seen.add(name);

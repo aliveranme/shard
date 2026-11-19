@@ -12,7 +12,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 const RECEIVE = "application/x-git-receive-pack";
 const REPORT = `${RECEIVE}-result`;
 const PROBE = Buffer.from("0000");
-const SPOOL_ID = /^[0-9a-f]{64}-[0-9a-f]{24}$/;
+const SPOOL_ID = /^[0-9a-f]{64}-(?:[0-9a-f]{24}|[0-9a-f]{32})$/;
 const MAX_BYTES = 5 * 1024 ** 4;
 const MAX_PART_BYTES = 5 * 1024 ** 3;
 const MAX_PARTS = 10_000;
@@ -157,13 +157,14 @@ function retryAfter(header) {
   return Math.max(0, delay || 0);
 }
 
-function httpFailure(response, label) {
+function httpFailure(response, label, retryConflict = false) {
   const status = response.statusCode;
   const hint = status === 409 ? ". The upload may be incomplete or its refs may conflict" : "";
+  const delay = retryAfter(response.headers["retry-after"]);
   return new PushError(`${label} returned HTTP ${status}${hint}`, {
     status,
-    retry: status === 408 || status === 425 || status === 429 || status >= 500,
-    delay: retryAfter(response.headers["retry-after"]),
+    retry: status === 408 || status === 425 || status === 429 || status >= 500 || retryConflict && status === 409 && delay > 0,
+    delay,
   });
 }
 
@@ -265,12 +266,12 @@ async function control(remote, authenticated, command, signal) {
   }, async (incoming) => {
     const status = incoming.statusCode;
     if (status === 401) return unauthorized(incoming);
-    // A repeated abort can see 404 after the first abort deleted the session.
-    if (action === "abort" && status === 404) {
+    // Repeating an abort can see 404 after the first abort removed the session.
+    if (status === 404 && action === "abort") {
       incoming.destroy();
       return { status };
     }
-    if (status !== (action === "abort" ? 204 : 200)) throw httpFailure(incoming, label);
+    if (status !== (action === "abort" ? 204 : 200)) throw httpFailure(incoming, label, finish);
     if (finish && (mediaType(incoming.headers["content-type"]) !== REPORT || incoming.headers["content-encoding"] &&
         incoming.headers["content-encoding"] !== "identity")) {
       throw new PushError("Shard returned an invalid Git receive-pack result");
@@ -342,7 +343,9 @@ async function* fileRange(file, start, length, signal, progress) {
 }
 
 function startCommand(spool) {
-  return { action: "start", sha256: spool.id.slice(0, 64), size: spool.size };
+  const [sha256, nonce] = spool.id.split("-");
+  // Spools from older helpers used a 12-byte nonce only in the filename.
+  return { action: "start", sha256, size: spool.size, ...(nonce.length === 32 && { nonce }) };
 }
 
 async function transfer(remote, authenticated, spool, signal) {
@@ -424,7 +427,7 @@ function spoolPath(directory, remote, id) {
 }
 
 async function savePush(directory, remote, prefix, iterator, signal) {
-  const nonce = randomBytes(12).toString("hex");
+  const nonce = randomBytes(16).toString("hex");
   const temporary = join(directory, `.incoming-${nonce}`);
   const hash = createHash("sha256");
   let size = 0;
@@ -569,9 +572,11 @@ async function manual(command, first, second, signal) {
   let result = 0;
   try {
     if (command === "--abort") {
-      const plan = planFor(await retry((active) => control(remote, authenticated, startCommand(spool), active), CONTROL_RETRY, signal), spool.size);
-      if (plan.complete) notice("The saved Git push already finished on Shard");
-      else await retry((active) => control(remote, authenticated, { action: "abort", id: plan.id }, active), CONTROL_RETRY, signal);
+      const lookup = { ...startCommand(spool), lookup: true };
+      const session = await retry((active) => control(remote, authenticated, lookup, active), CONTROL_RETRY, signal);
+      if (session?.complete === true) notice("The saved Git push already finished on Shard");
+      else if (session !== null) await retry((active) => control(remote, authenticated,
+        { action: "abort", id: session.id }, active), CONTROL_RETRY, signal);
     } else {
       result = printReport(await transfer(remote, authenticated, spool, signal));
     }

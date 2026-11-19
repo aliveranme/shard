@@ -645,6 +645,14 @@ export class R2GitRepository extends DurableObject {
     const upload = job.upload === null ? null : this.#one("SELECT id, report FROM uploads WHERE id = ? AND actor = ? AND aborted = 0 AND expires > ?", job.upload, actor, Date.now());
     if (job.upload !== null && !upload) return empty(409);
     if (upload && upload.report !== null) return result(upload.report, true);
+    const current = this.#current();
+    if (current?.deleted || !current) return empty(409);
+    if (upload && current.revision !== job.revision) {
+      // Finish will prepare against the new snapshot and recheck branch protection.
+      return Response.json({ message: "Git refs changed during preparation" }, {
+        status: 409, headers: { ...NO_STORE, "Retry-After": "1" },
+      });
+    }
     const candidate = JSON.parse(job.candidate);
     // The new pack/index pairs are already durable. Refs and the retry receipt become visible together.
     this.ctx.storage.transactionSync(() => {
@@ -661,9 +669,16 @@ export class R2GitRepository extends DurableObject {
   }
 
   async #plan(id, actor, command) {
-    const { sha256, size } = command;
-    if (typeof sha256 !== "string" || !SHA256.test(sha256) || !Number.isSafeInteger(size) || size < 4) return empty(422);
-    let active = this.#one("SELECT * FROM uploads WHERE actor = ? AND digest = ? AND size = ?", actor, sha256, size);
+    const { sha256, size, nonce, lookup } = command;
+    if (typeof sha256 !== "string" || !SHA256.test(sha256) || !Number.isSafeInteger(size) || size < 4 ||
+        nonce !== undefined && (typeof nonce !== "string" || !/^[a-f0-9]{32}$/.test(nonce))) return empty(422);
+    // Each new spool has its own receipt even when two pushes produce identical Git requests.
+    const digest = nonce === undefined ? sha256 : `${sha256}-${nonce}`;
+    let active = this.#one("SELECT * FROM uploads WHERE actor = ? AND digest = ? AND size = ?", actor, digest, size);
+    if (lookup === true) {
+      if (!active || active.aborted || active.expires <= Date.now()) return json(null);
+      return json({ id: active.id, complete: active.report !== null });
+    }
     if (active && (active.aborted || active.expires <= Date.now())) {
       await this.#dropUpload(active.id, active.report === null ? active.upload : null, id);
       active = null;
@@ -675,7 +690,7 @@ export class R2GitRepository extends DurableObject {
       }
       const partBytes = Math.max(32, Math.ceil(size / (MAX_PARTS * MiB))) * MiB;
       active = this.#one("INSERT INTO uploads (id, actor, digest, size, part_bytes, expires) VALUES (?, ?, ?, ?, ?, ?) RETURNING *",
-        crypto.randomUUID(), actor, sha256, size, partBytes, Date.now() + SESSION_MS);
+        crypto.randomUUID(), actor, digest, size, partBytes, Date.now() + SESSION_MS);
       await this.#arm();
     }
     const plan = { id: active.id, partBytes: active.part_bytes, uploaded: [], staged: false, complete: active.report !== null };
@@ -683,7 +698,6 @@ export class R2GitRepository extends DurableObject {
     const key = incomingKey(id, active.id);
     const staged = await this.#bucket.head(key);
     if (staged) {
-      if (staged.size !== active.size) return empty(422);
       return json({ ...plan, staged: true });
     }
     if (active.upload !== null) {
@@ -706,7 +720,15 @@ export class R2GitRepository extends DurableObject {
     if (prepared) return this.#prepared(prepared);
     let staged = await this.#bucket.head(key);
     if (!staged) {
-      const parts = await this.#parts(upload, key);
+      let parts;
+      try {
+        parts = await this.#parts(upload, key);
+      } catch (error) {
+        if (error.status === 404 && error.code === "NoSuchUpload") {
+          return json({ message: "Git multipart upload expired. Start again to resume" }, 409);
+        }
+        throw error;
+      }
       if (parts.length !== Math.ceil(upload.size / upload.part_bytes)) {
         return json({ message: "Git upload is missing one or more parts" }, 409);
       }
@@ -729,7 +751,7 @@ export class R2GitRepository extends DurableObject {
       return json({ message: "Invalid Git push commands" }, 422);
     }
     return this.#prepare(repository, upload.actor, push, workspace => workspace.fetch(`/receive/${repository.id}`, {
-      method: "POST", payload: { key, size: upload.size, sha256: upload.digest },
+      method: "POST", payload: { key, size: upload.size, sha256: upload.digest.slice(0, 64) },
     }), upload.id);
   }
 
@@ -760,7 +782,9 @@ export class R2GitRepository extends DurableObject {
       if (command.action !== "finish") return empty(400);
       if (upload.report !== null) return result(upload.report);
       if (upload.upload === null) return empty(409);
-      return this.#finish(this.#repository(), upload, incomingKey(id, upload.id));
+      const response = await this.#finish(this.#repository(), upload, incomingKey(id, upload.id));
+      if (response.status === 422) await this.#dropUpload(upload.id, upload.upload, id);
+      return response;
     });
   }
 
