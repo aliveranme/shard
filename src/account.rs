@@ -1,5 +1,6 @@
 use crate::i18n::Locale;
 use crate::models::{AccessToken, Ts};
+use crate::pagination::Pagination;
 use crate::templates::Chrome;
 use askama::Template;
 
@@ -14,15 +15,15 @@ pub struct TokenRow {
 }
 
 impl TokenRow {
-    pub fn from_token(token: &AccessToken) -> Self {
+    pub fn from_token(token: AccessToken, now: i64) -> Self {
         Self {
             id: token.id,
-            name: token.name.clone(),
-            scope: token.scope.clone(),
+            name: token.name,
+            scope: token.scope,
             created: token.created_at,
             last_used: token.last_used_at,
             expires: token.expires_at,
-            expired: token.expires_at.is_some_and(|time| time.0 <= crate::util::now()),
+            expired: token.expires_at.is_some_and(|time| time.0 <= now),
         }
     }
 }
@@ -33,6 +34,7 @@ pub struct TokensPage {
     pub chrome: Chrome,
     pub title: String,
     pub tokens: Vec<TokenRow>,
+    pub pagination: Pagination,
     pub new_token: Option<String>,
     pub error: Option<&'static str>,
 }

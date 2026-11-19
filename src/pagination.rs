@@ -30,18 +30,32 @@ impl PageRequest {
         rows: &mut Vec<T>,
         fragment: Option<&str>,
     ) -> Result<Pagination> {
+        self.finish_with(rows, |page| {
+            query_url(req, &[(self.parameter, Some(&page.to_string()))], fragment)
+        })
+    }
+
+    pub(crate) fn finish_at<T>(&self, path: &str, rows: &mut Vec<T>) -> Result<Pagination> {
+        self.finish_with(rows, |page| Ok(format!("{path}?{}={page}", self.parameter)))
+    }
+
+    fn finish_with<T>(
+        &self,
+        rows: &mut Vec<T>,
+        page_url: impl Fn(u32) -> Result<String>,
+    ) -> Result<Pagination> {
         let has_next = rows.len() > PAGE_SIZE;
         rows.truncate(PAGE_SIZE);
         Ok(Pagination {
             status: None,
             page: self.number,
             previous: if self.number > 1 {
-                Some(query_url(req, &[(self.parameter, Some(&(self.number - 1).to_string()))], fragment)?)
+                Some(page_url(self.number - 1)?)
             } else {
                 None
             },
             next: if has_next && self.number < MAX_PAGE {
-                Some(query_url(req, &[(self.parameter, Some(&(self.number + 1).to_string()))], fragment)?)
+                Some(page_url(self.number + 1)?)
             } else {
                 None
             },

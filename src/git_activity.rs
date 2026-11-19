@@ -30,34 +30,73 @@ fn observable(update: &RefUpdate) -> bool {
     update.before != update.after
         && (update.name.starts_with("refs/heads/") || update.name.starts_with("refs/tags/"))
         && !update.name.ends_with('/')
-        && !update.name.chars().any(char::is_control)
+        && !update.name.bytes().any(|byte| byte <= 32 || byte == 127)
 }
 
-pub(crate) async fn stage(env: &Env, repo_id: i64, updates: &[RefUpdate]) -> Result<Option<PushIntent>> {
+pub(crate) enum Admission {
+    Blocked,
+    Admitted(Option<PushIntent>),
+}
+
+// Both paths bind the proposed updates as ?2 and the deletion OID as ?3.
+macro_rules! writable_refs {
+    () => {
+        "NOT EXISTS (
+            SELECT 1 FROM json_each(?2) u
+            LEFT JOIN repo_branch_rules b ON b.repo_id = r.id AND b.branch = substr(json_extract(u.value, '$.name'), 12)
+            WHERE json_extract(u.value, '$.name') GLOB 'refs/heads/*'
+              AND (b.repo_id IS NOT NULL OR (json_extract(u.value, '$.after') = ?3
+                   AND r.default_branch = substr(json_extract(u.value, '$.name'), 12)))
+        )"
+    };
+}
+
+pub(crate) async fn blocks_push(database: &D1Database, repo_id: i64, updates: &[RefUpdate]) -> Result<bool> {
+    let branches: Vec<_> = updates.iter().filter(|update| observable(update) && update.name.starts_with("refs/heads/")).collect();
+    if branches.is_empty() { return Ok(false) }
+    Ok(database.prepare(concat!("SELECT id FROM repos r WHERE r.id = ?1 AND ", writable_refs!()))
+        .bind(&[js_int(repo_id), js_text(&serde_json::to_string(&branches)?), js_text(ZERO_OID)])?
+        .first::<i64>(Some("id")).await?.is_none())
+}
+
+pub(crate) async fn stage(database: &D1Database, repo_id: i64, updates: &[RefUpdate], require_admin: Option<i64>) -> Result<Admission> {
     let updates: Vec<_> = updates.iter().filter(|update| observable(update)).collect();
     if updates.is_empty() {
-        return Ok(None);
+        return Ok(Admission::Admitted(None));
     }
-    let updates = serde_json::to_string(&updates)?;
     let time = now();
     let expires_at = time + INTENT_TTL;
-    let id = env.d1("DB")?.prepare(
-        "INSERT INTO git_push_intents (repo_id, updates, check_at, expires_at)
-         VALUES (?1, ?2, ?3, ?4) RETURNING id",
-    ).bind(&[js_int(repo_id), js_text(&updates), js_int(time + CHECK_DELAY), js_int(expires_at)])?
-        .first::<i64>(Some("id")).await?
-        .ok_or_else(|| Error::RustError("Git push intent could not be reserved".into()))?;
-    Ok(Some(PushIntent { id, repo_id, updates, expires_at }))
+    let admitted_until = if updates.iter().any(|update| update.name.starts_with("refs/heads/")) { expires_at } else { 0 };
+    let updates = serde_json::to_string(&updates)?;
+    let id = database.prepare(concat!(
+        "INSERT INTO git_push_intents (repo_id, updates, check_at, expires_at, admitted_until)
+         SELECT r.id, ?2, ?4, ?5, ?6 FROM repos r WHERE r.id = ?1
+          AND (?7 IS NULL OR EXISTS (SELECT 1 FROM users WHERE id = ?7 AND (id = r.owner_id OR is_admin = 1)))
+          AND ", writable_refs!(), " RETURNING id",
+    )).bind(&[js_int(repo_id), js_text(&updates), js_text(ZERO_OID), js_int(time + CHECK_DELAY),
+              js_int(expires_at), js_int(admitted_until), require_admin.map_or_else(js_null, js_int)])?
+        .first::<i64>(Some("id")).await?;
+    Ok(match id {
+        Some(id) => Admission::Admitted(Some(PushIntent { id, repo_id, updates, expires_at })),
+        None => Admission::Blocked,
+    })
 }
 
 pub(crate) async fn confirm(env: &Env, mut intent: PushIntent, actor: Option<i64>, accepted: &[String]) -> Result<()> {
     let database = env.d1("DB")?;
-    // A scheduled check can settle some refs while the Git response is in flight.
+    // Reconciliation may settle some refs while an acknowledgement is arriving.
     for _ in 0..2 {
         let updates: Vec<RefUpdate> = serde_json::from_str(&intent.updates)?;
         let confirmed: Vec<_> = updates.iter().filter(|update| accepted.contains(&update.name)).collect();
-        if settle(&database, &intent, actor, &confirmed, None, false).await? {
-            return Ok(());
+        match settle(&database, &intent, actor, &confirmed, None, false).await {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(error) => {
+                // Git has finished. Keep observation work for cron and release the admission.
+                let _ = db::run(&database, "UPDATE git_push_intents SET admitted_until = 0 WHERE id = ?",
+                    &[js_int(intent.id)]).await;
+                return Err(error);
+            }
         }
         let Some(current) = db::first(&database,
             "SELECT id, repo_id, updates, expires_at FROM git_push_intents WHERE id = ?",
@@ -136,7 +175,7 @@ pub(crate) async fn reconcile(env: &Env, limit: i64) -> Result<()> {
     let time = now();
     let intents = db::all::<PushIntent>(&database,
         "UPDATE git_push_intents SET check_at = ?2 WHERE id IN (
-             SELECT id FROM git_push_intents WHERE check_at <= ?1 ORDER BY check_at, id LIMIT ?3
+             SELECT id FROM git_push_intents WHERE check_at <= ?1 AND admitted_until <= ?1 ORDER BY check_at, id LIMIT ?3
          ) RETURNING id, repo_id, updates, expires_at",
         &[js_int(time), js_int(time + RETRY_DELAY), js_int(limit)],
     ).await?;

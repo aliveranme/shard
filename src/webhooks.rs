@@ -54,10 +54,14 @@ export async function shard_webhook_unseal(key, repoId, endpoint, sealed) {
   return crypto.subtle.importKey("raw", raw, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
 }
 
-export async function shard_webhook_post(endpoint, key, id, deliveryId, json) {
+export async function shard_webhook_sign(key, json) {
   const body = encoder.encode(json);
   const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, body));
   const hex = Array.from(mac, byte => byte.toString(16).padStart(2, "0")).join("");
+  return { body, signature: `sha256=${hex}` };
+}
+
+export async function shard_webhook_post_signed(endpoint, id, deliveryId, { body, signature }) {
   const response = await fetch(endpoint, {
     method: "POST",
     redirect: "manual",
@@ -65,13 +69,18 @@ export async function shard_webhook_post(endpoint, key, id, deliveryId, json) {
     headers: {
       "Content-Type": "application/json",
       "X-Shard-Event-Id": id,
-      "X-Shard-Signature": `sha256=${hex}`,
+      "X-Shard-Signature": signature,
       ...(deliveryId ? { "X-Shard-Delivery-Id": deliveryId } : {}),
     },
     body,
   });
   void response.body?.cancel().catch(() => {});
   return response.status;
+}
+
+export async function shard_webhook_post(endpoint, key, id, deliveryId, json) {
+  const signed = await shard_webhook_sign(key, json);
+  return shard_webhook_post_signed(endpoint, id, deliveryId, signed);
 }
 "#)]
 extern "C" {
@@ -104,6 +113,17 @@ extern "C" {
         id: &str,
         delivery_id: &str,
         json: &str,
+    ) -> std::result::Result<u16, JsValue>;
+
+    #[wasm_bindgen(catch)]
+    async fn shard_webhook_sign(key: &JsValue, json: &str) -> std::result::Result<JsValue, JsValue>;
+
+    #[wasm_bindgen(catch)]
+    async fn shard_webhook_post_signed(
+        endpoint: &str,
+        id: &str,
+        delivery_id: &str,
+        signed: &JsValue,
     ) -> std::result::Result<u16, JsValue>;
 }
 
@@ -634,6 +654,7 @@ async fn clean_subscriptions(database: &D1Database) -> Result<()> {
 
 async fn try_subscription(
     env: &Env,
+    database: &D1Database,
     encryption_key: &JsValue,
     claim: &ClaimedDelivery,
     event: SubscriptionDelivery,
@@ -665,7 +686,23 @@ async fn try_subscription(
             after: event.after_oid.as_deref(),
         }),
     }).map_err(|_| webhook_error("webhook serialization failed"))?;
-    Ok(shard_webhook_post(endpoint.as_str(), &key, &event.event_id.to_string(), &claim.id.to_string(), &body)
+    let Ok(signed) = shard_webhook_sign(&key, &body).await else {
+        return Ok(None);
+    };
+    // A transfer can cancel this claim while its key is being decrypted or
+    // the payload is being signed. Check again immediately before fetching.
+    let active = db::first::<RepoId>(
+        database,
+        "SELECT d.id FROM webhook_subscription_deliveries d
+           JOIN webhook_subscriptions s ON s.repo_id = d.repo_id AND s.id = d.subscription_id
+          WHERE d.id = ?1 AND d.attempts = ?2 AND d.state = 'sending'
+            AND d.next_attempt_at > unixepoch() AND s.disabled_at IS NULL",
+        &[util::js_int(claim.id), util::js_int(claim.attempts)],
+    ).await?;
+    if active.is_none() {
+        return Ok(None);
+    }
+    Ok(shard_webhook_post_signed(endpoint.as_str(), &event.event_id.to_string(), &claim.id.to_string(), &signed)
         .await.ok().filter(|&status| status != 0))
 }
 
@@ -710,7 +747,7 @@ async fn deliver_subscriptions(env: &Env, database: &D1Database, limit: usize) -
         ).await? else {
             continue;
         };
-        let status = try_subscription(env, &key, &claim, event).await?;
+        let status = try_subscription(env, database, &key, &claim, event).await?;
         let (state, next_attempt_at) = delivery_result(status, claim.attempts, util::now());
         db::run(
             database,

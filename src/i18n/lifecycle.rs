@@ -5,6 +5,7 @@ catalog! {
         RenameHelp => "Existing links and Git remotes keep working under the repository’s current permissions.", "原有链接和 Git 远程地址仍可使用，并遵循仓库当前的权限。";
         Transfer => "Transfer repository", "转让仓库";
         TransferHelp => "The recipient must accept before ownership changes. They receive the repository and its issues and pull requests. The old path stays linked to the repository.", "接收方接受后，仓库的所有权才会变更。仓库、议题和拉取请求将一并转让，原有路径仍可访问该仓库。";
+        TransferWebhooks => "Accepting the transfer disables repository webhooks, clears their signing secrets, and cancels queued deliveries. Delivery history stays with the repository.", "接受转让会停用仓库 Webhook、清除签名密钥并取消排队中的投递。投递记录随仓库保留。";
         Recipient => "Recipient username", "接收方用户名";
         RequestTransfer => "Request transfer", "发起转让";
         CancelTransfer => "Cancel transfer", "取消转让";
@@ -18,6 +19,7 @@ catalog! {
         UnknownRecipient => "Choose another account on this site as the recipient.", "请选择此站点的另一个账号作为接收方。";
         NameTaken => "This name is already in use or reserved by an existing path or a pending copy.", "该名称已被使用，或被现有路径或待完成的仓库副本保留。";
         TransferNameTaken => "This name is reserved in the recipient’s namespace. Free the destination name or decline the transfer.", "接收方名下的此名称已被保留。请释放目标名称或拒绝转让。";
+        TransferHeadBusy => "Git HEAD is being updated. Try accepting the transfer again in a few minutes.", "Git HEAD 正在更新，请几分钟后重试接受转让。";
         PendingTransferBlocksRename => "Cancel the pending transfer before renaming this repository.", "请先取消待处理的转让，再重命名此仓库。";
         RequestChanged => "The repository or transfer request changed. Review the current state and try again.", "仓库或转让请求已变更。请查看当前状态后重试。";
         TransferNotFound => "Transfer request not found.", "未找到转让请求。";

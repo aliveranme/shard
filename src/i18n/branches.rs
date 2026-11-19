@@ -11,6 +11,7 @@ catalog! {
         NoRules => "No protected branches", "暂无受保护分支";
         ConfirmName => "Type the branch name", "输入分支名称";
         InvalidRule => "Enter a valid branch, up to 20 approvals and up to 20 check contexts.", "请输入有效分支，批准次数和检查名称数量均不得超过 20。";
+        RuleConflict => "The rule could not be changed. Wait for any Git write or merge to finish, then reload and try again.", "无法更改分支规则。请等待 Git 写入或合并结束，重新加载后重试。";
         InvalidRef => "Enter a valid Git reference and an existing commit ID.", "请输入有效的 Git 引用和已有提交 ID。";
         ManageRefs => "Manage references", "管理引用";
         RefKind => "Reference type", "引用类型";

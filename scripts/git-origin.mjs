@@ -896,9 +896,9 @@ async function hookUpdates() {
     if (length > MAX_HOOK_BYTES) throw new HttpError(413);
     chunks.push(chunk);
   }
-  const lines = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks, length)).trimEnd();
+  const lines = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks, length)).replace(/\n$/, "");
   return lines.split("\n").map((line) => {
-    const match = /^([a-f0-9]{40}) ([a-f0-9]{40}) (refs\/[^\s\0]+)$/.exec(line);
+    const match = /^([a-f0-9]{40}) ([a-f0-9]{40}) (refs\/[^\x00-\x20\x7f]+)$/.exec(line);
     if (!match) throw new Error("Invalid Git hook input");
     const [, before, after, name] = match;
     return { before, after, name };

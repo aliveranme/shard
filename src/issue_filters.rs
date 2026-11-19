@@ -60,7 +60,9 @@ impl IssueFilters {
                            JOIN issue_labels il ON il.repo_id = l.repo_id AND il.label_id = l.id
                            WHERE l.repo_id = i.repo_id AND l.name = ? AND il.issue_id = i.id)"),
             (&self.assignee,
-             " AND i.assignee_id = (SELECT id FROM users WHERE username = ? COLLATE NOCASE)"),
+             " AND i.assignee_id = (SELECT id FROM users WHERE username = ? COLLATE NOCASE)
+               AND EXISTS (SELECT 1 FROM repo_assignee_access a
+                           WHERE a.repo_id = i.repo_id AND a.user_id = i.assignee_id)"),
             (&self.milestone,
              " AND EXISTS (SELECT 1 FROM issue_milestones im
                            JOIN repo_milestones m ON m.repo_id = im.repo_id AND m.id = im.milestone_id

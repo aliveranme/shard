@@ -111,9 +111,9 @@ pub(crate) async fn update(_req: Request, ctx: RouteContext<AppState>) -> Result
         return reject(400, state.locale.t(GpgText::InvalidForm)).await;
     }
     let password = util::form_value(form, "current_password").unwrap_or_default();
-    if !auth::verify_current_password(&state.env, user.id, &password).await? {
+    let Some(verified_hash) = auth::verified_password_hash(&state.env, user.id, &password).await? else {
         return reject(403, state.locale.t(AccountText::IncorrectCurrentPassword)).await;
-    }
+    };
     let database = state.db()?;
     if action == "remove" {
         let fingerprint = util::form_value(form, "fingerprint").unwrap_or_default();
@@ -122,8 +122,10 @@ pub(crate) async fn update(_req: Request, ctx: RouteContext<AppState>) -> Result
         }
         let removed: Option<KeyRow> = db::first(
             &database,
-            "DELETE FROM gpg_keys WHERE user_id = ? AND fingerprint = ? RETURNING fingerprint, name, email",
-            &[util::js_int(user.id), util::js_text(&fingerprint)],
+            "DELETE FROM gpg_keys WHERE user_id = ?1 AND fingerprint = ?2
+               AND EXISTS (SELECT 1 FROM users WHERE id = ?1 AND password_hash = ?3)
+             RETURNING fingerprint, name, email",
+            &[util::js_int(user.id), util::js_text(&fingerprint), util::js_text(&verified_hash)],
         ).await?;
         if removed.is_none() { return util::redirect(SETTINGS) }
         return util::redirect("/user/settings/gpg?updated=removed");
@@ -150,7 +152,7 @@ pub(crate) async fn update(_req: Request, ctx: RouteContext<AppState>) -> Result
         &database,
         "INSERT INTO gpg_keys (user_id, fingerprint, email, name, public_key, key_ids, created_at)
          SELECT id, ?2, email, ?4, ?5, ?6, ?7 FROM users
-         WHERE id = ?1 AND email = ?3 COLLATE NOCASE AND (
+         WHERE id = ?1 AND email = ?3 COLLATE NOCASE AND password_hash = ?9 AND (
            EXISTS (SELECT 1 FROM gpg_keys WHERE user_id = ?1 AND fingerprint = ?2) OR
            (SELECT COUNT(*) FROM gpg_keys WHERE user_id = ?1) < ?8
          ) ON CONFLICT (user_id, fingerprint) DO UPDATE SET email = excluded.email,
@@ -159,7 +161,7 @@ pub(crate) async fn update(_req: Request, ctx: RouteContext<AppState>) -> Result
         &[
             util::js_int(user.id), util::js_text(&inspected.fingerprint), util::js_text(&user.email),
             util::js_text(trimmed), util::js_text(&inspected.public_key), util::js_text(&key_ids),
-            util::js_int(util::now()), util::js_int(MAX_KEYS),
+            util::js_int(util::now()), util::js_int(MAX_KEYS), util::js_text(&verified_hash),
         ],
     ).await?;
     if saved.is_none() { return reject(409, state.locale.t(GpgText::KeyLimit)).await }

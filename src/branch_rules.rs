@@ -7,6 +7,7 @@ use crate::models::{Issue, Pull, Repo};
 use crate::native_git::WriteError;
 use crate::templates::{error_response, render, Chrome};
 use crate::{db, git_activity, pull_review, util};
+use crate::git_activity::Admission;
 use askama::Template;
 use serde::Deserialize;
 use worker::{durable_object, d1::D1Database, DurableObject, Env, Error, Method, ObjectNamespace, Request, RequestInit, Response, Result, RouteContext, State};
@@ -59,9 +60,9 @@ pub(crate) async fn settings(_req: Request, ctx: RouteContext<AppState>) -> Resu
 pub(crate) async fn update(_req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = &ctx.data;
     let Some(repo) = lookup(&ctx).await? else { return missing(state) };
-    if !can_admin(state, &repo) {
+    let Some(user_id) = state.user_id().filter(|_| can_admin(state, &repo)) else {
         return forbidden(state, state.locale.t(RepoText::SettingsForbidden));
-    }
+    };
     let form = state.form()?;
     let branch = util::form_value(form, "branch").unwrap_or_default();
     if !valid_ref(&branch) {
@@ -70,6 +71,7 @@ pub(crate) async fn update(_req: Request, ctx: RouteContext<AppState>) -> Result
     let database = state.db()?;
     let repo_id = util::js_int(repo.id);
     let branch_value = util::js_text(&branch);
+    let actor_id = util::js_int(user_id);
     let changed = match util::form_value(form, "action").as_deref() {
         Some("save") => {
             let approvals = util::form_value(form, "approvals").and_then(|value| value.parse::<i64>().ok());
@@ -86,49 +88,41 @@ pub(crate) async fn update(_req: Request, ctx: RouteContext<AppState>) -> Result
             let checks = serde_json::to_string(&checks)?;
             database.prepare(
                 "INSERT INTO repo_branch_rules (repo_id, branch, approvals, checks)
-                 SELECT ?1, ?2, ?3, ?4 WHERE NOT EXISTS (
+                 SELECT ?1, ?2, ?3, ?4 WHERE EXISTS (
+                     SELECT 1 FROM repos r JOIN users actor ON actor.id = ?5
+                      WHERE r.id = ?1 AND (actor.id = r.owner_id OR actor.is_admin = 1))
+                 AND NOT EXISTS (
                      SELECT 1 FROM merge_queue WHERE repo_id = ?1 AND base_branch = ?2 AND state = 'running')
+                 AND NOT EXISTS (SELECT 1 FROM pending_branch_writes WHERE repo_id = ?1 AND branch = ?2)
                  ON CONFLICT(repo_id, branch) DO UPDATE SET approvals = excluded.approvals, checks = excluded.checks
                  RETURNING repo_id",
-            ).bind(&[repo_id, branch_value, util::js_int(approvals), util::js_text(&checks)])?.first::<i64>(Some("repo_id")).await?
+            ).bind(&[repo_id, branch_value, util::js_int(approvals), util::js_text(&checks), actor_id])?.first::<i64>(Some("repo_id")).await?
         }
         Some("remove") if util::form_value(form, "confirm").as_deref() == Some(&branch) => {
             database.prepare(
-                "DELETE FROM repo_branch_rules WHERE repo_id = ?1 AND branch = ?2 AND NOT EXISTS (
+                "DELETE FROM repo_branch_rules WHERE repo_id = ?1 AND branch = ?2
+                 AND EXISTS (SELECT 1 FROM repos r JOIN users actor ON actor.id = ?3
+                              WHERE r.id = ?1 AND (actor.id = r.owner_id OR actor.is_admin = 1))
+                 AND NOT EXISTS (
                      SELECT 1 FROM merge_queue WHERE repo_id = ?1 AND base_branch = ?2 AND state = 'running')
+                 AND NOT EXISTS (SELECT 1 FROM pending_branch_writes WHERE repo_id = ?1 AND branch = ?2)
                  RETURNING repo_id",
-            ).bind(&[repo_id, branch_value])?.first::<i64>(Some("repo_id")).await?
+            ).bind(&[repo_id, branch_value, actor_id])?.first::<i64>(Some("repo_id")).await?
         }
         _ => return error(state, 400, BranchText::InvalidRule),
     };
     if changed.is_none() {
-        return error(state, 409, BranchText::RefConflict);
+        return error(state, 409, BranchText::RuleConflict);
     }
     util::redirect(&format!("/{}/settings/branches", repo.full_name()))
-}
-
-pub(crate) async fn blocks_push(database: &D1Database, repo_id: i64, updates: &[RefUpdate]) -> Result<bool> {
-    let branches: Vec<_> = updates.iter().filter_map(|update| {
-        let branch = update.name.strip_prefix("refs/heads/")?;
-        (update.before != update.after).then_some((branch, update.after == ZERO_OID))
-    }).collect();
-    if branches.is_empty() { return Ok(false) }
-    let changes = serde_json::to_string(&branches)?;
-    Ok(database.prepare(
-        "SELECT EXISTS (
-            SELECT 1 FROM json_each(?2) c JOIN repos r ON r.id = ?1
-            LEFT JOIN repo_branch_rules b ON b.repo_id = r.id AND b.branch = json_extract(c.value, '$[0]')
-            WHERE b.repo_id IS NOT NULL OR (json_extract(c.value, '$[1]') AND r.default_branch = json_extract(c.value, '$[0]'))
-         ) AS blocked",
-    ).bind(&[util::js_int(repo_id), util::js_text(&changes)])?.first::<i64>(Some("blocked")).await? == Some(1))
 }
 
 pub(crate) async fn write_ref(_req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = &ctx.data;
     let Some(repo) = lookup(&ctx).await? else { return missing(state) };
-    if !can_admin(state, &repo) {
+    let Some(actor) = state.user_id().filter(|_| can_admin(state, &repo)) else {
         return forbidden(state, state.locale.t(RepoText::SettingsForbidden));
-    }
+    };
     let form = state.form()?;
     let name = util::form_value(form, "name").unwrap_or_default();
     let oid = util::form_value(form, "oid").unwrap_or_default();
@@ -142,20 +136,30 @@ pub(crate) async fn write_ref(_req: Request, ctx: RouteContext<AppState>) -> Res
         _ => return error(state, 400, BranchText::InvalidRef),
     };
     let update = RefUpdate { name: format!("refs/{kind}/{name}"), before, after };
-    if blocks_push(&state.db()?, repo.id, std::slice::from_ref(&update)).await? {
-        return error(state, 409, BranchText::CannotWriteRef);
-    }
+    let updates = std::slice::from_ref(&update);
     let handle = RepoHandle::open(&state.env, &repo).await?;
     if update.after != ZERO_OID && handle.read_commit(&update.after).await?.is_none() {
         return error(state, 400, BranchText::InvalidRef);
     }
-    if let Err(cause) = handle.write_ref(&update.name, &update.before, &update.after).await {
-        return match cause {
-            WriteError::Unavailable | WriteError::Unsupported => error_response(&Chrome::new(state), 502, state.locale.t(RepoText::StorageUnavailable)),
-            _ => error(state, 409, BranchText::RefConflict),
-        };
+    let Admission::Admitted(Some(intent)) = git_activity::stage(&state.db()?, repo.id, updates, Some(actor)).await? else {
+        return error(state, 409, BranchText::CannotWriteRef);
+    };
+    match handle.write_ref(&update.name, &update.before, &update.after).await {
+        Ok(()) => {
+            if git_activity::confirm(&state.env, intent, Some(actor), &[update.name]).await.is_err() {
+                worker::console_log!("event=git_push_confirmation_failed repo_id={}", repo.id);
+            }
+        }
+        Err(cause) => {
+            if cause != WriteError::Unavailable {
+                git_activity::confirm(&state.env, intent, Some(actor), &[]).await?;
+            }
+            return match cause {
+                WriteError::Unavailable | WriteError::Unsupported => error_response(&Chrome::new(state), 502, state.locale.t(RepoText::StorageUnavailable)),
+                _ => error(state, 409, BranchText::RefConflict),
+            };
+        }
     }
-    git_activity::record(&state.env, repo.id, state.user_id(), &[update]).await;
     util::redirect(&format!("/{}/refs", repo.full_name()))
 }
 

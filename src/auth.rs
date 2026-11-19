@@ -1,8 +1,10 @@
 use crate::crypto;
 use crate::db;
-use crate::models::{GitIdentity, User, UserAuth};
+use crate::models::{GitIdentity, User};
 use crate::util;
 use base64::Engine;
+use serde::de::IgnoredAny;
+use worker::d1::{D1Database, D1PreparedStatement};
 use worker::*;
 
 const SESSION_TTL: i64 = 30 * 24 * 3600;
@@ -25,22 +27,23 @@ pub async fn current_user(env: &Env, req: &Request) -> Result<Option<User>> {
     .await
 }
 
-pub async fn create_session(env: &Env, user_id: i64) -> Result<String> {
+fn session_insert(database: &D1Database, user_id: i64, password_hash: &str, token_hash: &str) -> Result<D1PreparedStatement> {
+    let now = util::now();
+    database.prepare(
+        "INSERT INTO sessions (token_hash, user_id, created_at, expires_at)
+         SELECT ?1, id, ?3, ?4 FROM users WHERE id = ?2 AND password_hash = ?5 RETURNING user_id",
+    ).bind(&[
+        util::js_text(token_hash), util::js_int(user_id), util::js_int(now),
+        util::js_int(now + SESSION_TTL), util::js_text(password_hash),
+    ])
+}
+
+async fn create_session(database: &D1Database, user_id: i64, password_hash: &str) -> Result<Option<String>> {
     let token = crypto::random_token()?;
-    let hash = crypto::sha256_hex(&token).await?;
-    let database = env.d1("DB")?;
-    db::run(
-        &database,
-        "INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
-        &[
-            util::js_text(&hash),
-            util::js_int(user_id),
-            util::js_int(util::now()),
-            util::js_int(util::now() + SESSION_TTL),
-        ],
-    )
-    .await?;
-    Ok(token)
+    let token_hash = crypto::sha256_hex(&token).await?;
+    let inserted = session_insert(database, user_id, password_hash, &token_hash)?
+        .first::<IgnoredAny>(None).await?;
+    Ok(inserted.map(|_| token))
 }
 
 pub async fn destroy_session(env: &Env, token: &str) -> Result<()> {
@@ -54,25 +57,24 @@ pub async fn destroy_session(env: &Env, token: &str) -> Result<()> {
     .await
 }
 
-pub async fn authenticate(env: &Env, login: &str, password: &str) -> Result<Option<User>> {
+#[derive(serde::Deserialize)]
+struct Credential {
+    id: i64,
+    password_hash: String,
+}
+
+pub(crate) async fn login_session(env: &Env, login: &str, password: &str) -> Result<Option<String>> {
     let database = env.d1("DB")?;
-    let found: Option<UserAuth> = db::first(
-        &database,
-        "SELECT u.id, u.username, u.email, u.password_hash, u.is_admin, u.created_at, u.locale,
-                av.user_id AS avatar_id
-           FROM users u LEFT JOIN user_avatars av ON av.user_id = u.id
-          WHERE u.username = ? COLLATE NOCASE OR u.email = ? COLLATE NOCASE LIMIT 1",
+    let found: Option<Credential> = db::first(&database,
+        "SELECT id, password_hash FROM users
+         WHERE username = ? COLLATE NOCASE OR email = ? COLLATE NOCASE LIMIT 1",
         &[util::js_text(login), util::js_text(login)],
-    )
-    .await?;
-    let Some(account) = found else {
+    ).await?;
+    let Some(account) = found else { return Ok(None) };
+    if !crypto::verify_password(password, &account.password_hash).await? {
         return Ok(None);
-    };
-    if crypto::verify_password(password, &account.password_hash).await? {
-        Ok(Some(account.public()))
-    } else {
-        Ok(None)
     }
+    create_session(&database, account.id, &account.password_hash).await
 }
 
 pub async fn register(
@@ -80,30 +82,18 @@ pub async fn register(
     username: &str,
     email: &str,
     password: &str,
-) -> Result<User> {
+) -> Result<String> {
     let hash = crypto::hash_password(password).await?;
     let database = env.d1("DB")?;
-    db::run(
-        &database,
+    #[derive(serde::Deserialize)]
+    struct Registered { id: i64 }
+    let account: Registered = db::first(&database,
         "INSERT INTO users (username, email, password_hash, is_admin, created_at)
-         VALUES (?, ?, ?, 0, ?)",
-        &[
-            util::js_text(username),
-            util::js_text(email),
-            util::js_text(&hash),
-            util::js_int(util::now()),
-        ],
-    )
-    .await?;
-    let account: UserAuth = db::first(
-        &database,
-        "SELECT id, username, email, password_hash, is_admin, created_at, locale, NULL AS avatar_id
-           FROM users WHERE username = ?",
-        &[util::js_text(username)],
-    )
-    .await?
-    .ok_or_else(|| Error::RustError("user insert failed".into()))?;
-    Ok(account.public())
+         VALUES (?, ?, ?, 0, ?) RETURNING id",
+        &[util::js_text(username), util::js_text(email), util::js_text(&hash), util::js_int(util::now())],
+    ).await?.ok_or_else(|| Error::RustError("user insert failed".into()))?;
+    create_session(&database, account.id, &hash).await?
+        .ok_or_else(|| Error::RustError("account changed during registration".into()))
 }
 
 /// Resolve HTTP basic (`username:token`) or bearer credentials to a git identity.
@@ -213,30 +203,24 @@ pub async fn reset_login_failures(env: &Env, key: &str) -> Result<()> {
     db::run(&database, "DELETE FROM login_throttle WHERE key_hash = ?", &[util::js_text(key)]).await
 }
 
-pub async fn verify_current_password(env: &Env, user_id: i64, password: &str) -> Result<bool> {
-    if password.is_empty() || password.len() > 1024 { return Ok(false); }
-    #[derive(serde::Deserialize)]
-    struct Credential { password_hash: String }
+pub(crate) async fn verified_password_hash(env: &Env, user_id: i64, password: &str) -> Result<Option<String>> {
+    if password.is_empty() || password.len() > 1024 { return Ok(None); }
     let database = env.d1("DB")?;
     let row: Option<Credential> = db::first(&database,
-        "SELECT password_hash FROM users WHERE id = ?", &[util::js_int(user_id)]).await?;
-    match row {
-        Some(row) => crypto::verify_password(password, &row.password_hash).await,
-        None => Ok(false),
-    }
+        "SELECT id, password_hash FROM users WHERE id = ?", &[util::js_int(user_id)]).await?;
+    let Some(row) = row else { return Ok(None) };
+    Ok(crypto::verify_password(password, &row.password_hash).await?.then_some(row.password_hash))
 }
 
-pub async fn replace_password(env: &Env, user_id: i64, password: &str) -> Result<String> {
+pub(crate) async fn replace_password(env: &Env, user_id: i64, verified_hash: &str, password: &str) -> Result<Option<String>> {
     let password_hash = crypto::hash_password(password).await?;
     let token = crypto::random_token()?;
     let token_hash = crypto::sha256_hex(&token).await?;
     let database = env.d1("DB")?;
-    let now = util::now();
-    database.batch(vec![
-        database.prepare("UPDATE users SET password_hash = ? WHERE id = ?")
-            .bind(&[util::js_text(&password_hash), util::js_int(user_id)])?,
-        database.prepare("INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
-            .bind(&[util::js_text(&token_hash), util::js_int(user_id), util::js_int(now), util::js_int(now + SESSION_TTL)])?,
+    let results = database.batch(vec![
+        database.prepare("UPDATE users SET password_hash = ? WHERE id = ? AND password_hash = ?")
+            .bind(&[util::js_text(&password_hash), util::js_int(user_id), util::js_text(verified_hash)])?,
+        session_insert(&database, user_id, &password_hash, &token_hash)?,
     ]).await?;
-    Ok(token)
+    Ok((!results[1].results::<IgnoredAny>()?.is_empty()).then_some(token))
 }

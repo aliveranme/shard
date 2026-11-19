@@ -7,6 +7,7 @@ use crate::git_storage::{is_object_id, GitBackend, GitStorage};
 use crate::git_wire::{self, ReceiveRequest, RefUpdate};
 use crate::ctx::AppState;
 use crate::db;
+use crate::git_activity::{self, Admission};
 use crate::models::GitIdentity;
 use crate::i18n::{BranchText, CollaboratorText, CommonText, RepoText};
 use crate::native_git::{GitService, GitServiceRepo};
@@ -94,7 +95,7 @@ async fn proxy(req: Request, ctx: RouteContext<AppState>, service: &str) -> Resu
             Ok(push) => push,
             Err(_) => return git_error(state, 400, BranchText::InvalidPush),
         };
-        if crate::branch_rules::blocks_push(&database, repo.id, &push.updates).await? {
+        if r2 && git_activity::blocks_push(&database, repo.id, &push.updates).await? {
             let _ = push.body.cancel();
             return git_error(state, 403, BranchText::ProtectedPush);
         }
@@ -127,8 +128,12 @@ async fn proxy(req: Request, ctx: RouteContext<AppState>, service: &str) -> Resu
         None
     };
     let intent = if let Some(push) = receive.as_ref().filter(|_| !r2) {
-        match crate::git_activity::stage(&state.env, repo.id, &push.updates).await {
-            Ok(intent) => intent,
+        match git_activity::stage(&database, repo.id, &push.updates, None).await {
+            Ok(Admission::Admitted(intent)) => intent,
+            Ok(Admission::Blocked) => {
+                let _ = push.body.cancel();
+                return git_error(state, 403, BranchText::ProtectedPush);
+            }
             Err(error) => {
                 let _ = push.body.cancel();
                 return Err(error);
@@ -174,30 +179,37 @@ async fn proxy(req: Request, ctx: RouteContext<AppState>, service: &str) -> Resu
     if private {
         response_headers.set("Cache-Control", "no-store")?;
     }
-    if upstream.status_code() == 200 {
-        if let (Some(intent), Some(push)) = (intent, receive.filter(|push| push.report)) {
+    if let (Some(intent), Some(push)) = (intent, receive) {
+        let env = state.env.clone();
+        let actor = identity.as_ref().map(|id| id.user_id);
+        let repo_id = repo.id;
+        if upstream.status_code() == 200 && push.report {
             if let ResponseBody::Stream(stream) = upstream.body() {
                 let halves = stream.tee();
                 let client = halves.get(0).unchecked_into();
                 let observer = halves.get(1).unchecked_into();
-                let env = state.env.clone();
-                let actor = identity.as_ref().map(|id| id.user_id);
                 state.worker_ctx.wait_until(async move {
                     if let Ok(accepted) = git_wire::receive_report(&observer, push.sideband).await {
-                        if crate::git_activity::confirm(&env, intent, actor, &accepted).await.is_err() {
-                            console_log!("event=git_push_confirmation_failed repo_id={}", repo.id);
+                        if git_activity::confirm(&env, intent, actor, &accepted).await.is_err() {
+                            console_log!("event=git_push_confirmation_failed repo_id={repo_id}");
                         }
                     }
                 });
                 upstream = git_wire::response_with_stream(upstream, client)?;
             }
-        } else if want_default && service == "info/refs" && response_headers.get("content-type")?.as_deref()
-            == Some("application/x-git-upload-pack-advertisement")
-        {
-            if let ResponseBody::Stream(stream) = upstream.body() {
-                let stream = git_wire::default_head(stream, &repo.default_branch).await?;
-                upstream = git_wire::response_with_stream(upstream, stream)?;
-            }
+        } else if (400..500).contains(&upstream.status_code()) {
+            state.worker_ctx.wait_until(async move {
+                if git_activity::confirm(&env, intent, actor, &[]).await.is_err() {
+                    console_log!("event=git_push_confirmation_failed repo_id={repo_id}");
+                }
+            });
+        }
+    } else if upstream.status_code() == 200 && want_default && service == "info/refs"
+        && response_headers.get("content-type")?.as_deref() == Some("application/x-git-upload-pack-advertisement")
+    {
+        if let ResponseBody::Stream(stream) = upstream.body() {
+            let stream = git_wire::default_head(stream, &repo.default_branch).await?;
+            upstream = git_wire::response_with_stream(upstream, stream)?;
         }
     }
     Ok(upstream.with_headers(response_headers))
@@ -270,12 +282,14 @@ async fn publish_r2(
         Err(response) => return Ok(response),
         _ => return hidden_repo(),
     }
-    if crate::branch_rules::blocks_push(&database, repo.id, &prepared.updates).await? {
+    if git_activity::blocks_push(&database, repo.id, &prepared.updates).await? {
         return git_error(state, 403, BranchText::ProtectedPush);
     }
     // Reconciliation should only inspect refs Git accepted during preparation.
     let updates: Vec<_> = prepared.updates.into_iter().filter(|update| prepared.accepted.contains(&update.name)).collect();
-    let intent = crate::git_activity::stage(&state.env, repo.id, &updates).await?;
+    let Admission::Admitted(intent) = git_activity::stage(&database, repo.id, &updates, None).await? else {
+        return git_error(state, 403, BranchText::ProtectedPush);
+    };
     let payload = serde_json::json!({"prepared": prepared.prepared, "actor": actor.to_string()});
     let response = match handle.r2_control("publish", &payload).await {
         Ok(response) => response,
@@ -289,7 +303,7 @@ async fn publish_r2(
             Vec::new()
         };
         state.worker_ctx.wait_until(async move {
-            if crate::git_activity::confirm(&env, intent, Some(actor), &accepted).await.is_err() {
+            if git_activity::confirm(&env, intent, Some(actor), &accepted).await.is_err() {
                 console_log!("event=git_push_confirmation_failed repo_id={}", repo.id);
             }
         });
@@ -404,19 +418,18 @@ pub(crate) async fn direct_control(mut req: Request, ctx: RouteContext<AppState>
                 Ok(None) => return invalid(400),
             };
             if updates.iter().any(|update| !is_object_id(&update.before) || !is_object_id(&update.after)
-                || !update.name.starts_with("refs/") || update.name.chars().any(char::is_control))
+                || !update.name.starts_with("refs/") || update.name.bytes().any(|byte| byte <= 32 || byte == 127))
             {
                 return invalid(400);
             }
-            if crate::branch_rules::blocks_push(&database, repo.id, &updates).await? {
+            let Admission::Admitted(intent) = git_activity::stage(&database, repo.id, &updates, None).await? else {
                 return git_error(state, 403, BranchText::ProtectedPush);
-            }
-            let intent = crate::git_activity::stage(&state.env, repo.id, &updates).await?;
+            };
             Response::from_json(&serde_json::json!({"intent": intent.as_ref().map(|intent| intent.id()), "actor": actor}))?
         }
         DirectCommand::Confirm { storage, intent, actor, accepted } if storage == repo.storage_id => {
             // Git has already committed these refs. Settle even if the user's token was just revoked.
-            crate::git_activity::confirm_direct(&state.env, repo.id, intent, actor, &accepted).await?;
+            git_activity::confirm_direct(&state.env, repo.id, intent, actor, &accepted).await?;
             Response::empty()?.with_status(204)
         }
         _ => return hidden_repo(),

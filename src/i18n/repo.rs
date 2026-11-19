@@ -23,6 +23,7 @@ catalog! {
         DefaultBranchNotFound => "Push the branch to this repository before setting it as the default.", "请先将该分支推送到此仓库，再将它设为默认分支。";
         SyncGitHead => "Save and sync Git HEAD", "保存并同步 Git HEAD";
         GitHeadUnavailable => "Git storage could not update HEAD. Try saving the branch again.", "Git 存储未能更新 HEAD。请重试保存默认分支。";
+        SettingsChanged => "The settings changed or Git HEAD is being updated. Review the current settings and try again.", "仓库设置已变更，或 Git HEAD 正在更新。请查看当前设置后重试。";
         Visibility => "Visibility", "可见性";
         Updated => "Updated", "更新时间";
         Clone => "Clone", "克隆";

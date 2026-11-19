@@ -35,6 +35,7 @@
         {% include "csrf.html" %}
         <h2 class="card__title">{{ chrome.locale.t(crate::i18n::LifecycleText::Transfer) }}</h2>
         <p class="card__sub">{{ chrome.locale.t(crate::i18n::LifecycleText::TransferHelp) }}</p>
+        <p class="card__sub">{{ chrome.locale.t(crate::i18n::LifecycleText::TransferWebhooks) }}</p>
         {% if let Some(request) = pending %}
         <input type="hidden" name="transfer_id" value="{{ request.id }}">
         <p class="card__sub" role="status">{{ chrome.locale.t(crate::i18n::LifecycleText::TransferPending) }} <strong>{{ request.recipient }}</strong></p>

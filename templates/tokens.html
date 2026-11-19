@@ -49,6 +49,10 @@
           <option value="365">{{ chrome.locale.token_days(365) }}</option>
         </select>
       </div>
+      <div class="field">
+        <label for="token-password">{{ chrome.locale.t(crate::i18n::AccountText::CurrentPassword) }}</label>
+        <input class="input" id="token-password" name="current_password" type="password" autocomplete="current-password" maxlength="1024" required>
+      </div>
       <button class="btn btn--primary" type="submit">{{ chrome.locale.t(crate::i18n::AccountText::GenerateToken) }}</button>
     </form>
 
@@ -65,8 +69,12 @@
     </div>
     {% if tokens.is_empty() %}
       <div class="card empty">
-        <p class="empty__title">{{ chrome.locale.t(crate::i18n::AccountText::NoTokens) }}</p>
-        <p>{{ chrome.locale.t(crate::i18n::AccountText::GenerateFirstToken) }}</p>
+        {% if pagination.page == 1 %}
+          <p class="empty__title">{{ chrome.locale.t(crate::i18n::AccountText::NoTokens) }}</p>
+          <p>{{ chrome.locale.t(crate::i18n::AccountText::GenerateFirstToken) }}</p>
+        {% else %}
+          <p class="empty__title">{{ chrome.locale.t(crate::i18n::AccountText::NoTokensOnPage) }}</p>
+        {% endif %}
       </div>
     {% else %}
       <div class="list">
@@ -82,7 +90,7 @@
                 · {% if let Some(expiry) = token.expires %}{{ chrome.locale.token_expiry(expiry, token.expired) }}{% else %}{{ chrome.locale.t(crate::i18n::AccountText::NoExpiry) }}{% endif %}
               </div>
             </div>
-            <form method="post" action="/user/settings/tokens/{{ token.id }}/delete">
+            <form method="post" action="/user/settings/tokens/{{ token.id }}/delete{% if pagination.page > 1 %}?page={{ pagination.page }}{% endif %}">
               {% include "csrf.html" %}
               <button class="btn btn--danger btn--sm" type="submit">{{ chrome.locale.t(crate::i18n::AccountText::Revoke) }}</button>
             </form>
@@ -90,6 +98,7 @@
         {% endfor %}
       </div>
     {% endif %}
+    {% include "pagination.html" %}
   </section>
     </div>
   </div>

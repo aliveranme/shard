@@ -15,6 +15,7 @@
         {% include "csrf.html" %}
         <h3 class="card__title">{{ request.owner }}/{{ request.name }}</h3>
         <p class="card__sub">{{ chrome.locale.transfer_destination(request.recipient.as_str(), request.name.as_str()) }}</p>
+        <p class="card__sub">{{ chrome.locale.t(crate::i18n::LifecycleText::TransferWebhooks) }}</p>
         <input type="hidden" name="transfer_id" value="{{ request.id }}">
         <div class="form__actions">
           <button class="btn btn--primary" type="submit" name="action" value="accept">{{ chrome.locale.t(crate::i18n::LifecycleText::Accept) }}</button>

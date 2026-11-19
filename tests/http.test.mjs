@@ -35,6 +35,7 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
   const webhookSecret = "local-regression-webhook-signing-key";
   const deliveries = [];
   const subscriptionDeliveries = [];
+  const transferDeliveries = [];
   const receiver = createServer(async (req, res) => {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
@@ -44,6 +45,9 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
       const fail = subscriptionDeliveries.length === 0;
       subscriptionDeliveries.push({ ...capture, delivery: req.headers["x-shard-delivery-id"] });
       res.writeHead(fail ? 503 : 204).end();
+    } else if (["/hooks/transfer-old", "/hooks/transfer-new"].includes(req.url)) {
+      transferDeliveries.push(capture);
+      res.writeHead(204).end();
     } else {
       deliveries.push(capture);
       res.writeHead(deliveries.length === 1 ? 503 : 204).end();
@@ -369,7 +373,13 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
       const invalid = await owner.post("/user/settings/tokens", { name: "invalid", scope: "admin", expires_in: "30" });
       assert.notEqual(invalid.status, 302);
       assert.doesNotMatch(invalid.body, /shard_[a-f0-9]{64}/);
-      const created = await owner.post("/user/settings/tokens", { name: "regression reader", scope: "read", expires_in: "30" });
+      const fields = { name: "regression reader", scope: "read", expires_in: "30" };
+      for (const attempted of [fields, { ...fields, current_password: "wrong" }]) {
+        const denied = await owner.post("/user/settings/tokens", attempted);
+        assert.equal(denied.status, 403);
+        assert.doesNotMatch(denied.body, /\bshard_[a-f0-9]{64}\b|class="list__title">regression reader/);
+      }
+      const created = await owner.post("/user/settings/tokens", { ...fields, current_password: password });
       assert.equal(created.status, 200);
       const secret = created.body.match(/\bshard_[a-f0-9]{64}\b/)?.[0];
       assert.ok(secret, "new token must be shown once");
@@ -384,6 +394,35 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
       assert.equal((await owner.request(`${privateRepo}.git/info/refs?service=git-receive-pack`, { headers })).status, 401);
       redirected(await owner.post(`/user/settings/tokens/${id}/delete`, {}));
       assert.equal((await owner.request(`${privateRepo}.git/info/refs?service=git-upload-pack`, { headers })).status, 401);
+    });
+
+    await t.test("access tokens paginate in creation order and revoke from the current page", async () => {
+      const client = await signup("tokenpages");
+      const path = "/user/settings/tokens";
+      for (let i = 0; i < 21; i++) {
+        const created = await client.post(path, {
+          name: `page-token-${String(i).padStart(2, "0")}`, scope: "read", expires_in: "7", current_password: password,
+        });
+        assert.equal(created.status, 200);
+        assert.match(created.body, /\bshard_[a-f0-9]{64}\b/);
+      }
+      const names = ({ body }) => [...body.matchAll(/class="list__title">(page-token-\d{2})</g)].map(match => match[1]);
+      const first = await client.get(`${path}?token=never-in-navigation`);
+      assert.deepEqual(names(first), Array.from({ length: 20 }, (_, i) => `page-token-${String(20 - i).padStart(2, "0")}`));
+      const next = pageLink(first.body, "page", 2);
+      assert.equal(next.search, "?page=2");
+      assert.doesNotMatch(first.body, /never-in-navigation|\bshard_[a-f0-9]{64}\b/);
+      const second = await client.get(next);
+      assert.deepEqual(names(second), ["page-token-00"]);
+      const revoke = second.body.match(/action="(\/user\/settings\/tokens\/\d+\/delete\?page=2)"/)?.[1];
+      assert.ok(revoke);
+      const deleted = await client.post(revoke, {});
+      redirected(deleted);
+      assert.equal(deleted.location, `${path}?page=2`);
+      const empty = await client.get(deleted.location);
+      assert.deepEqual(names(empty), []);
+      assert.equal(pageLink(empty.body, "page", 1).pathname, path);
+      assert.doesNotMatch((await client.get(path)).body, /rel="next"/);
     });
 
     await t.test("expired Git tokens and browser sessions are rejected", async () => {
@@ -407,7 +446,7 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
         headers: { Authorization: `Bearer ${legacySecret}` },
       })).status, 200);
       await owner.get("/user/settings/tokens");
-      const created = await owner.post("/user/settings/tokens", { name: "history writer", scope: "write", expires_in: "7" });
+      const created = await owner.post("/user/settings/tokens", { name: "history writer", scope: "write", expires_in: "7", current_password: password });
       const secret = created.body.match(/\bshard_[a-f0-9]{64}\b/)?.[0];
       assert.ok(secret);
       redirected(await owner.post("/repo/create", { name: "history" }));
@@ -875,7 +914,7 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
       const repo = "/suiteowner/lfs-objects";
       redirected(await owner.post("/repo/create", { name: "lfs-objects", private: "on" }));
       const token = async (scope) => {
-        const response = await owner.post("/user/settings/tokens", { name: `LFS ${scope}`, scope, expires_in: "7" });
+        const response = await owner.post("/user/settings/tokens", { name: `LFS ${scope}`, scope, expires_in: "7", current_password: password });
         const value = response.body.match(/\bshard_[a-f0-9]{64}\b/)?.[0];
         assert.ok(value);
         return value;
@@ -927,7 +966,7 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
     await t.test("private repository grants govern Git, issue classification and notifications", async () => {
       const access = `${privateRepo}/settings/collaborators`;
       const writeToken = async (account, name) => {
-        const result = await account.post("/user/settings/tokens", { name, scope: "write" });
+        const result = await account.post("/user/settings/tokens", { name, scope: "write", current_password: password });
         const secret = result.body.match(/\bshard_[a-f0-9]{64}\b/)?.[0];
         assert.equal(result.status, 200);
         assert.ok(secret);
@@ -1019,7 +1058,7 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
       redirected(await viewer.post(reaction, { reaction: "up", active: "0" }));
       assert.match((await viewer.get(watched.location)).body, /aria-pressed="false">\s*Upvote <span[^>]*>0</);
       redirected(await owner.post(access, { username: "suiteviewer", role: "write" }));
-      const readCredential = await viewer.post("/user/settings/tokens", { name: "read-only CI", scope: "read" });
+      const readCredential = await viewer.post("/user/settings/tokens", { name: "read-only CI", scope: "read", current_password: password });
       const readSecret = readCredential.body.match(/\bshard_[a-f0-9]{64}\b/)?.[0];
       assert.ok(readSecret);
       assert.equal((await checkResult(viewer, readSecret, "pending")).status, 403);
@@ -1112,9 +1151,32 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
       redirected(await owner.post(team, { action: "grant", link_id, role: "write" }));
       assert.equal((await viewer.request(`${privateRef}git-receive-pack`, auth(readerToken))).status, 200);
       redirected(await viewer.post(edit, fields));
+      redirected(await owner.post(access, { username: "suiteviewer", role: "read" }));
+      redirected(await owner.post(`${access}/revoke`, { username: "suiteviewer" }));
+      filters.set("milestone", "delivery-window");
+      const filtered = `${privateRepo}/issues?${filters}`;
+      const assigned = /Assignee<\/span>\s*<span><a href="\/suiteviewer"/;
+      assert.match((await owner.get(thread.location)).body, assigned);
+      const kept = await owner.get(filtered);
+      assert.match(kept.body, />Protected classification</);
+      assert.match(kept.body, /Open\s+<span class="badge badge--count">1</);
+      assert.match((await owner.get(`/issues?${filters}`)).body, />Protected classification</);
       redirected(await owner.post(team, { action: "remove_member", user_id: assignee_id }));
       assert.equal((await viewer.get(privateRepo)).status, 404);
       assert.equal((await viewer.request(`${privateRef}git-upload-pack`, auth(readerToken))).status, 404);
+      const assertCleared = async () => {
+        const detail = await owner.get(thread.location);
+        assert.match(detail.body, /Assignee<\/span>\s*<span>Unassigned/);
+        const list = await owner.get(filtered);
+        assert.doesNotMatch(list.body, />Protected classification</);
+        assert.match(list.body, /Open\s+<span class="badge badge--count">0</);
+        assert.doesNotMatch((await owner.get(`/issues?${filters}`)).body, />Protected classification</);
+      };
+      await assertCleared();
+      redirected(await owner.post(team, { action: "add_member", user_id: assignee_id }));
+      assert.equal((await viewer.get(privateRepo)).status, 200);
+      await assertCleared();
+      redirected(await owner.post(team, { action: "remove_member", user_id: assignee_id }));
     });
 
     await t.test("portable metadata import is owner-only and atomic", async () => {
@@ -1171,13 +1233,77 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
       assert.equal((await viewer.get("/suiteviewer/unsafe-import")).status, 404);
     });
 
+    await t.test("private transfers cancel former webhooks and wait for Git HEAD updates", async () => {
+      const source = "/suiteowner/transfer-hooks";
+      const target = "/suiteviewer/transfer-hooks";
+      const transfers = "/user/settings/transfers";
+      const database = (sql) => cli(["d1", "execute", "DB", "--local", "--persist-to", persistence,
+        "--command", sql, "--json"]);
+      const setHeadLease = (until) => database(`UPDATE repos SET git_head_lease_until = ${until}
+        WHERE name = 'transfer-hooks'`);
+      const oldDeliveries = async () => JSON.parse(await database(`
+        SELECT e.issue_number, d.state, s.encrypted_secret IS NULL AS key_cleared
+        FROM webhook_subscription_deliveries d
+        JOIN webhook_subscriptions s ON s.id = d.subscription_id
+        JOIN webhook_events e ON e.id = d.event_id
+        WHERE s.label = 'Former reporter' ORDER BY e.issue_number
+      `))[0].results.map(({ issue_number, state, key_cleared }) => [issue_number, state, key_cleared]);
+      const hook = (name, label, secret) => ({ action: "create", label, secret,
+        endpoint: `${config.vars.WEBHOOK_LOCAL_HTTP_ORIGIN}/hooks/transfer-${name}` });
+
+      redirected(await owner.post("/repo/create", { name: "transfer-hooks", private: "on" }));
+      redirected(await owner.post(`${source}/settings/webhooks`, hook("old", "Former reporter", "former-reporter-key")));
+      redirected(await owner.post(`${source}/issues/new`, { title: "Delivered before transfer" }));
+      await tick();
+      assert.deepEqual(transferDeliveries.map(({ path }) => path), ["/hooks/transfer-old"]);
+      redirected(await owner.post(`${source}/issues/new`, { title: "Pending before transfer" }));
+      redirected(await owner.post(`${source}/issues/new`, { title: "Claimed before transfer" }));
+      await database(`UPDATE webhook_subscription_deliveries SET state = 'sending', attempts = 1,
+        next_attempt_at = unixepoch() + 300 WHERE event_id IN (
+          SELECT e.id FROM webhook_events e JOIN repos r ON r.id = e.repo_id
+          WHERE r.name = 'transfer-hooks' AND e.issue_number = 3
+        )`);
+      const original = [[1, "sent", 0], [2, "pending", 0], [3, "sending", 0]];
+      assert.deepEqual(await oldDeliveries(), original);
+
+      redirected(await owner.post(`${source}/settings/lifecycle`, { action: "request_transfer", recipient: "suiteviewer" }));
+      const incoming = await viewer.get(transfers);
+      const id = incoming.body.match(/name="transfer_id" value="(\d+)"/)?.[1];
+      assert.ok(id);
+      const accept = () => viewer.post(transfers, { action: "accept", transfer_id: id });
+      await setHeadLease("unixepoch() + 300");
+      const busy = await accept();
+      assert.equal(busy.status, 409);
+      assert.match(busy.body, /Git HEAD is being updated/);
+      assert.equal((await viewer.get(source)).status, 404);
+      assert.deepEqual(await oldDeliveries(), original);
+      await setHeadLease("0");
+      const accepted = await accept();
+      redirected(accepted);
+      assert.equal(accepted.location, target);
+
+      assert.equal((await owner.get(`${source}/settings/webhooks`)).status, 404);
+      const settings = await viewer.get(`${target}/settings/webhooks`);
+      assert.equal(settings.status, 200);
+      assert.match(settings.body, /Former reporter/);
+      assert.deepEqual(await oldDeliveries(), [[1, "sent", 1], [2, "canceled", 1], [3, "canceled", 1]]);
+      const secret = "recipient-webhook-regression-key";
+      redirected(await viewer.post(`${target}/settings/webhooks`, hook("new", "Recipient reporter", secret)));
+      redirected(await viewer.post(`${target}/issues/new`, { title: "After transfer" }));
+      await tick();
+      assert.deepEqual(transferDeliveries.map(({ path }) => path), ["/hooks/transfer-old", "/hooks/transfer-new"]);
+      const delivery = transferDeliveries[1];
+      assert.equal(JSON.parse(delivery.body).issue_number, 4);
+      assert.equal(delivery.signature, `sha256=${createHmac("sha256", secret).update(delivery.body).digest("hex")}`);
+    });
+
     await t.test("account deletion rejects owners and revokes every session and token", async () => {
       const account = await signup("deletefixture");
       const other = await login("deletefixture");
       redirected(other.result);
       const deletion = "/user/settings/delete";
       const fields = { confirm: "deletefixture", current_password: password };
-      const result = await account.post("/user/settings/tokens", { name: "deleted token", scope: "read" });
+      const result = await account.post("/user/settings/tokens", { name: "deleted token", scope: "read", current_password: password });
       const token = result.body.match(/\bshard_[a-f0-9]{64}\b/)?.[0];
       assert.ok(token);
       assert.equal((await account.post(deletion, { ...fields, confirm: "other" })).status, 400);
@@ -1336,8 +1462,41 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
       redirected((await login("suiteowner", "new-local-password")).result);
     });
 
+    await t.test("concurrent credential changes cannot both reuse the old password", async () => {
+      const first = await signup("passwordrace");
+      const other = await login("passwordrace");
+      redirected(other.result);
+      await other.client.get("/user/settings");
+      const proposals = [[first, "new-first-password"], [other.client, "new-second-password"]];
+      const responses = await Promise.all(proposals.map(([client, next]) => client.post("/user/settings/password", {
+        current_password: password, password: next, password_confirm: next,
+      })));
+      const succeeded = responses.map((response, i) => response.location === "/user/settings?updated=password" ? i : -1)
+        .filter(i => i !== -1);
+      assert.equal(succeeded.length, 1);
+      const [winner] = succeeded;
+      assert.equal((await proposals[winner][0].get("/user/settings")).status, 200);
+      assert.match((await proposals[1 - winner][0].get("/user/settings")).location, /^\/user\/login/);
+      redirected((await login("passwordrace", proposals[winner][1])).result);
+      assert.notEqual((await login("passwordrace", proposals[1 - winner][1])).result.status, 302);
+    });
+
     await t.test("simulated verification and reset emails consume a link exactly once", async () => {
       const account = await signup("recoveryfixture");
+      const tokenPage = await account.post("/user/settings/tokens", { name: "recovery reader", scope: "read", current_password: password });
+      const token = tokenPage.body.match(/\bshard_[a-f0-9]{64}\b/)?.[0];
+      assert.ok(token);
+      const legacy = "legacy-recovery-regression-credential";
+      await cli(["d1", "execute", "DB", "--local", "--persist-to", persistence, "--command",
+        `INSERT INTO access_tokens (user_id, name, token_hash, scope, created_at)
+         SELECT id, 'legacy recovery', '${sha(legacy)}', 'read', unixepoch() FROM users WHERE username='recoveryfixture'`]);
+      redirected(await account.post("/repo/create", { name: "repo", private: "on" }));
+      const refs = "/recoveryfixture/repo.git/info/refs?service=git-upload-pack";
+      const gitStatus = async (credential) => (await new Client().request(refs, {
+        headers: { Authorization: `Bearer ${credential}` },
+      })).status;
+      assert.equal(await gitStatus(token), 200);
+      assert.equal(await gitStatus(legacy), 200);
       const recipient = "recoveryfixture@example.test";
       const explorer = `${base}/cdn-cgi/local/explorer/api/local/email/sending`;
       const outbox = async () => {
@@ -1385,12 +1544,14 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
       const requested = await guest.post("/user/forgot_password", { email: recipient });
       assert.equal(requested.body, unknown.body);
       const resetLink = await receivedLink("Reset password", reset);
-      await guest.get(resetLink.path);
+      assert.match((await guest.get(resetLink.path)).body, /revokes all Git access tokens/);
       const newPassword = "reset-local-secret";
       const fields = { token: resetLink.token, password: newPassword, password_confirm: newPassword };
       assert.equal((await guest.post(reset, fields)).status, 200);
       assert.equal((await guest.post(reset, fields)).status, 400);
       assert.match((await account.get("/user/settings")).location, /^\/user\/login/);
+      assert.equal(await gitStatus(token), 401);
+      assert.equal(await gitStatus(legacy), 401);
       assert.notEqual((await login("recoveryfixture", password)).result.status, 302);
       redirected((await login("recoveryfixture", newPassword)).result);
     });

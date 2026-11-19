@@ -6,6 +6,7 @@ use crate::crypto;
 use crate::db;
 use crate::i18n::{AccountText, CommonText, LANGUAGE_COOKIE, LanguagePreference, Locale};
 use crate::models::AccessToken;
+use crate::pagination::{PageRequest, PAGE_SIZE};
 use crate::templates::{error_response, render, AuthPage, Chrome};
 use crate::account::{AccountPage, LanguagePage, TokensPage, TokenRow};
 use crate::util;
@@ -45,10 +46,9 @@ pub async fn login_submit(req: Request, ctx: RouteContext<AppState>) -> Result<R
         return Ok(response);
     }
 
-    match auth::authenticate(&state.env, &login, &password).await? {
-        Some(user) => {
+    match auth::login_session(&state.env, &login, &password).await? {
+        Some(token) => {
             auth::reset_login_failures(&state.env, &key).await?;
-            let token = auth::create_session(&state.env, user.id).await?;
             let cookie = util::set_cookie(&token, 30 * 24 * 3600, util::is_secure(&req))?;
             let mut response = util::redirect(&next)?;
             response.headers_mut().append("Set-Cookie", &cookie)?;
@@ -139,8 +139,7 @@ pub async fn signup_submit(req: Request, ctx: RouteContext<AppState>) -> Result<
         return invalid(AccountText::SignupTaken);
     }
 
-    let user = auth::register(&state.env, &username, &email, &password).await?;
-    let token = auth::create_session(&state.env, user.id).await?;
+    let token = auth::register(&state.env, &username, &email, &password).await?;
     let cookie = util::set_cookie(&token, 30 * 24 * 3600, util::is_secure(&req))?;
     let mut response = util::redirect(&next)?;
     response.headers_mut().append("Set-Cookie", &cookie)?;
@@ -159,27 +158,34 @@ pub async fn logout(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
     Ok(response)
 }
 
-async fn render_tokens(state: &AppState, new_token: Option<String>, error: Option<&'static str>) -> Result<Response> {
+const TOKENS_PATH: &str = "/user/settings/tokens";
+
+async fn render_tokens(req: &Request, state: &AppState, new_token: Option<String>, error: Option<&'static str>) -> Result<Response> {
     let user = state.user.as_ref().ok_or_else(|| Error::RustError("authentication required".into()))?;
     let database = state.db()?;
-    let tokens: Vec<AccessToken> = db::all(&database,
-        "SELECT id, name, scope, created_at, last_used_at, expires_at FROM access_tokens WHERE user_id = ? ORDER BY id DESC",
-        &[util::js_int(user.id)]).await?;
+    let page = PageRequest::new(req, "page");
+    let mut tokens: Vec<AccessToken> = db::all(&database,
+        "SELECT id, name, scope, created_at, last_used_at, expires_at FROM access_tokens
+         WHERE user_id = ? ORDER BY id DESC LIMIT ? OFFSET ?",
+        &[util::js_int(user.id), util::js_int((PAGE_SIZE + 1) as i64), util::js_int(page.offset())]).await?;
+    let pagination = page.finish_at(TOKENS_PATH, &mut tokens)?;
+    let now = util::now();
     let mut response = render(&TokensPage {
         chrome: Chrome::new(state), title: page_title(&[state.locale.t(CommonText::AccessTokens)]),
-        tokens: tokens.iter().map(TokenRow::from_token).collect(), new_token, error,
+        tokens: tokens.into_iter().map(|token| TokenRow::from_token(token, now)).collect(),
+        pagination, new_token, error,
     })?;
     response.headers_mut().set("Cache-Control", "no-store")?;
     Ok(response)
 }
 
-pub async fn tokens_page(_req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
+pub async fn tokens_page(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = ctx.data.clone();
     if state.user.is_none() { return util::redirect("/user/login?next=/user/settings/tokens"); }
-    render_tokens(&state, None, None).await
+    render_tokens(&req, &state, None, None).await
 }
 
-pub async fn create_token(_req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
+pub async fn create_token(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = ctx.data.clone();
     let Some(user) = state.user.as_ref() else {
         return util::redirect("/user/login?next=/user/settings/tokens");
@@ -190,23 +196,36 @@ pub async fn create_token(_req: Request, ctx: RouteContext<AppState>) -> Result<
     let expiry = util::form_value(form, "expires_in").unwrap_or_else(|| "30".into());
     let days = match expiry.as_str() {
         "7" => 7, "30" => 30, "90" => 90, "365" => 365,
-        _ => return render_tokens(&state, None, Some(state.locale.t(AccountText::InvalidTokenExpiry))).await,
+        _ => return render_tokens(&req, &state, None, Some(state.locale.t(AccountText::InvalidTokenExpiry))).await,
     };
     if name.is_empty() || name.chars().count() > 100 || !matches!(scope.as_str(), "read" | "write") {
-        return render_tokens(&state, None, Some(state.locale.t(AccountText::InvalidTokenNameOrScope))).await;
+        return render_tokens(&req, &state, None, Some(state.locale.t(AccountText::InvalidTokenNameOrScope))).await;
     }
+    let password_error = || async {
+        let message = state.locale.t(AccountText::IncorrectCurrentPassword);
+        Ok(render_tokens(&req, &state, None, Some(message)).await?.with_status(403))
+    };
+    let password = util::form_value(form, "current_password").unwrap_or_default();
+    let Some(verified_hash) = auth::verified_password_hash(&state.env, user.id, &password).await? else {
+        return password_error().await;
+    };
     let plaintext = format!("shard_{}", crypto::random_token()?);
     let hash = crypto::sha256_hex(&plaintext).await?;
     let database = state.db()?;
     let now = util::now();
-    db::run(&database,
-        "INSERT INTO access_tokens (user_id, name, token_hash, scope, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
-        &[util::js_int(user.id), util::js_text(&name), util::js_text(&hash), util::js_text(&scope), util::js_int(now), util::js_int(now + days * 86400)]).await?;
-    render_tokens(&state, Some(plaintext), None).await
+    let created = db::first::<serde::de::IgnoredAny>(&database,
+        "INSERT INTO access_tokens (user_id, name, token_hash, scope, created_at, expires_at)
+         SELECT id, ?2, ?3, ?4, ?5, ?6 FROM users WHERE id = ?1 AND password_hash = ?7 RETURNING id",
+        &[
+            util::js_int(user.id), util::js_text(&name), util::js_text(&hash), util::js_text(&scope),
+            util::js_int(now), util::js_int(now + days * 86400), util::js_text(&verified_hash),
+        ]).await?;
+    if created.is_none() { return password_error().await; }
+    render_tokens(&req, &state, Some(plaintext), None).await
 }
 
 pub async fn delete_token(
-    _req: Request,
+    req: Request,
     ctx: RouteContext<AppState>,
 ) -> Result<Response> {
     let state = ctx.data.clone();
@@ -224,7 +243,12 @@ pub async fn delete_token(
         &[util::js_int(id), util::js_int(user.id)],
     )
     .await?;
-    util::redirect("/user/settings/tokens")
+    let page = PageRequest::new(&req, "page");
+    if page.number == 1 {
+        util::redirect(TOKENS_PATH)
+    } else {
+        util::redirect(&format!("{TOKENS_PATH}?page={}", page.number))
+    }
 }
 
 async fn render_account(state: &AppState, email: String, success: Option<&'static str>, error: Option<&'static str>) -> Result<Response> {
@@ -308,21 +332,15 @@ pub async fn update_email(_req: Request, ctx: RouteContext<AppState>) -> Result<
     if email.len() > 254 || !util::valid_email(&email) {
         return render_account(&state, user.email.clone(), None, Some(state.locale.t(AccountText::InvalidEmail))).await;
     }
-    if !auth::verify_current_password(&state.env, user.id, &password).await? {
+    let Some(verified_hash) = auth::verified_password_hash(&state.env, user.id, &password).await? else {
         return render_account(&state, email, None, Some(state.locale.t(AccountText::IncorrectCurrentPassword))).await;
-    }
+    };
     let database = state.db()?;
-    #[derive(serde::Deserialize)]
-    struct Count { n: i64 }
-    let taken = db::first::<Count>(&database,
-        "SELECT COUNT(*) AS n FROM users WHERE email = ? COLLATE NOCASE AND id != ?",
-        &[util::js_text(&email), util::js_int(user.id)]).await?.map(|row| row.n).unwrap_or(0);
-    if taken > 0 {
-        return render_account(&state, email, None, Some(state.locale.t(AccountText::EmailTaken))).await;
-    }
-    match db::run(&database, "UPDATE users SET email = ? WHERE id = ?",
-        &[util::js_text(&email), util::js_int(user.id)]).await {
-        Ok(()) => util::redirect("/user/settings?updated=email"),
+    match db::first::<serde::de::IgnoredAny>(&database,
+        "UPDATE users SET email = ? WHERE id = ? AND password_hash = ? RETURNING id",
+        &[util::js_text(&email), util::js_int(user.id), util::js_text(&verified_hash)]).await {
+        Ok(Some(_)) => util::redirect("/user/settings?updated=email"),
+        Ok(None) => render_account(&state, email, None, Some(state.locale.t(AccountText::IncorrectCurrentPassword))).await,
         Err(error) if error.to_string().contains("UNIQUE constraint failed: users.email") => {
             render_account(&state, email, None, Some(state.locale.t(AccountText::EmailTaken))).await
         }
@@ -343,13 +361,16 @@ pub async fn update_password(req: Request, ctx: RouteContext<AppState>) -> Resul
         Some(AccountText::InvalidPasswordLength)
     } else if password != confirmation {
         Some(AccountText::PasswordsMismatch)
-    } else if !auth::verify_current_password(&state.env, user.id, &current).await? {
-        Some(AccountText::IncorrectCurrentPassword)
     } else { None };
     if let Some(error) = error {
         return render_account(&state, user.email.clone(), None, Some(state.locale.t(error))).await;
     }
-    let token = auth::replace_password(&state.env, user.id, &password).await?;
+    let Some(verified_hash) = auth::verified_password_hash(&state.env, user.id, &current).await? else {
+        return render_account(&state, user.email.clone(), None, Some(state.locale.t(AccountText::IncorrectCurrentPassword))).await;
+    };
+    let Some(token) = auth::replace_password(&state.env, user.id, &verified_hash, &password).await? else {
+        return render_account(&state, user.email.clone(), None, Some(state.locale.t(AccountText::IncorrectCurrentPassword))).await;
+    };
     let mut response = util::redirect("/user/settings?updated=password")?;
     response.headers_mut().append("Set-Cookie", &util::set_cookie(&token, 30 * 24 * 3600, util::is_secure(&req))?)?;
     Ok(response)

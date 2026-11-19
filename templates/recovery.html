@@ -16,6 +16,7 @@
         {% else %}
           <input type="hidden" name="token" value="{{ token }}">
           {% if reset_password %}
+            <p>{{ chrome.locale.t(crate::i18n::AccountText::PasswordResetRevocation) }}</p>
             <div class="field">
               <label for="password">{{ chrome.locale.t(crate::i18n::AccountText::NewPassword) }}</label>
               <input class="input" id="password" name="password" type="password" autocomplete="new-password" minlength="8" maxlength="1024" required>

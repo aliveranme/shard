@@ -11,9 +11,9 @@ use wasm_bindgen::JsValue;
 use worker::d1::D1Database;
 use worker::{Error, FormData, FormEntry, Request, Response, Result, RouteContext};
 
-const ELIGIBLE_ASSIGNEE: &str = "(u.id = r.owner_id OR u.is_admin = 1 OR EXISTS (
-    SELECT 1 FROM repo_member_roles c WHERE c.repo_id = r.id AND c.user_id = u.id
-))";
+const ELIGIBLE_ASSIGNEE: &str = "EXISTS (
+    SELECT 1 FROM repo_assignee_access a WHERE a.repo_id = r.id AND a.user_id = u.id
+)";
 const WRITER: &str = "(u.id = r.owner_id OR u.is_admin = 1 OR EXISTS (
     SELECT 1 FROM repo_member_roles c WHERE c.repo_id = r.id AND c.user_id = u.id AND c.role = 'write'
 ))";
@@ -265,11 +265,7 @@ async fn edit(ctx: &RouteContext<AppState>, submit: bool) -> Result<Response> {
         page.assignees = db::all(
             &database,
             "SELECT u.id, u.username AS name FROM users u
-             JOIN (
-                 SELECT owner_id AS id FROM repos WHERE id = ?1
-                 UNION SELECT user_id FROM repo_member_roles WHERE repo_id = ?1
-                 UNION SELECT id FROM users WHERE is_admin = 1
-             ) eligible ON eligible.id = u.id
+             WHERE u.id IN (SELECT user_id FROM repo_assignee_access WHERE repo_id = ?1)
              ORDER BY u.username, u.id",
             &[js_int(page.repo.id)],
         ).await?;

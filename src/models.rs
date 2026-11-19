@@ -49,32 +49,6 @@ pub struct User {
 }
 
 #[derive(Clone, Deserialize)]
-pub struct UserAuth {
-    pub id: i64,
-    pub username: String,
-    pub email: String,
-    pub password_hash: String,
-    pub is_admin: i64,
-    pub created_at: Ts,
-    pub locale: Option<String>,
-    pub avatar_id: Option<i64>,
-}
-
-impl UserAuth {
-    pub fn public(&self) -> User {
-        User {
-            id: self.id,
-            username: self.username.clone(),
-            email: self.email.clone(),
-            is_admin: self.is_admin,
-            created_at: self.created_at,
-            locale: self.locale.clone(),
-            avatar_id: self.avatar_id,
-        }
-    }
-}
-
-#[derive(Clone, Deserialize)]
 pub struct Repo {
     pub id: i64,
     pub owner_id: i64,

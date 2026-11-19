@@ -6,6 +6,7 @@ use crate::db;
 use crate::i18n::{CommonText, RepoText};
 use crate::markdown;
 use crate::models::{Repo, Ts};
+use crate::native_git::WriteError;
 use crate::pagination::{query_url, Pagination, PAGE_SIZE};
 use crate::refs::{self, Inventory, RefsError, RefsPage};
 use crate::templates::{
@@ -17,6 +18,7 @@ use std::borrow::Cow;
 use worker::*;
 
 const PREVIEW_BYTES: usize = 256 * 1024;
+const HEAD_UPDATE_LEASE_SECONDS: i64 = 300;
 
 pub async fn new_form(_req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = ctx.data.clone();
@@ -502,6 +504,7 @@ pub async fn settings(req: Request, ctx: RouteContext<AppState>) -> Result<Respo
             Some("delete-storage-failed") => Some(RepoText::DeleteStorageFailed),
             Some("delete-failed") => Some(RepoText::DeleteFailed),
             Some("save-failed") => Some(RepoText::SaveFailed),
+            Some("settings-changed") => Some(RepoText::SettingsChanged),
             Some("branch-not-found") => Some(RepoText::DefaultBranchNotFound),
             Some("branch-check-limit") => Some(RepoText::RefsLimit),
             Some("branch-check-unavailable") => Some(RepoText::StorageUnavailable),
@@ -521,9 +524,9 @@ pub async fn update_settings(_req: Request, ctx: RouteContext<AppState>) -> Resu
     let Some(repo) = visible_repo(&state, &owner, &name).await? else {
         return repository_not_found(&state);
     };
-    if !can_admin(&state, &repo) {
+    let Some(user_id) = state.user_id().filter(|_| can_admin(&state, &repo)) else {
         return super::common::forbidden(&state, state.locale.t(RepoText::SettingsForbidden));
-    }
+    };
     let form = state.form()?;
     let description = util::form_value(form, "description").unwrap_or_default();
     let visibility = match util::form_value(form, "visibility").as_deref() {
@@ -534,6 +537,12 @@ pub async fn update_settings(_req: Request, ctx: RouteContext<AppState>) -> Resu
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| repo.default_branch.clone());
     let sync_head = default_branch != repo.default_branch || util::form_value(form, "sync_git_head").as_deref() == Some("1");
+    let settings_url = format!("/{}/settings", repo.full_name());
+    let database = state.db()?;
+    let repo_id = util::js_int(repo.id);
+    let actor_id = util::js_int(user_id);
+    let saved_branch = util::js_text(&repo.default_branch);
+    let mut lease = None;
     let mut override_head = None;
     if sync_head {
         let inventory = async {
@@ -541,44 +550,69 @@ pub async fn update_settings(_req: Request, ctx: RouteContext<AppState>) -> Resu
             let refs = refs::load(&handle).await?;
             Ok::<_, RefsError>((handle, refs))
         }.await;
-        let error = match inventory {
-            Ok((handle, refs)) if refs.branches.iter().any(|branch| branch.name == default_branch) => {
-                match handle.set_default_branch(&default_branch).await {
-                    Ok(advertise) => { override_head = Some(i64::from(advertise)); None }
-                    Err(_) => Some("git-head-unavailable"),
-                }
+        let handle = match inventory {
+            Ok((handle, refs)) if refs.branches.iter().any(|branch| branch.name == default_branch) => handle,
+            result => {
+                let error = match result {
+                    Ok(_) => "branch-not-found",
+                    Err(RefsError::Limit) => "branch-check-limit",
+                    Err(RefsError::Unavailable) => "branch-check-unavailable",
+                };
+                return util::redirect(&format!("{settings_url}?error={error}"));
             }
-            Ok(_) => Some("branch-not-found"),
-            Err(RefsError::Limit) => Some("branch-check-limit"),
-            Err(RefsError::Unavailable) => Some("branch-check-unavailable"),
         };
-        if let Some(error) = error {
-            return util::redirect(&format!("/{}/{}/settings?error={error}", repo.owner_name, repo.name));
+        if matches!(&handle, RepoHandle::Service(_)) {
+            // Reserve before the storage write. Transfer and other settings saves
+            // wait for this lease, and an expired attempt cannot publish settings.
+            let claimed = database.prepare(
+                "UPDATE repos SET git_head_lease_until = unixepoch() + ?4, git_head_lease_id = git_head_lease_id + 1
+                  WHERE id = ?1 AND default_branch = ?3 AND git_head_lease_until <= unixepoch()
+                    AND EXISTS (SELECT 1 FROM users WHERE id = ?2 AND (id = repos.owner_id OR is_admin = 1))
+                  RETURNING git_head_lease_id",
+            ).bind(&[repo_id.clone(), actor_id.clone(), saved_branch.clone(), util::js_int(HEAD_UPDATE_LEASE_SECONDS)])?
+                .first::<i64>(Some("git_head_lease_id")).await?;
+            let Some(claimed) = claimed else {
+                return util::redirect(&format!("{settings_url}?error=settings-changed"));
+            };
+            lease = Some(claimed);
+        }
+        match handle.set_default_branch(&default_branch).await {
+            Ok(advertise) => override_head = Some(i64::from(advertise)),
+            Err(error) => {
+                // A lost response may still commit HEAD. Keep the lease until its
+                // deadline when storage cannot confirm that it rejected the write.
+                if let Some(lease) = lease.filter(|_| error != WriteError::Unavailable) {
+                    db::run(&database,
+                        "UPDATE repos SET git_head_lease_until = 0 WHERE id = ?1 AND git_head_lease_id = ?2",
+                        &[repo_id, util::js_int(lease)],
+                    ).await?;
+                }
+                return util::redirect(&format!("{settings_url}?error=git-head-unavailable"));
+            }
         }
     }
 
-    let updated = async {
-        let database = state.db()?;
-        db::run(
-            &database,
-            "UPDATE repos SET description = ?, visibility = ?, default_branch = ?, git_head_override = COALESCE(?, git_head_override), updated_at = ? WHERE id = ?",
-            &[
-                util::js_text(&description),
-                util::js_text(visibility),
-                util::js_text(&default_branch),
-                override_head.map_or_else(util::js_null, util::js_int),
-                util::js_int(util::now()),
-                util::js_int(repo.id),
-            ],
-        )
-        .await
+    let updated = database.prepare(
+        "UPDATE repos SET description = ?1, visibility = ?2, default_branch = ?3,
+             git_head_override = COALESCE(?4, git_head_override), updated_at = unixepoch(), git_head_lease_until = 0
+          WHERE id = ?5 AND default_branch = ?6
+            AND EXISTS (SELECT 1 FROM users WHERE id = ?7 AND (id = repos.owner_id OR is_admin = 1))
+            AND CASE WHEN ?8 IS NULL THEN git_head_lease_until <= unixepoch()
+                     ELSE git_head_lease_id = ?8 AND git_head_lease_until > unixepoch() END
+          RETURNING id",
+    ).bind(&[
+        util::js_text(&description), util::js_text(visibility), util::js_text(&default_branch),
+        override_head.map_or_else(util::js_null, util::js_int), repo_id, saved_branch, actor_id,
+        lease.map_or_else(util::js_null, util::js_int),
+    ])?.first::<i64>(Some("id")).await;
+    match updated {
+        Ok(Some(_)) => util::redirect(&format!("{settings_url}?saved=1")),
+        Ok(None) => util::redirect(&format!("{settings_url}?error=settings-changed")),
+        Err(error) => {
+            console_log!("repository: save settings: {error}");
+            util::redirect(&format!("{settings_url}?error=save-failed"))
+        }
     }
-    .await;
-    if let Err(error) = updated {
-        console_log!("repository: save settings: {error}");
-        return util::redirect(&format!("/{}/{}/settings?error=save-failed", repo.owner_name, repo.name));
-    }
-    util::redirect(&format!("/{}/{}/settings?saved=1", repo.owner_name, repo.name))
 }
 
 pub async fn delete(_req: Request, ctx: RouteContext<AppState>) -> Result<Response> {

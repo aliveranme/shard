@@ -69,11 +69,13 @@ function redirected(response, location) {
   if (location !== undefined) assert.equal(response.location, location);
 }
 
+const fixturePassword = "local-native-git-password";
+
 async function signup(base, username) {
   const client = new Client(base);
   await client.get("/user/sign_up");
   redirected(await client.post("/user/sign_up", {
-    username, email: `${username}@example.test`, password: "local-native-git-password",
+    username, email: `${username}@example.test`, password: fixturePassword,
   }));
   await client.get("/user/settings");
   return client;
@@ -82,7 +84,7 @@ async function signup(base, username) {
 async function scopedToken(client, scope) {
   await client.get("/user/settings/tokens");
   const result = await client.post("/user/settings/tokens", {
-    name: `Native Git ${scope}`, scope, expires_in: "7",
+    name: `Native Git ${scope}`, scope, expires_in: "7", current_password: fixturePassword,
   });
   assert.equal(result.status, 200);
   const token = result.body.match(/\bshard_[a-f0-9]{64}\b/)?.[0];
@@ -609,6 +611,7 @@ test("native direct Git accepts large packs and reapplies forge policy before pu
   let worker;
   let base;
   let revokeDuringPush;
+  let holdStage;
   async function relay(req, res) {
     let body;
     let action;
@@ -627,8 +630,18 @@ test("native direct Git accepts large packs and reapplies forge policy before pu
       method: req.method, headers: { ...req.headers, host: new URL(base).host },
     }, (response) => {
       if (action) phases.push([action, response.statusCode]);
-      res.writeHead(response.statusCode, response.headers);
-      response.pipe(res);
+      const forward = () => {
+        res.writeHead(response.statusCode, response.headers);
+        response.pipe(res);
+      };
+      if (action === "stage" && response.statusCode === 200 && holdStage) {
+        const gate = holdStage;
+        holdStage = undefined;
+        gate.entered.resolve();
+        void gate.released.promise.then(forward);
+      } else {
+        forward();
+      }
     });
     upstream.on("error", () => res.destroy());
     if (body) upstream.end(body);
@@ -712,6 +725,30 @@ test("native direct Git accepts large packs and reapplies forge policy before pu
     await assert.rejects(git(viewerToken, "-C", source, "push", remote, "HEAD:refs/heads/revoked"), /HTTP 404/);
     assert.equal(await git(readToken, "ls-remote", remote, "refs/heads/revoked"), "");
     assert.equal(phases.filter(([action]) => action === "confirm").length, 1);
+
+    const branch = "policy/pending\u00a0branch";
+    const ref = `refs/heads/${branch}`;
+    const rulePath = `${repo}/settings/branches`;
+    const rule = { action: "save", branch, approvals: "1" };
+    const gate = { entered: Promise.withResolvers(), released: Promise.withResolvers() };
+    holdStage = gate;
+    const pending = git(writeToken, "-C", source, "push", remote, `${oid}:${ref}`);
+    try {
+      await Promise.race([gate.entered.promise, pending.then(() => assert.fail("Git published without pausing"))]);
+      const busy = await owner.post(rulePath, rule);
+      assert.equal(busy.status, 409);
+      assert.match(busy.body, /Wait for any Git write or merge to finish/);
+      assert.equal(await git(readToken, "ls-remote", remote, ref), "");
+    } finally {
+      gate.released.resolve();
+      await pending;
+    }
+    redirected(await owner.post(rulePath, rule));
+    await assert.rejects(git(writeToken, "-C", source, "push", remote, `HEAD:${ref}`), /HTTP 403/);
+    assert.equal(await git(readToken, "ls-remote", remote, ref), `${oid}\t${ref}`);
+    const deletion = await owner.post(`${repo}/refs`, { action: "delete", kind: "heads", name: branch, oid, confirm: branch });
+    assert.equal(deletion.status, 409);
+    assert.match(deletion.body, /This branch is protected/);
 
     await exerciseLfs({ base: direct, repo, writeToken, readToken, canRunGitLfs: false });
   } finally {

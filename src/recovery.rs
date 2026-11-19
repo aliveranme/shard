@@ -276,21 +276,24 @@ async fn active_owner(state: &AppState, hash: &str, purpose: Purpose) -> Result<
     .await
 }
 
-async fn consume(state: &AppState, hash: &str, purpose: Purpose, value: wasm_bindgen::JsValue) -> Result<bool> {
+async fn consume(state: &AppState, hash: &str, purpose: Purpose, value: wasm_bindgen::JsValue) -> Result<Option<LinkOwner>> {
     let column = match purpose {
         Purpose::Verify => "email_verified_at",
         Purpose::Reset => "password_hash",
     };
-    // Migration triggers revoke the link and, for a password reset, delete
-    // browser sessions in the same write as the conditional user update.
-    let sql = format!("UPDATE users SET {column} = ?4 WHERE id = ({ACTIVE_LINK}) RETURNING id AS user_id");
-    let applied: Option<LinkOwner> = db::first(
-        &state.db()?,
-        &sql,
-        &[util::js_text(hash), util::js_text(purpose.key()), util::js_int(util::now()), value],
-    )
-    .await?;
-    Ok(applied.is_some())
+    let database = state.db()?;
+    let args = [util::js_text(hash), util::js_text(purpose.key()), util::js_int(util::now())];
+    let update = database.prepare(format!(
+        "UPDATE users SET {column} = ?4 WHERE id = ({ACTIVE_LINK}) RETURNING id AS user_id"
+    )).bind(&[args[0].clone(), args[1].clone(), args[2].clone(), value])?;
+    if matches!(purpose, Purpose::Verify) {
+        return update.first(None).await;
+    }
+    // Revoke Git tokens before the password trigger consumes this link and deletes browser sessions.
+    let revoke = database.prepare(format!("DELETE FROM access_tokens WHERE user_id = ({ACTIVE_LINK})"))
+        .bind(&args)?;
+    let results = database.batch(vec![revoke, update]).await?;
+    Ok(results[1].results::<LinkOwner>()?.into_iter().next())
 }
 
 fn invalid_link(state: &AppState, purpose: Purpose) -> Result<Response> {
@@ -324,7 +327,7 @@ pub async fn verify_submit(_req: Request, ctx: RouteContext<AppState>) -> Result
     let purpose = Purpose::Verify;
     let token = util::form_value(state.form()?, "token").unwrap_or_default();
     if !token_shape(&token)
-        || !consume(state, &crypto::sha256_hex(&token).await?, purpose, util::js_int(util::now())).await?
+        || consume(state, &crypto::sha256_hex(&token).await?, purpose, util::js_int(util::now())).await?.is_none()
     {
         return invalid_link(state, purpose);
     }
@@ -346,9 +349,9 @@ pub async fn reset_submit(_req: Request, ctx: RouteContext<AppState>) -> Result<
         return invalid_link(state, purpose);
     }
     let hash = crypto::sha256_hex(&token).await?;
-    let Some(owner) = active_owner(state, &hash, purpose).await? else {
+    if active_owner(state, &hash, purpose).await?.is_none() {
         return invalid_link(state, purpose);
-    };
+    }
     let password = util::form_value(form, "password").unwrap_or_default();
     let confirmation = util::form_value(form, "password_confirm").unwrap_or_default();
     let error = if !(8..=1024).contains(&password.len()) {
@@ -364,9 +367,9 @@ pub async fn reset_submit(_req: Request, ctx: RouteContext<AppState>) -> Result<
         return page.response(400);
     }
     let password_hash = crypto::hash_password(&password).await?;
-    if !consume(state, &hash, purpose, util::js_text(&password_hash)).await? {
+    let Some(owner) = consume(state, &hash, purpose, util::js_text(&password_hash)).await? else {
         return invalid_link(state, purpose);
-    }
+    };
     let mut page = RecoveryPage::new(state, purpose.heading());
     let signed_out = state.user_id() == Some(owner.user_id);
     if signed_out {

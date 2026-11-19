@@ -66,6 +66,12 @@ struct Name {
 }
 
 #[derive(Deserialize)]
+struct TransferConflict {
+    head_busy: i64,
+    name_taken: i64,
+}
+
+#[derive(Deserialize)]
 struct Transfer {
     id: i64,
     owner: String,
@@ -313,6 +319,7 @@ pub async fn respond_transfer(req: Request, ctx: RouteContext<AppState>) -> Resu
                 "UPDATE repos AS r SET owner_id = ?2, updated_at = ?3
                  WHERE id = (SELECT repo_id FROM repo_transfers WHERE id = ?1 AND recipient_id = ?2
                                 AND sender_id = r.owner_id)
+                   AND r.git_head_lease_until <= unixepoch()
                    AND NOT EXISTS (SELECT 1 FROM repo_paths WHERE owner_id = ?2 AND name = r.name
                        AND repo_id IS NOT r.id)
                  RETURNING name",
@@ -322,14 +329,25 @@ pub async fn respond_transfer(req: Request, ctx: RouteContext<AppState>) -> Resu
             if let Some(accepted) = accepted {
                 return redirect(&format!("/{}/{}", user.username, accepted.name));
             }
-            let pending = db::first::<Identity>(
+            let pending = db::first::<TransferConflict>(
                 &database,
-                "SELECT id FROM repo_transfers WHERE id = ? AND recipient_id = ?",
+                "SELECT r.git_head_lease_until > unixepoch() AS head_busy,
+                        EXISTS (SELECT 1 FROM repo_paths WHERE owner_id = t.recipient_id AND name = r.name
+                            AND repo_id IS NOT r.id) AS name_taken
+                   FROM repo_transfers t JOIN repos r ON r.id = t.repo_id AND r.owner_id = t.sender_id
+                  WHERE t.id = ? AND t.recipient_id = ?",
                 &args,
             )
             .await?;
-            if pending.is_some() {
-                return render_transfers(&req, state, user.id, Some(Text::TransferNameTaken)).await;
+            if let Some(pending) = pending {
+                let error = if pending.head_busy != 0 {
+                    Text::TransferHeadBusy
+                } else if pending.name_taken != 0 {
+                    Text::TransferNameTaken
+                } else {
+                    Text::RequestChanged
+                };
+                return render_transfers(&req, state, user.id, Some(error)).await;
             }
         }
         Some("decline") => {
