@@ -98,7 +98,7 @@ impl LfsLimits {
                     Profile::Free => R2_SINGLE_PUT_BYTES,
                     Profile::Paid => R2_OBJECT_BYTES,
                 };
-                (LfsMode::Multipart, maximum, maximum)
+                (LfsMode::Multipart, maximum, R2_SINGLE_PUT_BYTES)
             }
             Some(_) => return Err(Error::RustError(
                 "SHARD_LFS_UPLOAD_MODE must be proxy, r2-direct or r2-multipart".into(),

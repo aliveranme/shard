@@ -766,9 +766,11 @@ migration `0026_lfs_multipart.sql` when upgrading.
 | --- | --- | --- |
 | `proxy` (default) | Standard Git LFS | 100,000,000 bytes by default. The [deployment limit](#deployment-limits) also applies. |
 | `r2-direct` | Standard Git LFS | 5,363,466,240 bytes per single PUT. A failed PUT restarts the object. |
-| `r2-multipart` (Paid preset) | Git LFS with the Shard upload adapter | 5,363,466,240 bytes with `free` and a configured R2 bucket. With `paid`, the protocol ceiling is 5,492,189,429,760 bytes (about 4.995 TiB). |
+| `r2-multipart` (Paid preset) | Git LFS with the Shard upload adapter | 5,363,466,240 bytes by default on both profiles. With `paid`, an explicit limit can reach the 5,492,189,429,760-byte R2 ceiling. |
 
-Set `SHARD_LFS_MAX_BYTES` in bytes to lower either R2 mode's limit. Uploads
+Set `SHARD_LFS_MAX_BYTES` in bytes to tune the limit for new uploads. To resume
+an unfinished upload above the new default after upgrading, set an explicit
+cap that covers its size. Stored objects remain readable at a lower cap. Uploads
 in both R2 modes go from the client to the R2 S3 endpoint and bypass the
 Shard domain's request-body size limit. Multipart uploads can resume recorded
 parts for up to six days. The complete operation verifies the file before

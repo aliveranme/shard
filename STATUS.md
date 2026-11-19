@@ -52,7 +52,7 @@ Update this file whenever a milestone lands or a limitation changes.
 |---|---|
 | Deployment | Verify the Free badge's account provisioning and quotas on hosted Workers Free. Exercise managed releases and Artifacts in isolated Workers Paid staging. Verify direct native Git on an HTTPS origin with persistent disk at the intended production transfer sizes. |
 | Hosted R2 Git | Exercise signed `ListParts`, FUSE range reads and container restarts against a private Cloudflare staging bucket. Measure the intended push sizes, clone latency and pack index costs on the selected container type. |
-| Large LFS uploads | Verify presigned S3 uploads with a hosted private R2 bucket. Objects above the single-PUT ceiling require a hosted check of whole-object hashing, conditional multipart publication, fork copy throughput and the Worker CPU budget. |
+| Large LFS uploads | Paid multipart defaults to the single-PUT ceiling. Explicit limits above it require hosted checks of whole-object hashing, conditional multipart publication, fork copy throughput and the Worker CPU budget. |
 | Email | An onboarded sending domain, an `EMAIL` binding, and an available mailbox to verify real delivery. |
 | Web merges | The Free Git UI advances same-repository fast-forwards. For other Free and mixed-backend merges, integrate through Git. Verify the managed Git container against hosted Artifacts for divergent and cross-repository merges. |
 | Repository search | Scans one selected snapshot with explicit limits. A persistent index and whole-history search remain outside the current search scope. |
@@ -171,6 +171,7 @@ The [deployment capacity guide](docs/deployment-capacity.md) covers Dashboard se
 | 2026-11-19 | v0.3.0 release candidate | Wasm type check and build passed. The regular suite passed 93 checks. Its opt-in R2 test passed separately through Docker/FUSE. The native Git relay held a pre-receive acknowledgement and confirmed the conflicting rule could only be saved after Git finished. The saved rule then blocked both direct Git and a Web ref deletion. |
 | 2026-11-19 | Release browser review | Chromium rendered repository, issues, pull requests, refs, and account settings at 320px without horizontal overflow. The new token form displayed the password label and revealed the secret only on creation. Keyboard focus, skip-to-content, dark mode, reduced-motion preference, and the mobile navigation menu were exercised. |
 | 2026-11-19 | Public v0.3.0 Release package | Verified the downloaded archive against the published SHA-256. Installed the archived Node dependencies and passed Wrangler dry runs for Free and Paid R2 Git. The Paid dry run built the R2 Git Docker image. |
+| 2026-11-19 | Git LFS regressions | Three tests passed. A Paid multipart Batch accepted the exact default and an explicit R2-sized cap. The Worker rejected larger requests and preserved downloads after reducing the cap. |
 
 ## How to update
 

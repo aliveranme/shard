@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Paid LFS multipart defaults to R2's single-PUT size. Raising the limit above it requires an explicit `SHARD_LFS_MAX_BYTES` value. Existing published objects remain readable.
+
 ## 0.3.0
 
 ### Added

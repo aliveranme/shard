@@ -30,7 +30,7 @@ async function json(response) {
   return JSON.parse(text);
 }
 
-async function forge(mode, exercise) {
+async function forge(mode, exercise, initialVars) {
   const temporary = await mkdtemp(join(tmpdir(), "shard-remote-lfs-"));
   const token = `shard_${randomBytes(32).toString("hex")}`;
   const readToken = `shard_${randomBytes(32).toString("hex")}`;
@@ -76,10 +76,10 @@ async function forge(mode, exercise) {
       GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: join(temporary, "gitconfig"), GIT_TERMINAL_PROMPT: "0" };
     const cli = (...args) => exec(process.execPath, [wrangler, "d1", ...args, "--local",
       "--persist-to", persistence, "--config", configPath], { cwd: temporary, env, timeout: 30_000 });
-    await writeFile(configPath, JSON.stringify(config));
     await writeFile(join(temporary, ".dev.vars"), [
       "SHARD_LFS_R2_ACCESS_KEY_ID=test-r2-access-key", "SHARD_LFS_R2_SECRET_ACCESS_KEY=test-r2-secret-key", "",
     ].join("\n"));
+    await writeFile(configPath, JSON.stringify(config));
     await cli("migrations", "apply", "DB");
     await cli("execute", "DB", "--command", `
       INSERT INTO users (id, username, email, password_hash, created_at)
@@ -89,13 +89,22 @@ async function forge(mode, exercise) {
       INSERT INTO access_tokens (user_id, name, token_hash, scope, created_at)
       VALUES (73, 'upload', '${sha256(token)}', 'write', 1), (73, 'download', '${sha256(readToken)}', 'read', 1);
     `);
-    worker = await unstable_dev(config.main, { config: configPath, local: true, ip: "127.0.0.1", port: 0,
-      persist: true, persistTo: persistence, logLevel: "error", experimental: {
-        disableExperimentalWarning: true, disableDevRegistry: true, forceLocal: true, watch: false,
-        showInteractiveDevSession: false,
-      },
-    });
-    const base = `http://127.0.0.1:${worker.port}`;
+    let base;
+    const startWorker = async (vars = {}) => {
+      if (worker) {
+        await worker.stop();
+        worker = undefined;
+      }
+      await writeFile(configPath, JSON.stringify({ ...config, vars: { ...config.vars, ...vars } }));
+      worker = await unstable_dev(config.main, { config: configPath, local: true, ip: "127.0.0.1", port: 0,
+        persist: true, persistTo: persistence, logLevel: "error", experimental: {
+          disableExperimentalWarning: true, disableDevRegistry: true, forceLocal: true, watch: false,
+          showInteractiveDevSession: false,
+        },
+      });
+      base = `http://127.0.0.1:${worker.port}`;
+    };
+    await startWorker(initialVars);
     const post = (href, body, authorization = auth) => fetch(href, { method: "POST", redirect: "error",
       headers: { "Content-Type": media, Authorization: authorization }, body: JSON.stringify(body),
       signal: AbortSignal.timeout(30_000) });
@@ -126,7 +135,8 @@ async function forge(mode, exercise) {
       await writeFile(join(objects, spec.oid), bytes);
       await git("lfs", "push", "--object-id", "origin", spec.oid);
     };
-    await exercise({ r2, post, batch, download, gitLfs, signedRequests, readToken });
+    await exercise({ r2, post, batch, download, gitLfs, signedRequests, readToken, startWorker,
+      currentUrl: (href) => new URL(new URL(href).pathname, base) });
     assert.ok(signedRequests.length > 0);
     assert.ok(signedRequests.every(({ authorization }) => authorization === undefined));
   } finally {
@@ -216,4 +226,49 @@ test("multipart Git LFS resumes recorded parts and rejects wrong full SHA-256", 
     assert.notEqual(retry.uploadId, failed.uploadId);
     assert.deepEqual(retry.uploaded, []);
   });
+});
+
+test("Paid multipart defaults to one R2 PUT and preserves stored objects after lowering the cap", { timeout: 150_000 }, async () => {
+  const singlePut = (5 * 1024 - 5) * 1024 ** 2;
+  const r2Limit = singlePut * 1024;
+  const explicitLimit = { SHARD_LFS_MAX_BYTES: String(r2Limit) };
+  await forge("r2-multipart", async ({ post, batch, download, readToken, startWorker, currentUrl }) => {
+    const object = async (spec) => (await json(await batch("upload", spec, [adapter]))).objects[0];
+    const large = { ...specFor("large upload"), size: r2Limit };
+    const largeUpload = (await object(large)).actions.upload;
+    const largePlan = await json(await post(largeUpload.href, { action: "start" }));
+    assert.ok(largePlan.uploadId);
+    assert.equal((await object({ ...large, size: r2Limit + 1 })).error.code, 413);
+
+    await startWorker({ SHARD_LFS_MAX_BYTES: undefined });
+    const boundary = { ...specFor("boundary upload"), size: singlePut };
+    const boundaryUpload = (await object(boundary)).actions.upload;
+    assert.ok((await json(await post(boundaryUpload.href, { action: "start" }))).uploadId);
+    assert.equal((await object({ ...boundary, size: singlePut + 1 })).error.code, 413);
+    const forged = boundaryUpload.href.replace(`/${singlePut}/multipart`, `/${singlePut + 1}/multipart`);
+    assert.notEqual(forged, boundaryUpload.href);
+    await status(await post(forged, { action: "start" }), 413);
+    await status(await post(currentUrl(largeUpload.href), { action: "start" }), 413);
+    await status(await post(currentUrl(largeUpload.href), { action: "part", uploadId: largePlan.uploadId, partNumber: 1 }), 413);
+
+    const bytes = Buffer.from("Stored before the cap was lowered.\n");
+    const stored = specFor(bytes);
+    const storedUpload = (await object(stored)).actions.upload;
+    const { uploadId } = await json(await post(storedUpload.href, { action: "start" }));
+    const part = await json(await post(storedUpload.href, { action: "part", uploadId, partNumber: 1 }));
+    const uploaded = await put(part, bytes);
+    const etag = uploaded.headers.get("ETag");
+    await status(uploaded, 200);
+    assert.ok(etag);
+    await status(await post(storedUpload.href, { action: "record", uploadId, partNumber: 1, etag }), 200);
+    await status(await post(storedUpload.href, { action: "finish", uploadId }), 200);
+
+    await startWorker({ SHARD_LFS_MAX_BYTES: "1" });
+    assert.equal((await object({ ...specFor("missing object"), size: stored.size })).error.code, 413);
+    assert.deepEqual(await object(stored), stored);
+    const { actions } = await download(stored);
+    const data = await fetch(actions.download.href, { headers: { Authorization: `Bearer ${readToken}` } });
+    assert.equal(data.status, 200);
+    assert.deepEqual(Buffer.from(await data.arrayBuffer()), bytes);
+  }, explicitLimit);
 });
