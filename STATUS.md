@@ -58,6 +58,7 @@ Update this file whenever a milestone lands or a limitation changes.
 | Operations | Live metrics, token-list pagination, and further CSP tightening after moving inline styles. |
 
 Architecture, service boundaries, and operational constraints are recorded in [PLAN.md](PLAN.md#optional-cloudflare-execution-services). Managed CI/CD settings are in the [deployment guide](README.md#deploy-with-managed-cloudflare-services).
+The [deployment capacity guide](docs/deployment-capacity.md) records the four configurations, their limits and the conditions for raising them.
 
 ## Cloudflare Artifacts constraints (verified 2026-11-17)
 

@@ -35,6 +35,7 @@ execution services on Workers Paid. `native` uses an authenticated origin and
 persistent disk. It can advertise a direct Git hostname while retaining forge
 permission checks.
 [Deployment guide](README.md#deploy-to-cloudflare)
+[Deployment configurations and capacity analysis](docs/deployment-capacity.md)
 
 | Service | Role in an alternative deployment | Limits that affect this design |
 |---|---|---|

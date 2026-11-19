@@ -107,6 +107,7 @@ push over HTTPS, open pull requests, and use issues and reviews immediately.
 | `--env native` (`shard-native`) | Bare repositories on the origin disk. The optional direct hostname avoids the Worker request-body ceiling. | Full same-origin merges with Git 2.38+ | R2 proxy or multipart via `deploy:paid` | Workers Free or Paid, an HTTPS Git origin with persistent storage, and R2 |
 
 Give each instance separate D1, Git storage, and any R2 resources.
+See the [deployment and capacity guide in Simplified Chinese](docs/deployment-capacity.md) for configuration, plan quotas and scaling options.
 [Durable Object limits](https://developers.cloudflare.com/durable-objects/platform/limits/) · [Artifacts pricing](https://developers.cloudflare.com/artifacts/platform/pricing/) · [Enable R2](https://developers.cloudflare.com/r2/buckets/create-buckets/)
 
 ### Deploy from GitHub or GitLab
@@ -516,6 +517,8 @@ in D1 so Cron can reconcile them after a disconnect.
 ## 简体中文
 
 Shard 是部署在 Cloudflare 上的自托管 Git 平台，适用于个人项目和小团队。D1 保存账户、权限、议题和审查记录。默认 Free 部署使用 SQLite Durable Objects 存放 Git 数据，也可选择 Paid Artifacts 或自有原生 Git 源站。界面语言可在页脚或账号设置中切换。
+
+[部署配置、资源限制与扩容空间](docs/deployment-capacity.md) 汇总四种方案的配置步骤、平台配额、实际验证与扩容路径。
 
 点击 **Deploy to Cloudflare**，选择账户并确认 Worker 和 D1 数据库。构建完成后即可注册、创建仓库和推送 Git。命令行可在登录 Wrangler 后执行 `mise run deploy`。默认配置的 Git LFS 可通过绑定私有 `LFS_OBJECTS` R2 存储桶启用。[Free 部署指南](#deploy-to-cloudflare)
 
