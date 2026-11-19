@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { PackIndex, parseCommit, parseTagTarget, parseTree, readPackedObject } from "../worker/git-r2-pack.mjs";
+import { buildR2PackStore } from "../worker/git-r2-packstore.mjs";
 
 function git(cwd, ...args) {
   return execFileSync("git", ["-c", "core.autocrlf=false", ...args], { cwd, encoding: "utf8" });
@@ -83,4 +84,50 @@ test("reads base and delta objects from a real pack index", async (t) => {
   const tagObject = await readPackedObject(index, tag, { readRange });
   assert.equal(tagObject.type, 4);
   assert.equal(parseTagTarget(tagObject.data), head);
+});
+
+test("builds reusable raw pack metadata", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "shard-packstore-"));
+  try {
+    git(dir, "init", "-q");
+    git(dir, "config", "user.name", "Pack Store");
+    git(dir, "config", "user.email", "store@example.test");
+    const body = "abcdefghij".repeat(2000);
+    writeFileSync(join(dir, "a.txt"), body);
+    writeFileSync(join(dir, "b.txt"), body.split("").reverse().join(""));
+    git(dir, "add", ".");
+    git(dir, "commit", "-q", "-m", "store");
+    git(dir, "repack", "-adq");
+    const packDir = join(dir, ".git", "objects", "pack");
+    const idxName = readdirSync(packDir).find((name) => name.endsWith(".idx"));
+    const stem = join(packDir, idxName.slice(0, -4));
+    const index = new PackIndex(new Uint8Array(readFileSync(`${stem}.idx`)));
+    const pack = readFileSync(`${stem}.pack`);
+    const bucket = {
+      async head(key) {
+        return key === `${stem}.pack` ? { size: pack.length } : null;
+      },
+      async get(key, options) {
+        if (key !== `${stem}.pack`) return null;
+        const offset = options?.range?.offset ?? 0;
+        const length = options?.range?.length ?? pack.length;
+        const data = pack.subarray(offset, Math.min(offset + length, pack.length));
+        return { size: data.length, arrayBuffer: async () => data.buffer.slice(data.byteOffset, data.byteOffset + data.length) };
+      },
+    };
+    const store = await buildR2PackStore(bucket, [stem], async () => index);
+    assert.ok(store);
+    assert.equal(store.totalPackBytes(), pack.length);
+    let checked = 0;
+    for (const oid of git(dir, "cat-file", "--batch-all-objects", "--batch-check=%(objectname)").trim().split("\n")) {
+      const entry = store.lookup(oid);
+      if (!entry) continue;
+      const raw = await store.readRaw(entry.packId, entry.dataOff, entry.dataLen);
+      assert.deepEqual(Buffer.from(raw), pack.subarray(entry.dataOff, entry.dataOff + entry.dataLen));
+      checked++;
+    }
+    assert.ok(checked > 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

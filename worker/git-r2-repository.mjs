@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { PackIndex, parseCommit, parseTagTarget, parseTree, readPackedObject } from "./git-r2-pack.mjs";
+import { buildR2PackStore } from "./git-r2-packstore.mjs";
 import { uploadPack } from "../node_modules/durable-git/src/git/protocol.ts";
 import { gitR2S3 } from "../src/lfs_s3.js";
 import { shard_receive_report, shard_receive_request } from "../src/git_wire.js";
@@ -170,6 +171,7 @@ export class R2GitRepository extends DurableObject {
   #directReads;
   #indexes = new Map();
   #counts = new Map();
+  #packStores = new Map();
 
   constructor(ctx, env) {
     super(ctx, env);
@@ -528,9 +530,13 @@ export class R2GitRepository extends DurableObject {
     throw new GitHttpError(503, "Git container did not become ready");
   }
 
-  async #workspace(job, repositories) {
+  #warmContainer() {
     this.#ready ??= this.#startContainer().finally(() => { this.#ready = undefined; });
-    const { port, token } = await this.#ready;
+    return this.#ready;
+  }
+
+  async #workspace(job, repositories) {
+    const { port, token } = await this.#warmContainer();
     const prefix = `http://container/v1/workspaces/${job}`;
     const fetch = (path, { method = "GET", headers, body, payload, timeout = WORK_MS } = {}) => {
       const internal = new Headers(headers);
@@ -914,7 +920,7 @@ export class R2GitRepository extends DurableObject {
     return total;
   }
 
-  #uploadStore(repository, count) {
+  #uploadStore(repository, count, packStore) {
     const typeName = (type) => OBJECT_TYPES[type];
     const object = async (oid) => {
       const cached = await this.#readObject(oid, 0, repository.packs);
@@ -935,12 +941,7 @@ export class R2GitRepository extends DurableObject {
       loadReachable: () => null,
       saveReachable: async () => {},
       reachableVersion: () => String(repository.revision),
-      packs: {
-        lookup: () => null,
-        readRaw: async () => { throw new Error("Raw pack copy is unavailable"); },
-        totalPackBytes: () => 0,
-        rawCacheWindow: () => 1,
-      },
+      packs: packStore,
     };
   }
 
@@ -949,9 +950,19 @@ export class R2GitRepository extends DurableObject {
     if (Number.isFinite(declared) && declared > MAX_DIRECT_UPLOAD) return null;
     const count = await this.#objectCount(repository.packs);
     if (count > MAX_DIRECT_OBJECTS) return null;
+    const cacheKey = `${repository.revision}:${repository.packs.join("|")}`;
+    let packStore = this.#packStores.get(cacheKey);
+    if (!packStore) {
+      packStore = await buildR2PackStore(
+        this.#bucket, repository.packs, (key) => this.#packIndex(key), MAX_DIRECT_OBJECTS,
+      );
+      if (!packStore) return null;
+      if (this.#packStores.size > 4) this.#packStores.clear();
+      this.#packStores.set(cacheKey, packStore);
+    }
     const body = new Uint8Array(await request.arrayBuffer());
     if (body.length > MAX_DIRECT_UPLOAD) throw new GitHttpError(413, "Git upload request is too large");
-    return await uploadPack(this.#uploadStore(repository, count), body);
+    return await uploadPack(this.#uploadStore(repository, count, packStore), body);
   }
 
   async #directAdvertisement(repository, v2 = false) {
@@ -1339,6 +1350,12 @@ export class R2GitRepository extends DurableObject {
         return empty(404);
       }
       const repository = this.#repository();
+      if (smart && action === "info/refs" && request.method === "GET" &&
+          url.searchParams.get("service") === "git-receive-pack") {
+        // Git fetches this advertisement before it builds and posts the pack.
+        // Start the container now so its cold start overlaps that work.
+        this.ctx.waitUntil(this.#warmContainer().catch(() => {}));
+      }
       if (smart && action === "git-receive-pack" && request.method === "POST" && !url.search) {
         return await this.#standard(repository, url.pathname, request);
       } else if (command && ["ref", "head", "merge"].includes(action) && request.method === "POST" && !url.search) {

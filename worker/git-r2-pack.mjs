@@ -85,9 +85,21 @@ export class PackIndex {
     this.offsets.set(index, offset);
     return offset;
   }
+
+  oidAt(index) {
+    if (!Number.isInteger(index) || index < 0 || index >= this.count) throw new Error("Invalid Git pack index");
+    return hex(this.bytes, this.shaStart + index * 20, 20);
+  }
+
+  offsetsAscending() {
+    if (this.order) return this.order;
+    this.order = Array.from({ length: this.count }, (_, index) => ({ offset: this.offsetAt(index), index }));
+    this.order.sort((left, right) => left.offset - right.offset);
+    return this.order;
+  }
 }
 
-function parseHeader(bytes, offset) {
+export function parsePackEntry(bytes, offset) {
   let cursor = 0;
   let byte = bytes[cursor++];
   const type = (byte >> 4) & 7;
@@ -245,7 +257,7 @@ export async function readPackedObject(index, oid, {
     const cached = cache.get(`at:${offset}`);
     if (cached) return cached;
     const header = await readRange(offset, 128 * 1024);
-    const parsed = parseHeader(header, offset);
+    const parsed = parsePackEntry(header, offset);
     const delta = parsed.type === 6 || parsed.type === 7;
     const data = await inflateAt(readRange, parsed.start, parsed.size, maxBytes);
     let object;
