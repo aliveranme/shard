@@ -374,27 +374,32 @@ async fn publish(state: &AppState, target: &Transfer<'_>, stage: &str) -> Result
         if let Some(body) = data { let _ = body.cancel(); }
         return failure(HIDDEN);
     };
-    let copied = if let Some(body) = data {
-        let data = bounded_stream(body, target.size, expires)?;
-        match put_object(&target.bucket, &target.key, data, target.oid).await {
-            Ok(object) => object.is_some(),
-            Err(error) if bad_digest(&error) => {
-                release_write(&database, lease).await?;
-                return failure(BAD_DIGEST);
-            }
-            Err(_) => return failure(STORAGE),
+    // Release the lease on every outcome: an R2 or S3 failure must not delay
+    // the repository's storage cleanup until the lease expires.
+    let result: Result<std::result::Result<bool, Response>> = async {
+        if let Some(body) = data {
+            let data = bounded_stream(body, target.size, expires)?;
+            return Ok(match put_object(&target.bucket, &target.key, data, target.oid).await {
+                Ok(object) => Ok(object.is_some()),
+                Err(error) if bad_digest(&error) => Err(failure(BAD_DIGEST)?),
+                Err(_) => Err(failure(STORAGE)?),
+            });
         }
-    } else {
-        let s3 = match S3::read(&state.env) { Ok(s3) => s3, Err(error) => return failure(error) };
+        let s3 = match S3::read(&state.env) {
+            Ok(s3) => s3,
+            Err(error) => return Ok(Err(failure(error)?)),
+        };
         let timeout = time_left(expires - WRITE_GRACE)?;
-        match s3.copy(stage, &target.key, target.size, &object.http_etag(), timeout).await {
-            Ok(copied) => copied,
-            Err(_) => return failure(STORAGE),
-        }
-    };
-    release_write(&database, lease).await?;
-    if !copied {
-        return already_stored(target).await?.map_or_else(|| failure(STORAGE), Ok);
+        Ok(match s3.copy(stage, &target.key, target.size, &object.http_etag(), timeout).await {
+            Ok(copied) => Ok(copied),
+            Err(_) => Err(failure(STORAGE)?),
+        })
     }
-    empty()
+    .await;
+    release_write(&database, lease).await?;
+    match result? {
+        Ok(true) => empty(),
+        Ok(false) => already_stored(target).await?.map_or_else(|| failure(STORAGE), Ok),
+        Err(response) => Ok(response),
+    }
 }
