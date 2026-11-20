@@ -861,6 +861,7 @@ a.list__row:hover { background-color: var(--hover); text-decoration: none; }
   border-top: 1px solid var(--border);
   color: var(--ink);
 }
+.file-list--no-size .file-row { grid-template-columns: 16px minmax(0, 1fr); }
 .file-row:first-child { border-top: 0; }
 .file-row--head {
   min-height: 36px;

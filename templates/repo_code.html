@@ -66,11 +66,11 @@ git branch -M {{ repo.default_branch }}
 git push -u origin {{ repo.default_branch }}</code></pre>
         </div>
       {% else if !files.is_empty() %}
-        <div class="file-list">
+        <div class="file-list{% if !show_sizes %} file-list--no-size{% endif %}">
           <div class="file-row file-row--head" aria-hidden="true">
             <span></span>
             <span>{{ chrome.locale.t(crate::i18n::RepoText::Name) }}</span>
-            <span class="file-row__size">{{ chrome.locale.t(crate::i18n::RepoText::Size) }}</span>
+            {% if show_sizes %}<span class="file-row__size">{{ chrome.locale.t(crate::i18n::RepoText::Size) }}</span>{% endif %}
           </div>
           {% for file in files %}
             <a class="file-row" href="/{{ repo.owner_name }}/{{ repo.name }}/{% if file.is_dir %}src{% else %}blob{% endif %}/{{ file.url_path }}?branch={{ branch_url }}">
@@ -78,7 +78,7 @@ git push -u origin {{ repo.default_branch }}</code></pre>
                 <use href="/img/icons.svg#{% if file.is_dir %}folder{% else %}file{% endif %}"></use>
               </svg>
               <span class="file-row__name mono">{{ file.name }}{% if file.is_dir %}/{% endif %}</span>
-              <span class="file-row__size">{{ file.size }}</span>
+              {% if show_sizes %}<span class="file-row__size">{{ file.size }}</span>{% endif %}
             </a>
           {% endfor %}
         </div>

@@ -246,6 +246,7 @@ pub async fn tree(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
     let clone_origin = direct_origin.unwrap_or_else(|| util::base_url(&req));
     let clone_url = format!("{clone_origin}/{}/{}.git", repo.owner_name, repo.name);
 
+    let show_sizes = files.iter().any(|file| !file.size.is_empty());
     let page = RepoCodePage {
         chrome: Chrome::new(&state),
         title,
@@ -256,6 +257,7 @@ pub async fn tree(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
         branches,
         crumbs: crumbs(&path),
         files,
+        show_sizes,
         readme,
         last_commit,
         storage_notice,

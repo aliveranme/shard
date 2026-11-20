@@ -276,6 +276,7 @@ pub struct RepoCodePage {
     pub branches: Vec<String>,
     pub crumbs: Vec<Crumb>,
     pub files: Vec<FileRow>,
+    pub show_sizes: bool,
     pub readme: Option<String>,
     pub last_commit: Option<CommitRow>,
     pub storage_notice: Option<String>,
