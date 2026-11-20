@@ -55,7 +55,6 @@
   --danger-ring: 0 0 0 0.5px var(--negative-ring), 0 0 0 1.5px var(--ring-outer);
   --shadow-floating: var(--surface-ring), 0 8px 24px var(--shadow-ink);
   --surface-sheen: linear-gradient(180deg, var(--surface), transparent);
-  --primary-gradient: linear-gradient(180deg, var(--primary-sheen), transparent);
 
   --font-ui: "Geist", "Shard Han UI", "Microsoft YaHei UI", "PingFang SC",
     "Noto Sans CJK SC", system-ui, sans-serif;
@@ -264,7 +263,7 @@ button, input, select, textarea { font: inherit; font-variant-numeric: inherit; 
   cursor: pointer;
 }
 .btn:hover { text-decoration: none; }
-.btn--primary { background-color: var(--primary); background-image: var(--primary-gradient); color: var(--primary-ink); }
+.btn--primary { background-color: var(--primary); color: var(--primary-ink); }
 .btn--primary:hover { background-color: var(--primary-hover); }
 .btn--primary:active { background-color: var(--primary-pressed); }
 .btn--ghost { background-color: var(--surface); box-shadow: var(--surface-ring); color: var(--ink); }
