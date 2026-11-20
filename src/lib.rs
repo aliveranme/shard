@@ -358,6 +358,10 @@ async fn serve(mut req: Request, env: Env, worker_ctx: Context, request_id: &str
         }
     };
     if machine {
+        let mut response = response;
+        // Git responses already use a mutable header set. Keep the correlation
+        // ID when possible without rebuilding a streaming body.
+        let _ = response.headers_mut().set("X-Request-ID", request_id);
         Ok(response)
     } else {
         security::finish(response, &chrome.csrf_token, previous_csrf.as_deref(), secure, locale)

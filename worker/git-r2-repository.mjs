@@ -42,6 +42,7 @@ const MAX_DIRECT_FILE = 32 * MiB;
 const MAX_DIRECT_COMMIT = 256 * 1024;
 const MAX_DIRECT_CACHE = MiB;
 const MAX_OBJECT_CACHE = 32 * MiB;
+const MAX_DIRECT_INDEXES = 8;
 const MAX_DIRECT_UPLOAD = MiB;
 const MAX_DIRECT_OBJECTS = 200_000;
 const MAX_DIRECT_PUSH = 16 * MiB;
@@ -709,6 +710,9 @@ export class R2GitRepository extends DurableObject {
     if (!object || object.size > MAX_DIRECT_INDEX) throw new Error("Git pack index is unavailable");
     const index = new PackIndex(new Uint8Array(await object.arrayBuffer()), MAX_DIRECT_INDEX);
     this.#indexes.set(key, index);
+    if (this.#indexes.size > MAX_DIRECT_INDEXES) {
+      this.#indexes.delete(this.#indexes.keys().next().value);
+    }
     return index;
   }
 
