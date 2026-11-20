@@ -142,7 +142,10 @@ pub async fn signup_submit(req: Request, ctx: RouteContext<AppState>) -> Result<
         return invalid(AccountText::SignupTaken);
     }
 
-    let token = auth::register(&state.env, &username, &email, &password).await?;
+    let Some(token) = auth::register(&state.env, &username, &email, &password).await? else {
+        // A concurrent signup claimed the account between the check and insert.
+        return invalid(AccountText::SignupTaken);
+    };
     let cookie = util::set_cookie(&token, 30 * 24 * 3600, util::is_secure(&req))?;
     let mut response = util::redirect(&next)?;
     response.headers_mut().append("Set-Cookie", &cookie)?;

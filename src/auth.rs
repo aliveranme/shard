@@ -89,23 +89,35 @@ pub(crate) async fn login_session(env: &Env, login: &str, password: &str) -> Res
     create_session(&database, account.id, &account.password_hash).await
 }
 
+/// Returns `Some(token)` on success and `None` when a concurrent signup
+/// claimed the username or email first. The UNIQUE constraint is the
+/// authority; a caller that pre-checked availability can still lose this race.
 pub async fn register(
     env: &Env,
     username: &str,
     email: &str,
     password: &str,
-) -> Result<String> {
+) -> Result<Option<String>> {
     let hash = crypto::hash_password(password).await?;
     let database = env.d1("DB")?;
     #[derive(serde::Deserialize)]
     struct Registered { id: i64 }
-    let account: Registered = db::first(&database,
+    let account = match db::first::<Registered>(&database,
         "INSERT INTO users (username, email, password_hash, is_admin, created_at)
          VALUES (?, ?, ?, 0, ?) RETURNING id",
         &[util::js_text(username), util::js_text(email), util::js_text(&hash), util::js_int(util::now())],
-    ).await?.ok_or_else(|| Error::RustError("user insert failed".into()))?;
-    create_session(&database, account.id, &hash).await?
-        .ok_or_else(|| Error::RustError("account changed during registration".into()))
+    ).await {
+        Ok(account) => account,
+        Err(error) if error.to_string().to_ascii_lowercase().contains("unique constraint failed") => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let Some(account) = account else {
+        return Err(Error::RustError("user insert failed".into()));
+    };
+    match create_session(&database, account.id, &hash).await? {
+        Some(token) => Ok(Some(token)),
+        None => Err(Error::RustError("account changed during registration".into())),
+    }
 }
 
 /// Resolve HTTP basic (`username:token`) or bearer credentials to a git identity.
