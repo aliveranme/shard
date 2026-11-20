@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
 - Large R2 repositories clone without the Durable Object inflating every blob: upload-pack metadata is now synchronous and reads pack entry types directly.
 - R2 directory listings hide the size column when the backend does not provide sizes, instead of leaving an empty column; the object cache is capped at 32 MiB with eviction.

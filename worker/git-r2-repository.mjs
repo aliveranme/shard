@@ -1017,7 +1017,7 @@ export class R2GitRepository extends DurableObject {
     };
     if (v2) {
       return new Response(
-        packet("version 2\n") + packet("agent=shard/0.3.1\n") +
+        packet("version 2\n") + packet("agent=shard/0.4.0\n") +
         packet("ls-refs\n") + packet("fetch=shallow\n") + "0000",
         { headers: {
           "Cache-Control": "no-store",
@@ -1030,7 +1030,7 @@ export class R2GitRepository extends DurableObject {
     if (head) {
       body += packet(`${head.oid} HEAD\0` +
         `multi_ack_detailed side-band-64k thin-pack ofs-delta deepen-since deepen-not ` +
-        `agent=shard/0.3.1 symref=HEAD:${repository.head} object-format=sha1\n`);
+        `agent=shard/0.4.0 symref=HEAD:${repository.head} object-format=sha1\n`);
     }
     const refs = [];
     for (const ref of repository.refs) {
@@ -1061,7 +1061,7 @@ export class R2GitRepository extends DurableObject {
       if (length > 0xffff) throw new GitHttpError(413, "Git advertisement is too large");
       return length.toString(16).padStart(4, "0") + text;
     };
-    const capabilities = "report-status delete-refs side-band-64k ofs-delta agent=shard/0.3.1 object-format=sha1";
+    const capabilities = "report-status delete-refs side-band-64k ofs-delta agent=shard/0.4.0 object-format=sha1";
     const head = repository.refs.find((ref) => ref.name === repository.head);
     const ordered = head
       ? [{ name: "HEAD", oid: head.oid }, ...repository.refs.filter((ref) => ref.name !== "HEAD")]

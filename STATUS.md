@@ -3,7 +3,7 @@
 Living record of what works, what is missing, and how it was verified.
 Update this file whenever a milestone lands or a limitation changes.
 
-**Snapshot:** 2026-11-20 · Shard 0.3.1 · local verification
+**Snapshot:** 2026-11-20 · Shard 0.4.0 · local verification
 
 | Item | Value |
 |---|---|

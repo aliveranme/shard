@@ -27,12 +27,12 @@
 
 ### 从 Release 包直接发布
 
-1. 在 GitHub Releases 下载 `shard-v<版本>-worker.tar.gz` 和同名 `.sha256`。以下以 `v0.3.1` 为例。校验通过后解包，进入解出的目录。Windows PowerShell 可用 `Get-FileHash -Algorithm SHA256` 计算归档摘要，与 `.sha256` 文件中的值比对。[公开发布包](https://github.com/aliveranme/shard/releases/tag/v0.3.1)
+1. 在 GitHub Releases 下载 `shard-v<版本>-worker.tar.gz` 和同名 `.sha256`。以下以 `v0.4.0` 为例。校验通过后解包，进入解出的目录。Windows PowerShell 可用 `Get-FileHash -Algorithm SHA256` 计算归档摘要，与 `.sha256` 文件中的值比对。[公开发布包](https://github.com/aliveranme/shard/releases/tag/v0.4.0)
 
    ```sh
-   sha256sum --check shard-v0.3.1-worker.tar.gz.sha256
-   tar -xzf shard-v0.3.1-worker.tar.gz
-   cd shard-v0.3.1-worker
+   sha256sum --check shard-v0.4.0-worker.tar.gz.sha256
+   tar -xzf shard-v0.4.0-worker.tar.gz
+   cd shard-v0.4.0-worker
    ```
 
 2. 按包内 `.node-version` 安装 Node，执行 `npm ci`。修改包内 `wrangler.json` 的目标 Worker 和资源名称。升级时填入原 D1 UUID、Git 绑定、R2 桶和路由。`managed` 与 `r2` 还需运行 Docker 或兼容引擎以构建容器镜像。包内已有 Worker Wasm 和静态资源，由 Wrangler 直接上传。Dashboard 的 **Upload your static files** 入口用于静态站点。[发布包内容](../README.md#project-releases)
