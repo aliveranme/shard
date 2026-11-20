@@ -996,6 +996,15 @@ export class R2GitRepository extends DurableObject {
     }
     const body = new Uint8Array(await request.arrayBuffer());
     if (body.length > MAX_DIRECT_UPLOAD) throw new GitHttpError(413, "Git upload request is too large");
+    if (count > 500) {
+      // Warm the small commit/tree objects before upload-pack's serial graph
+      // walk. Blobs are left as leaves and are not inflated.
+      const warm = packStore.oidsOfTypes(["commit", "tree"]);
+      for (let start = 0; start < warm.length; start += 8) {
+        await Promise.all(warm.slice(start, start + 8).map((oid) =>
+          this.#readObject(oid, 0, repository.packs).catch(() => null)));
+      }
+    }
     return await uploadPack(this.#uploadStore(repository, count, packStore), body);
   }
 

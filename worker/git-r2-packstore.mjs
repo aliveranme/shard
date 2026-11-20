@@ -20,6 +20,18 @@ export class R2PackStore {
     return this.entries.get(oid) ?? null;
   }
 
+  oidsOfTypes(types, limit = 4_096) {
+    const accepted = types instanceof Set ? types : new Set(types);
+    const oids = [];
+    for (const entry of this.entries.values()) {
+      if (entry.type && accepted.has(entry.type)) {
+        oids.push(entry.oid);
+        if (oids.length >= limit) break;
+      }
+    }
+    return oids;
+  }
+
   totalPackBytes() {
     return this.total;
   }
