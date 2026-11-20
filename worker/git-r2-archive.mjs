@@ -115,13 +115,17 @@ export async function buildSourceTar(commit, readObject) {
   await walk(commit.tree, root, 0);
   const files = nodes.filter((node) => node.hash);
   let buffered = nodes.reduce((total, node) => total + (node.kind === 53 ? BLOCK : 0), 0);
-  for (const node of files) {
-    const blob = await readObject(node.hash);
-    if (!blob || blob.type !== 3) throw new ArchiveUnsupportedError("Missing Git blob");
-    const data = blob.data ?? new Uint8Array();
-    buffered += BLOCK + align(data.length);
-    if (buffered + END > MAX_BYTES) throw new ArchiveLimitError("Archive is too large");
-    node.data = data;
+  // Two concurrent pack reads keep R2 latency from serialising one request per
+  // file while bounded buffering stays below the Durable Object memory limit.
+  for (let start = 0; start < files.length; start += 2) {
+    await Promise.all(files.slice(start, start + 2).map(async (node) => {
+      const blob = await readObject(node.hash);
+      if (!blob || blob.type !== 3) throw new ArchiveUnsupportedError("Missing Git blob");
+      const data = blob.data ?? new Uint8Array();
+      buffered += BLOCK + align(data.length);
+      if (buffered + END > MAX_BYTES) throw new ArchiveLimitError("Archive is too large");
+      node.data = data;
+    }));
   }
   for (const node of nodes) append(node.path, node.mode, node.kind, node.data ?? new Uint8Array());
   chunks.push(new Uint8Array(END));
