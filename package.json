@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.3.1",
   "description": "Shard - a self-hosted, Cloudflare-native Git forge",
+  "license": "MIT",
   "bin": {
     "git-remote-shard": "scripts/git-remote-shard.mjs"
   },

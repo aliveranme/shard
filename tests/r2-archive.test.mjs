@@ -61,6 +61,18 @@ test("rejects unsupported modes and duplicate names", async () => {
   );
 });
 
+test("stops before buffering past the archive budget", async () => {
+  const root = oid("1");
+  const blob = oid("2");
+  const huge = new Uint8Array(16 * 1024 * 1024 + 1);
+  await assert.rejects(
+    buildSourceTar({ hash: oid("a"), tree: root }, async (hash) => hash === root
+      ? { type: 2, data: tree([["100644", "huge.bin", blob]]) }
+      : { type: 3, data: huge }),
+    ArchiveLimitError,
+  );
+});
+
 test("enforces the entry limit", async () => {
   const root = oid("1");
   const entries = Array.from({ length: 2_001 }, (_, index) => ["100644", `file-${index}`, oid("2")]);

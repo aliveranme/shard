@@ -684,7 +684,7 @@ in D1 so Cron can reconcile them after a disconnect.
 
 Shard 是部署在 Cloudflare 上的自托管 Git 平台，适用于个人项目和小团队。D1 保存账户、权限、议题和审查记录。默认 Free 部署使用 SQLite Durable Objects，也可选择 Artifacts、Cloudflare 托管的 R2 Git 或自有原生 Git 源站。界面语言可在页脚或账号设置中切换。
 
-[完整项目说明](docs/overview.zh-CN.md) 介绍架构、Git 数据路径、安全模型、部署选择、容量边界和当前状态。
+[完整项目说明](docs/overview.zh-CN.md) 介绍架构、Git 数据路径、安全模型、部署选择、容量边界和当前状态。项目以 MIT 许可证开源，详见 [LICENSE](LICENSE)。
 
 [Cloudflare Dashboard 中文配置手册](docs/configuration.zh-CN.md) 按面板逐项说明部署参数、私有仓库自动更新、各环境的资源绑定、变量与密钥、域名和升级验证。[资源限制与扩容空间](docs/deployment-capacity.md) 详列 Git 与 LFS 的容量、分片和并发边界。
 
@@ -1255,6 +1255,10 @@ according to the system's reduced-motion preference.
   tree entries are `{ name, mode, type, hash }`.
 - Git remotes accept a Bearer repo token; for Basic auth the password is the token
   secret before its `?expires=` suffix.
+
+## License
+
+Shard is released under the [MIT License](LICENSE).
 
 ## Links
 

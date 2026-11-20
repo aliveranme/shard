@@ -270,3 +270,7 @@ Worker 内完成校验和发布，直接成功的 push 不再预热容器。
 - [STATUS.md](../STATUS.md)：验证记录、限制、技术风险
 - [PLAN.md](../PLAN.md)：交付阶段、Cloudflare 能力边界、后端取舍
 - [CHANGELOG.md](../CHANGELOG.md)：版本变更
+
+## 14. 许可证
+
+Shard 以 [MIT 许可证](../LICENSE) 开源。

@@ -438,8 +438,10 @@ fn html_tag(source: &str, start: usize, out: &mut String) -> usize {
                 span(out, "tok-attr", &source[attr_start..index]);
             }
             _ => {
-                out.push(bytes[index] as char);
-                index += 1;
+                let ch = source[index..].chars().next().unwrap_or('\u{fffd}');
+                let mut buffer = [0; 4];
+                escape_into(out, ch.encode_utf8(&mut buffer));
+                index += ch.len_utf8();
             }
         }
     }

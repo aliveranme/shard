@@ -328,15 +328,18 @@ async fn create(_req: Request, ctx: RouteContext<AppState>, kind: &str) -> Resul
             util::js_text(&base), util::js_text(&merge_base), util::js_int(repo.id),
         ])?);
     }
-    for label_id in &selected_labels {
+    if !selected_labels.is_empty() {
+        let labels = serde_json::to_string(&selected_labels)
+            .map_err(|error| Error::RustError(error.to_string()))?;
         statements.push(database.prepare(
             "INSERT INTO issue_labels(issue_id, repo_id, label_id)
              SELECT i.id, i.repo_id, l.id FROM issues i
                JOIN repos r ON r.id = i.repo_id
-               JOIN repo_labels l ON l.repo_id = i.repo_id AND l.id = ?1
+               JOIN repo_labels l ON l.repo_id = i.repo_id
+                AND l.id IN (SELECT value FROM json_each(?1))
               WHERE i.repo_id = ?2 AND i.number = r.next_issue_number - 1
              ON CONFLICT(issue_id, label_id) DO NOTHING",
-        ).bind(&[util::js_int(*label_id), util::js_int(repo.id)])?);
+        ).bind(&[util::js_text(&labels), util::js_int(repo.id)])?);
     }
     let results = database.batch(statements).await?;
     let Some(Number { number }) = results[0].results::<Number>()?.into_iter().next() else {

@@ -83,6 +83,8 @@ The [Chinese Cloudflare Dashboard manual](docs/configuration.zh-CN.md) documents
 - Shard serializes branch-rule changes against known admitted writes. A lost Git response can hold the admission for an hour. Externally managed Git backends can still complete a write after the admission expires.
 - The RustSec audit reported `basic-toml` and `chrono` as unmaintained transitive dependencies of the current locked graph.
 - R2 Git compacts small packs against a 256 MiB input budget and keeps replaced pairs available for 24 hours. Large packs and refs still consume the 4 MiB workspace metadata budget. [R2 Git limits](README.md#large-repositories-on-cloudflare-r2)
+- Public web reads by an arbitrary 40-character SHA can expose objects retained for saved PR snapshots after a force-push or branch deletion. A future policy should gate unreachable objects on a saved pull/review snapshot or current ref.
+- R2 direct directory listings omit per-file sizes because probing every blob for its uncompressed size multiplies a page view into hundreds of megabytes of pack reads.
 - A consistent R2 Git backup includes D1, Durable Object manifests and the referenced objects in both private R2 buckets. Hosted recovery still needs a rehearsal with the target account's bindings. [Recovery procedure](README.md#r2-git-backup-and-restore)
 - Managed CD rolls back an owned production activation to its exact prior single Worker version and rechecks the prior Workflow when available. D1 migrations stay applied. Production publishers require serialization because the Cloudflare rollback API has no conditional update. [Release script](scripts/cd.mjs) · [Cloudflare rollback limitations](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/)
 

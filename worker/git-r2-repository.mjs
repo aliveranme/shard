@@ -41,6 +41,7 @@ const MAX_DIRECT_INDEX = 32 * MiB;
 const MAX_DIRECT_FILE = 32 * MiB;
 const MAX_DIRECT_COMMIT = 256 * 1024;
 const MAX_DIRECT_CACHE = MiB;
+const MAX_OBJECT_CACHE = 32 * MiB;
 const MAX_DIRECT_UPLOAD = MiB;
 const MAX_DIRECT_OBJECTS = 200_000;
 const MAX_DIRECT_PUSH = 16 * MiB;
@@ -726,6 +727,15 @@ export class R2GitRepository extends DurableObject {
 
   #cacheObject(oid, object) {
     if (object.data.length > MAX_DIRECT_CACHE) return;
+    const total = this.#one("SELECT COALESCE(SUM(size), 0) AS bytes FROM object_cache")?.bytes ?? 0;
+    if (total + object.data.length > MAX_OBJECT_CACHE) {
+      // The cache is optional. Evict a quarter of its oldest rows rather than
+      // letting a public repository consume the Durable Object storage limit.
+      const rows = this.#one("SELECT COUNT(*) AS count FROM object_cache")?.count ?? 0;
+      const remove = Math.max(1, Math.floor(rows / 4));
+      this.#sql.exec("DELETE FROM object_cache WHERE rowid IN (SELECT rowid FROM object_cache ORDER BY rowid LIMIT ?)", remove);
+    }
+    if ((this.#one("SELECT COALESCE(SUM(size), 0) AS bytes FROM object_cache")?.bytes ?? 0) + object.data.length > MAX_OBJECT_CACHE) return;
     const data = object.data;
     const stored = data.byteOffset === 0 && data.byteLength === data.buffer.byteLength
       ? data.buffer
@@ -734,7 +744,7 @@ export class R2GitRepository extends DurableObject {
       oid, object.type, data.length, stored);
   }
 
-  async #readObject(oid, depth = 0, packs, cache = true) {
+  async #readObject(oid, depth = 0, packs) {
     if (!OID.test(oid) || depth > 64) return null;
     const cached = this.#cachedObject(oid);
     if (cached) return cached;
@@ -748,11 +758,11 @@ export class R2GitRepository extends DurableObject {
       }
       const object = await readPackedObject(index, oid, {
         readRange: (offset, length) => this.#packRange(key, offset, length),
-        readBase: (base, nextDepth) => this.#readObject(base, nextDepth, keys, cache),
+        readBase: (base, nextDepth) => this.#readObject(base, nextDepth, keys),
         maxBytes: MAX_DIRECT_FILE,
       });
       if (object) {
-        if (cache) this.#cacheObject(oid, object);
+        this.#cacheObject(oid, object);
         return object;
       }
     }
@@ -845,13 +855,9 @@ export class R2GitRepository extends DurableObject {
       if (!object || object.type !== 2) throw new GitHttpError(404, "Git object not found");
       const entries = parseTree(object.data);
       if (entries.length > maximum) throw new GitHttpError(413, "Git tree is too large");
-      if (entries.length <= 256) {
-        for (const entry of entries) {
-          if (!["100644", "100755", "120000"].includes(entry.mode)) continue;
-          const blob = await this.#readObject(entry.hash, 0, packs);
-          if (blob?.type === 3) entry.size = blob.data.length;
-        }
-      }
+      // Directory listings do not probe every blob for its uncompressed size:
+      // that turns one page view into hundreds of MiB of pack reads. The file
+      // table leaves the optional size blank instead.
       return json(entries);
     }
     if (action === "blob") {

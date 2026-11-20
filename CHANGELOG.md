@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- R2 directory listings leave file sizes blank instead of inflating every blob, and the object cache is capped at 32 MiB with eviction.
+- The project is released under the MIT License (`LICENSE`, package and Cargo metadata).
 - The README Deploy to Cloudflare button is an inline link, so the rendered repository page no longer shows a bare reference label.
 - Text file previews use server-side syntax highlighting for Rust, JavaScript/TypeScript, Python, Go, Java, C/C++, CSS, HTML/XML, shell, SQL, YAML, TOML, JSON, Dockerfile and Makefile.
 - Issues can select labels while being created, issue lists show label chips, and labels on an issue link to the filtered list.
