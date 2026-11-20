@@ -51,3 +51,11 @@ Use the pinned mise toolchain. Standard commands:
 Run the narrowest relevant checks after implementing a complete change. For UI changes, inspect the actual page in a browser at desktop and mobile widths. Cover permission, CSRF, credential and pagination boundaries with consumer-visible regression tests. Tests must use isolated data and must not contact deployed services. Update `README.md` and `STATUS.md` with verified behavior and remaining constraints. Keep this instruction file current when commands or conventions change.
 
 Commit every completed feature change to Git after its relevant checks pass. Keep each commit focused on one feature and record the behavior and verification in `STATUS.md`. Preserve unrelated worktree changes. A local commit does not authorize a push.
+
+## Remotes
+
+`origin` (`https://github.com/aliveranme/shard.git`) is the authoritative development
+remote and the default push target. `cnb` (`https://cnb.cool/aliveranme/shard.git`) is a
+backup mirror only: ordinary `git push` never goes there, and publishing to it is an
+explicit `git push cnb main` after the primary remote has the commit. Never treat the
+backup as a source of truth for history, review or release tags.
