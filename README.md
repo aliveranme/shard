@@ -4,7 +4,7 @@ Shard brings public and private repositories, issues, and pull request review
 together for personal projects and small teams. Standard Git clients clone,
 fetch, and push over HTTPS. The web interface supports English and Simplified Chinese.
 
-[![Deploy to Cloudflare Free](https://deploy.workers.cloudflare.com/button)][cloudflare-deploy] · [Deploy Paid with R2 multipart uploads](#deploy-paid-with-r2-multipart-uploads)
+[![Deploy to Cloudflare Free](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Faliveranme%2Fshard) · [Deploy Paid with R2 multipart uploads](#deploy-paid-with-r2-multipart-uploads)
 
 [Run locally](#local-development) · [First push](#first-repository) · [Deploy guide](#deploy-to-cloudflare) · [Project overview (中文)](docs/overview.zh-CN.md) · [简体中文](#简体中文)
 
@@ -78,8 +78,9 @@ the LFS regressions also exercise uploads and clones with the real client.
 ## Features
 
 - **Browse and search code** by Git ref. Find paths, text, and commits within a
-  bounded scan. Results link to the searched commit. View a file, stream the
-  full contents, or download a commit-pinned source archive.
+  bounded scan. Results link to the searched commit. View a file with
+  server-side syntax highlighting, stream the full contents, or download a
+  commit-pinned source archive.
 - **Collaborate** with scoped Git tokens, repository collaborators, organization
   teams, forks, imports, and transfers. Existing URLs keep their permission
   checks after rename or transfer.
@@ -87,7 +88,8 @@ the LFS regressions also exercise uploads and clones with the real client.
   Accepted pushes schedule a comparison refresh. Reviews and line comments
   link to their original snapshot. Protected branches can require approvals
   and CI results before the merge queue advances the target ref.
-- **Organize work** with issue templates, reactions, label and assignee filters,
+- **Organize work** with label selection while creating or editing issues,
+  clickable label filters, issue templates, reactions, label and assignee filters,
   milestones, repository watches and stars, and a permission-aware inbox.
   Repository writers can draft and publish releases pinned to Git tags.
 - **Integrate** CI results and signed repository webhooks for issues, pull
@@ -450,7 +452,9 @@ refs in one transaction. Forks copy immutable packs to independent R2 keys.
 
 Web reads resolve commits, trees, blobs, files and first-parent history
 directly from the R2 pack and index files. Clone and fetch generate their pack
-through the Worker from those same packs. Small pushes, including thin packs,
+through the Worker from those same packs. Source archives are built inside the
+repository Durable Object from the same pack indexes, so a download does not
+fan out into one request per file. Small pushes, including thin packs,
 are validated and published by the Worker; large pushes, merges, comparisons,
 imports and pack compaction still use the container. A push completed by the
 Worker does not start a container; a fallback starts one on demand. Set
@@ -1251,7 +1255,6 @@ according to the system's reduced-motion preference.
   tree entries are `{ name, mode, type, hash }`.
 - Git remotes accept a Bearer repo token; for Basic auth the password is the token
   secret before its `?expires=` suffix.
-[cloudflare-deploy]: https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Faliveranme%2Fshard
 
 ## Links
 

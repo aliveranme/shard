@@ -110,10 +110,17 @@ pub async fn archive(_req: Request, ctx: RouteContext<AppState>) -> Result<Respo
         Ok(loaded) => loaded,
         Err(error) => return error.response(state),
     };
+    let headers = archive_headers(&repo.name, &commit.hash)?;
+    let stored = match handle.source_archive(&commit.hash, &repo.name).await {
+        Ok(stored) => stored,
+        Err(error) => return ObjectError::Storage(error).response(state),
+    };
+    if let Some(response) = stored {
+        return Ok(response);
+    }
     let Some(tree) = commit.tree.as_deref().filter(|hash| is_object_id(hash)) else {
         return ObjectError::Storage(Error::RustError("Git commit tree is missing or invalid".into())).response(state);
     };
-    let filename = format!("{}-{}.tar", repo.name, commit.hash);
     let mut path = format!("source-{}", commit.hash);
     let mut tar = SourceTar { bytes: Vec::new(), remaining_entries: MAX_ENTRIES };
     let packed = async {
@@ -124,12 +131,17 @@ pub async fn archive(_req: Request, ctx: RouteContext<AppState>) -> Result<Respo
         return error.response(state);
     }
     tar.bytes.resize(tar.bytes.len() + END_SIZE, 0);
+    Ok(Response::from_bytes(tar.bytes)?.with_headers(headers))
+}
+
+fn archive_headers(repo: &str, hash: &str) -> Result<Headers> {
+    let filename = format!("{repo}-{hash}.tar");
     let headers = Headers::new();
     headers.set("Content-Type", "application/x-tar")?;
     headers.set("Content-Disposition", &format!("attachment; filename*=UTF-8''{}", urlencoding::encode(&filename)))?;
     headers.set("Cache-Control", "private, no-store")?;
     headers.set("X-Content-Type-Options", "nosniff")?;
-    Ok(Response::from_bytes(tar.bytes)?.with_headers(headers))
+    Ok(headers)
 }
 
 const BLOCK_SIZE: usize = 512;

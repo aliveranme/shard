@@ -36,7 +36,11 @@
       {% if let Some(markdown) = markdown_html %}
         <div class="markup">{{ markdown|safe }}</div>
       {% else %}
-        <pre tabindex="0"><code>{{ content }}</code></pre>
+        {% if let Some(highlighted) = highlighted %}
+          <pre tabindex="0"><code class="code--highlight">{{ highlighted|safe }}</code></pre>
+        {% else %}
+          <pre tabindex="0"><code>{{ content }}</code></pre>
+        {% endif %}
       {% endif %}
     {% endif %}
   </div>

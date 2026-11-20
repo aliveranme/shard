@@ -52,6 +52,11 @@
           <span class="list__icon" aria-hidden="true"><svg class="icon"><use href="/img/icons.svg#{% if issue.is_pull %}pull{% else %}issue{% endif %}"></use></svg></span>
           <div class="list__main">
             <div class="list__title">{{ issue.title }}</div>
+            {% if !issue.labels.is_empty() %}
+              <div class="list__labels">
+                {% for label in issue.labels %}<span class="badge badge--label" dir="auto">{{ label }}</span>{% endfor %}
+              </div>
+            {% endif %}
             <div class="list__meta">
               #{{ issue.number }} {{ chrome.locale.opened_by(issue.date, issue.author.as_deref().unwrap_or(chrome.locale.t(crate::i18n::CommonText::Ghost))) }} · {{ chrome.locale.comment_count(issue.comments) }}
             </div>

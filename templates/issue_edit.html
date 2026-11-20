@@ -33,6 +33,9 @@
         {% else %}
           <p class="help muted">{{ chrome.locale.t(crate::i18n::IssueMetadataText::NoLabels) }}</p>
         {% endfor %}
+        {% if is_owner %}
+          <a class="help" href="/{{ repo.owner_name }}/{{ repo.name }}/settings/issues">{{ chrome.locale.t(crate::i18n::IssueMetadataText::Catalog) }}</a>
+        {% endif %}
       </fieldset>
       <div class="two-col">
         <div class="field">

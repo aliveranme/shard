@@ -1101,6 +1101,10 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
       redirected(await viewer.post(edit, fields));
       const detail = await viewer.get(thread.location);
       assert.match(detail.body, /review-required[\s\S]*delivery-window[\s\S]*href="\/suiteviewer"/);
+      const labeled = await viewer.post(`${privateRepo}/issues/new`, { title: "Labeled on creation", label_id });
+      redirected(labeled);
+      assert.match((await viewer.get(labeled.location)).body, /badge--label[^>]*>review-required/);
+      assert.match((await viewer.get(`${privateRepo}/issues`)).body, /Labeled on creation[\s\S]*review-required/);
       assert.match((await viewer.get("/issues?q=private-body-needle")).body, /Protected classification/);
       assert.doesNotMatch((await outsider.get("/issues?q=private-body-needle")).body, /Protected classification/);
       redirected(await owner.post(`${thread.location}/comments`, { body: "private-comment-needle" }));

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- The README Deploy to Cloudflare button is an inline link, so the rendered repository page no longer shows a bare reference label.
+- Text file previews use server-side syntax highlighting for Rust, JavaScript/TypeScript, Python, Go, Java, C/C++, CSS, HTML/XML, shell, SQL, YAML, TOML, JSON, Dockerfile and Makefile.
+- Issues can select labels while being created, issue lists show label chips, and labels on an issue link to the filtered list.
+- R2 source archives are built inside the repository Durable Object from pack indexes instead of issuing one Worker request per file.
 - R2 Git web reads resolve commits, trees, blobs, files and first-parent history directly from R2 pack indexes. Clone and fetch generate the transfer pack in the Worker; stored full entries and offset deltas are copied from the existing packs instead of being recompressed. Small pushes, including thin packs completed against existing R2 objects, are validated and published by the Worker. Large pushes, merges, comparisons, imports and compaction still use the container. Receive-pack advertisements no longer prewarm a container; a direct push that succeeds does not start one.
 - The R2 Durable Object persists its container token across restarts and keeps an idle container for 10 minutes by default (`SHARD_GIT_R2_IDLE_MS`).
 - README images are cached by visibility, and `static/_headers` gives fonts, images and CSS browser cache lifetimes.

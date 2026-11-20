@@ -33,15 +33,38 @@ export class R2PackStore {
     if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || offset < 0 || length < 0) {
       throw new Error("Invalid pack range");
     }
-    const key = `${packId}:${offset}:${length}`;
+    const first = Math.floor(offset / CHUNK);
+    const last = Math.floor((offset + Math.max(length, 1) - 1) / CHUNK);
+    if (first === last) {
+      const chunk = await this.#chunk(packId, first);
+      const start = offset - first * CHUNK;
+      if (start + length > chunk.length) throw new Error("Incomplete Git pack range");
+      return chunk.subarray(start, start + length);
+    }
+    const data = new Uint8Array(length);
+    let copied = 0;
+    for (let seq = first; seq <= last; seq++) {
+      const chunk = await this.#chunk(packId, seq);
+      const from = Math.max(offset, seq * CHUNK);
+      const to = Math.min(offset + length, seq * CHUNK + chunk.length);
+      if (to > from) {
+        data.set(chunk.subarray(from - seq * CHUNK, to - seq * CHUNK), from - offset);
+        copied += to - from;
+      }
+    }
+    if (copied !== length) throw new Error("Incomplete Git pack range");
+    return data;
+  }
+
+  async #chunk(packId, seq) {
+    const key = `${packId}:${seq}`;
     const cached = this.cache.get(key);
     if (cached) return cached;
     const pack = this.packs[packId - 1];
-    const object = await this.bucket.get(`${pack}.pack`, { range: { offset, length } });
+    const object = await this.bucket.get(`${pack}.pack`, { range: { offset: seq * CHUNK, length: CHUNK } });
     if (!object) throw new Error("Missing Git pack range");
     const data = new Uint8Array(await object.arrayBuffer());
-    if (data.length !== length) throw new Error("Incomplete Git pack range");
-    if (this.cache.size > 64) this.cache.clear();
+    if (this.cache.size > 16) this.cache.clear();
     this.cache.set(key, data);
     return data;
   }

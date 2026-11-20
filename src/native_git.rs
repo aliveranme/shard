@@ -290,6 +290,18 @@ impl GitServiceRepo {
         matches!(self.client, GitService::Durable(_))
     }
 
+    pub(crate) async fn source_archive(&self, commit: &str, name: &str) -> Result<Option<Response>> {
+        if !matches!(self.client, GitService::R2(_)) {
+            return Ok(None);
+        }
+        let response = self.read("archive", &[("oid", commit), ("name", name)]).await?;
+        if response.status_code() == 200 {
+            return Ok(Some(response));
+        }
+        discard(response);
+        Ok(None)
+    }
+
     pub(crate) fn shares_comparison_backend(&self, source: &Self) -> bool {
         match (&self.client, &source.client) {
             (GitService::Native { origin: left, .. }, GitService::Native { origin: right, .. }) => left == right,

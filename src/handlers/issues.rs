@@ -11,7 +11,7 @@ use crate::pull_base;
 use crate::pull_diff::{self, Comparison, FileDiff};
 use crate::repo_features;
 use crate::templates::{
-    render, Chrome, DiscussionRow, FilePreview, IssueNewPage, IssuePage, IssueRow, IssuesPage, PullView,
+    render, Chrome, DiscussionRow, FilePreview, IssueNewPage, IssuePage, IssueRow, IssuesPage, LabelChoice, PullView,
     ReviewContext, ReviewLine,
 };
 use crate::util;
@@ -47,7 +47,10 @@ async fn list(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result<R
     let mut sql = String::from(
         "SELECT i.id, i.repo_id, i.number, i.kind, i.title, i.state, i.body,
                 i.author_id, u.username AS author_name, i.created_at, i.updated_at, i.closed_at,
-                (SELECT COUNT(*) FROM comments c WHERE c.issue_id = i.id) AS comment_count
+                (SELECT COUNT(*) FROM comments c WHERE c.issue_id = i.id) AS comment_count,
+                (SELECT group_concat(l.name, char(31)) FROM issue_labels il
+                   JOIN repo_labels l ON l.repo_id = il.repo_id AND l.id = il.label_id
+                  WHERE il.issue_id = i.id) AS label_names
            FROM issues i LEFT JOIN users u ON u.id = i.author_id
           WHERE i.repo_id = ? AND i.kind = ? AND (? = 'all' OR i.state = ?)"
     );
@@ -72,6 +75,8 @@ async fn list(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result<R
                 is_pull: issue.is_pull(),
                 number: issue.number,
                 title: issue.title,
+                labels: issue.label_names.as_deref().unwrap_or_default()
+                    .split('\u{1f}').filter(|label| !label.is_empty()).map(str::to_owned).collect(),
                 author: issue.author_name,
                 date: issue.created_at,
                 comments: issue.comment_count,
@@ -119,6 +124,16 @@ async fn new_form(_req: Request, ctx: RouteContext<AppState>, kind: &str) -> Res
         ));
     }
     let is_owner = can_admin(&state, &repo);
+    let can_classify = kind == "issue" && can_write(&state, &repo).await?;
+    let labels = if can_classify {
+        db::all::<crate::issue_metadata::Named>(
+            &state.db()?,
+            "SELECT id, name FROM repo_labels WHERE repo_id = ? ORDER BY name, id",
+            &[util::js_int(repo.id)],
+        ).await?.into_iter().map(|label| LabelChoice { id: label.id, name: label.name, selected: false }).collect()
+    } else {
+        Vec::new()
+    };
     let page = IssueNewPage {
         chrome: Chrome::new(&state),
         title: new_title(state.locale, &repo, kind),
@@ -133,6 +148,8 @@ async fn new_form(_req: Request, ctx: RouteContext<AppState>, kind: &str) -> Res
         branches: vec![repo.default_branch.clone()],
         issue_templates: if kind == "issue" { repo_features::issue_template_choices(&state, repo.id).await? } else { Vec::new() },
         selected_issue_template: None,
+        can_classify,
+        labels,
         repo,
         is_owner,
     };
@@ -185,6 +202,30 @@ async fn create(_req: Request, ctx: RouteContext<AppState>, kind: &str) -> Resul
     }
 
     let is_owner = can_admin(&state, &repo);
+    let can_classify = kind == "issue" && can_write(&state, &repo).await?;
+    let mut selected_labels: Vec<i64> = if can_classify {
+        form.get_all("label_id").unwrap_or_default().into_iter().filter_map(|entry| match entry {
+            FormEntry::Field(value) => value.parse::<i64>().ok().filter(|id| *id > 0),
+            _ => None,
+        }).collect()
+    } else {
+        Vec::new()
+    };
+    selected_labels.sort_unstable();
+    selected_labels.dedup();
+    let labels: Vec<LabelChoice> = if can_classify {
+        db::all::<crate::issue_metadata::Named>(
+            &state.db()?,
+            "SELECT id, name FROM repo_labels WHERE repo_id = ? ORDER BY name, id",
+            &[util::js_int(repo.id)],
+        ).await?.into_iter().map(|label| LabelChoice {
+            selected: selected_labels.binary_search(&label.id).is_ok(),
+            id: label.id,
+            name: label.name,
+        }).collect()
+    } else {
+        Vec::new()
+    };
     let locale = state.locale;
     let render_form = async |error: Option<String>| -> Result<Response> {
         let page = IssueNewPage {
@@ -201,6 +242,8 @@ async fn create(_req: Request, ctx: RouteContext<AppState>, kind: &str) -> Resul
             branches: if source_path.is_empty() { vec![repo.default_branch.clone()] } else { Vec::new() },
             issue_templates: if kind == "issue" { repo_features::issue_template_choices(&state, repo.id).await? } else { Vec::new() },
             selected_issue_template,
+            can_classify,
+            labels: labels.clone(),
             repo: repo.clone(),
             is_owner,
         };
@@ -284,6 +327,16 @@ async fn create(_req: Request, ctx: RouteContext<AppState>, kind: &str) -> Resul
             util::js_int(source_id), util::js_text(&head_branch), util::js_text(&base_branch), util::js_text(&head),
             util::js_text(&base), util::js_text(&merge_base), util::js_int(repo.id),
         ])?);
+    }
+    for label_id in &selected_labels {
+        statements.push(database.prepare(
+            "INSERT INTO issue_labels(issue_id, repo_id, label_id)
+             SELECT i.id, i.repo_id, l.id FROM issues i
+               JOIN repos r ON r.id = i.repo_id
+               JOIN repo_labels l ON l.repo_id = i.repo_id AND l.id = ?1
+              WHERE i.repo_id = ?2 AND i.number = r.next_issue_number - 1
+             ON CONFLICT(issue_id, label_id) DO NOTHING",
+        ).bind(&[util::js_int(*label_id), util::js_int(repo.id)])?);
     }
     let results = database.batch(statements).await?;
     let Some(Number { number }) = results[0].results::<Number>()?.into_iter().next() else {

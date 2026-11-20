@@ -27,6 +27,16 @@
   --accent-ink: #5c1a1a;
   --highlight-surface: #fdf6dd;
   --highlight-ink: var(--accent-ink);
+  --code-keyword: #8c1d40;
+  --code-string: #2f6d3a;
+  --code-number: #9a4f00;
+  --code-type: #5a3fa0;
+  --code-function: #0f6cbd;
+  --code-comment: #6f6c66;
+  --code-key: #7a3f00;
+  --code-tag: #8c1d40;
+  --code-attr: #5a3fa0;
+  --code-meta: #666666;
   --brand-tile: var(--primary);
   --brand-front: var(--secondary);
   --brand-side: var(--accent-ink);
@@ -64,6 +74,16 @@
     --accent-ink: #e1cbea;
     --highlight-surface: #392f19;
     --highlight-ink: #eed494;
+    --code-keyword: #f0a6c0;
+    --code-string: #a8d6b6;
+    --code-number: #f0c27a;
+    --code-type: #c3b1ff;
+    --code-function: #89bdf4;
+    --code-comment: #8f8c84;
+    --code-key: #f0c27a;
+    --code-tag: #f0a6c0;
+    --code-attr: #c3b1ff;
+    --code-meta: #aaa79d;
     --brand-front: #1a1a1a;
     --brand-side: #5c1a1a;
 

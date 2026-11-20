@@ -97,6 +97,8 @@ pub struct Issue {
     pub updated_at: Ts,
     pub closed_at: Option<Ts>,
     pub comment_count: i64,
+    #[serde(default)]
+    pub label_names: Option<String>,
 }
 
 impl Issue {

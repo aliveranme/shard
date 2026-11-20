@@ -299,6 +299,7 @@ button, input, select, textarea { font: inherit; font-variant-numeric: inherit; 
 .badge--open { background: var(--accent-surface); color: var(--accent-ink); }
 .badge--closed { background: var(--inset); color: var(--muted); }
 .badge--merged { background: var(--highlight-surface); color: var(--highlight-ink); }
+.badge--label { background: var(--inset); color: var(--secondary); }
 .badge--count { background: transparent; color: var(--muted); padding-inline: 0; }
 .badge--added, .badge--verified { background: var(--positive-surface); color: var(--positive-ink); }
 .badge--deleted { background: var(--negative-surface); color: var(--negative-ink); }
@@ -535,6 +536,7 @@ a.list__row:hover { background-color: var(--hover); text-decoration: none; }
 .list__row:focus-visible { outline-offset: -2px; }
 .list__main { flex: 1; min-width: 0; }
 .list__title { font-size: var(--type-section); font-weight: var(--weight-label); margin-bottom: 4px; overflow-wrap: anywhere; }
+.list__labels { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
 .list__meta, .list__trailing { color: var(--muted); font-size: var(--type-meta); overflow-wrap: anywhere; }
 .list__trailing { text-align: end; }
 .list__icon {
@@ -895,6 +897,16 @@ a.file-row:hover { background-color: var(--hover); text-decoration: none; }
   line-height: 1.65;
 }
 .code-panel > pre:focus-visible, .repo-instructions pre:focus-visible { outline-offset: -2px; }
+.code--highlight .tok-keyword { color: var(--code-keyword); }
+.code--highlight .tok-string { color: var(--code-string); }
+.code--highlight .tok-number { color: var(--code-number); }
+.code--highlight .tok-type { color: var(--code-type); }
+.code--highlight .tok-function { color: var(--code-function); }
+.code--highlight .tok-comment { color: var(--code-comment); font-style: italic; }
+.code--highlight .tok-key { color: var(--code-key); }
+.code--highlight .tok-tag { color: var(--code-tag); }
+.code--highlight .tok-attr { color: var(--code-attr); }
+.code--highlight .tok-meta { color: var(--code-meta); }
 
 /* ── Markdown ──────────────────────────────────────────────── */
 

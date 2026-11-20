@@ -47,6 +47,22 @@
       <label for="body">{{ chrome.locale.t(crate::i18n::DiscussionText::Description) }}</label>
       <textarea class="textarea" id="body" name="body" placeholder="{{ chrome.locale.t(crate::i18n::CommonText::MarkdownSupported) }}">&#10;{{ body_value }}</textarea>
     </div>
+    {% if can_classify %}
+      <fieldset class="field" style="min-inline-size:0; overflow-wrap:anywhere">
+        <legend>{{ chrome.locale.t(crate::i18n::IssueMetadataText::Labels) }}</legend>
+        {% for item in labels %}
+          <label class="checkbox">
+            <input type="checkbox" name="label_id" value="{{ item.id }}" {% if item.selected %}checked{% endif %}>
+            <span dir="auto">{{ item.name }}</span>
+          </label>
+        {% else %}
+          <p class="help muted">{{ chrome.locale.t(crate::i18n::IssueMetadataText::NoLabels) }}</p>
+        {% endfor %}
+        {% if is_owner %}
+          <a class="help" href="/{{ repo.owner_name }}/{{ repo.name }}/settings/issues">{{ chrome.locale.t(crate::i18n::IssueMetadataText::Catalog) }}</a>
+        {% endif %}
+      </fieldset>
+    {% endif %}
     <div class="form__actions">
       <button class="btn btn--primary" type="submit">{% if is_pull %}{{ chrome.locale.t(crate::i18n::DiscussionText::CreatePullRequest) }}{% else %}{{ chrome.locale.t(crate::i18n::DiscussionText::CreateIssue) }}{% endif %}</button>
       <a class="btn btn--ghost" href="/{{ repo.owner_name }}/{{ repo.name }}/{% if is_pull %}pulls{% else %}issues{% endif %}">{{ chrome.locale.t(crate::i18n::DiscussionText::Cancel) }}</a>

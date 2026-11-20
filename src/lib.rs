@@ -23,6 +23,7 @@ mod issue_metadata;
 mod lfs;
 mod limits;
 mod markdown;
+mod highlight;
 mod branch_rules;
 mod metadata_import;
 mod models;
@@ -215,9 +216,18 @@ async fn fetch(req: Request, env: Env, worker_ctx: Context) -> Result<Response> 
         Some(id) => id,
         None => crypto::random_token()?,
     };
-    let mut response = serve(req, env, worker_ctx, &request_id).await?;
-    response.headers_mut().set("X-Request-ID", &request_id)?;
-    Ok(response)
+    let machine = security::is_git_request(&req)
+        || (req.method() == Method::Post && security::is_check_request(&req));
+    let response = serve(req, env, worker_ctx, &request_id).await?;
+    if machine {
+        return Ok(response);
+    }
+    let headers = Headers::new();
+    for (name, value) in response.headers().entries() {
+        headers.set(&name, &value)?;
+    }
+    headers.set("X-Request-ID", &request_id)?;
+    Ok(response.with_headers(headers))
 }
 
 async fn serve(mut req: Request, env: Env, worker_ctx: Context, request_id: &str) -> Result<Response> {

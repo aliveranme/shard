@@ -1,12 +1,13 @@
 import { DurableObject } from "cloudflare:workers";
 import { PackIndex, parseCommit, parseTagTarget, parseTree, readPackedObject } from "./git-r2-pack.mjs";
 import { buildR2PackStore } from "./git-r2-packstore.mjs";
+import { ArchiveLimitError, ArchiveUnsupportedError, buildSourceTar } from "./git-r2-archive.mjs";
 import { parseReceiveBytes, parseReceivedPack, PackTooLargeError, ThinPackError } from "./git-r2-receive.mjs";
 import { renderStatus, uploadPack } from "../node_modules/durable-git/src/git/protocol.ts";
 import { gitR2S3 } from "../src/lfs_s3.js";
 import { shard_receive_report, shard_receive_request } from "../src/git_wire.js";
 
-const CONTROL = /^\/v1\/repos\/(shard-[A-Za-z0-9._-]{1,122})(?:\/(log|commit|commit-raw|tree|blob|file|ref|head|merge|merge-base|compare|integrated))?$/;
+const CONTROL = /^\/v1\/repos\/(shard-[A-Za-z0-9._-]{1,122})(?:\/(log|commit|commit-raw|tree|blob|file|archive|ref|head|merge|merge-base|compare|integrated))?$/;
 const SMART = /^\/v1\/git\/(shard-[A-Za-z0-9._-]{1,122})\.git\/(info\/refs|git-upload-pack|git-receive-pack)$/;
 const STORAGE = /^\/v1\/r2\/(shard-[A-Za-z0-9._-]{1,122})\/(snapshot|multipart|publish|recovery)$/;
 const ID = /^shard-[A-Za-z0-9._-]{1,122}$/;
@@ -35,7 +36,7 @@ const RETIRED_PACK_MS = 24 * 60 * 60_000;
 const STARTUP_MS = 45_000;
 const PORT = 8793;
 const NO_STORE = { "Cache-Control": "no-store" };
-const DIRECT_ACTIONS = new Set(["blob", "commit", "commit-raw", "file", "log", "tree"]);
+const DIRECT_ACTIONS = new Set(["archive", "blob", "commit", "commit-raw", "file", "log", "tree"]);
 const MAX_DIRECT_INDEX = 32 * MiB;
 const MAX_DIRECT_FILE = 32 * MiB;
 const MAX_DIRECT_COMMIT = 256 * 1024;
@@ -733,7 +734,7 @@ export class R2GitRepository extends DurableObject {
       oid, object.type, data.length, stored);
   }
 
-  async #readObject(oid, depth = 0, packs) {
+  async #readObject(oid, depth = 0, packs, cache = true) {
     if (!OID.test(oid) || depth > 64) return null;
     const cached = this.#cachedObject(oid);
     if (cached) return cached;
@@ -747,11 +748,11 @@ export class R2GitRepository extends DurableObject {
       }
       const object = await readPackedObject(index, oid, {
         readRange: (offset, length) => this.#packRange(key, offset, length),
-        readBase: (base, nextDepth) => this.#readObject(base, nextDepth, keys),
+        readBase: (base, nextDepth) => this.#readObject(base, nextDepth, keys, cache),
         maxBytes: MAX_DIRECT_FILE,
       });
       if (object) {
-        this.#cacheObject(oid, object);
+        if (cache) this.#cacheObject(oid, object);
         return object;
       }
     }
@@ -818,6 +819,24 @@ export class R2GitRepository extends DurableObject {
       if (!object || object.type !== 1) throw new GitHttpError(404, "Git object not found");
       if (object.data.length > MAX_DIRECT_COMMIT) throw new GitHttpError(413, "Git commit is too large");
       return binary(object.data, { "Content-Type": "application/octet-stream", "Content-Length": String(object.data.length) });
+    }
+    if (action === "archive") {
+      const oid = value("oid");
+      const name = value("name");
+      const object = await this.#readObject(oid, 0, packs);
+      if (!object || object.type !== 1) throw new GitHttpError(404, "Git object not found");
+      try {
+        const tar = await buildSourceTar(parseCommit(oid, object.data),
+          (id) => this.#readObject(id, 0, packs));
+        const filename = encodeURIComponent(`${name}-${oid}.tar`);
+        return binary(tar, { "Content-Type": "application/x-tar", "Content-Length": String(tar.length),
+          "Content-Disposition": `attachment; filename*=UTF-8''${filename}`,
+          "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" });
+      } catch (error) {
+        if (error instanceof ArchiveLimitError) throw new GitHttpError(413, error.message);
+        if (error instanceof ArchiveUnsupportedError) throw new GitHttpError(422, error.message);
+        throw error;
+      }
     }
     if (action === "tree") {
       const oid = value("oid");

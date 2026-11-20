@@ -94,13 +94,18 @@ pub fn is_html(headers: &Headers) -> Result<bool> {
 }
 
 pub fn finish(
-    mut response: Response,
+    response: Response,
     token: &str,
     previous_token: Option<&str>,
     secure: bool,
     locale: Locale,
 ) -> Result<Response> {
-    let headers = response.headers_mut();
+    // Responses created from a subrequest can carry immutable headers. Copy
+    // them into a fresh set before adding the security policy.
+    let headers = Headers::new();
+    for (name, value) in response.headers().entries() {
+        headers.set(&name, &value)?;
+    }
     headers.set("X-Content-Type-Options", "nosniff")?;
     headers.set("X-Frame-Options", "DENY")?;
     if headers.get("Referrer-Policy")?.is_none() {
@@ -119,7 +124,7 @@ pub fn finish(
     if secure {
         headers.set("Strict-Transport-Security", "max-age=31536000")?;
     }
-    if is_html(headers)? {
+    if is_html(&headers)? {
         headers.set("Content-Language", locale.code())?;
         if previous_token != Some(token) {
             headers.append(
@@ -131,5 +136,5 @@ pub fn finish(
             )?;
         }
     }
-    Ok(response)
+    Ok(response.with_headers(headers))
 }

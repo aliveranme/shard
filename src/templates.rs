@@ -123,6 +123,7 @@ pub struct CommitRow {
 pub struct IssueRow {
     pub number: i64,
     pub title: String,
+    pub labels: Vec<String>,
     pub author: Option<String>,
     pub date: Ts,
     pub comments: i64,
@@ -293,6 +294,7 @@ pub struct FilePage {
     pub path_url: String,
     pub crumbs: Vec<Crumb>,
     pub content: String,
+    pub highlighted: Option<String>,
     pub markdown_html: Option<String>,
     pub image_url: Option<String>,
     pub is_binary: bool,
@@ -384,7 +386,16 @@ pub struct IssueNewPage {
     pub branches: Vec<String>,
     pub issue_templates: Vec<crate::repo_features::IssueTemplateChoice>,
     pub selected_issue_template: Option<i64>,
+    pub can_classify: bool,
+    pub labels: Vec<LabelChoice>,
     pub is_owner: bool,
+}
+
+#[derive(Clone)]
+pub struct LabelChoice {
+    pub id: i64,
+    pub name: String,
+    pub selected: bool,
 }
 
 #[derive(Template)]

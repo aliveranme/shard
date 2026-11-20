@@ -24,6 +24,12 @@ pub(crate) struct Named {
     pub(crate) name: String,
 }
 
+impl Named {
+    pub(crate) fn filter_query(&self) -> String {
+        urlencoding::encode(&self.name).into_owned()
+    }
+}
+
 pub(crate) struct IssueMetadata {
     pub(crate) labels: Vec<Named>,
     pub(crate) milestone: Option<String>,

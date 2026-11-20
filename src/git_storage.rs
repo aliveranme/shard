@@ -287,6 +287,15 @@ impl RepoHandle {
         }
     }
 
+    /// Build a bounded source archive inside the R2 store, avoiding one Worker
+    /// subrequest per tree and blob. Other backends use the Worker builder.
+    pub(crate) async fn source_archive(&self, commit: &str, name: &str) -> Result<Option<Response>> {
+        match self {
+            Self::Artifacts(_) => Ok(None),
+            Self::Service(repo) => repo.source_archive(commit, name).await,
+        }
+    }
+
     pub(crate) async fn write_ref(&self, reference: &str, before: &str, after: &str) -> std::result::Result<(), WriteError> {
         if let Self::Service(repo) = self {
             return repo.write_ref(reference, after, before).await;
