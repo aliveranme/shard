@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Large R2 repositories clone without the Durable Object inflating every blob: upload-pack metadata is now synchronous and reads pack entry types directly.
 - R2 directory listings hide the size column when the backend does not provide sizes, instead of leaving an empty column; the object cache is capped at 32 MiB with eviction.
 - The project is released under the MIT License (`LICENSE`, package and Cargo metadata).
 - The README Deploy to Cloudflare button is an inline link, so the rendered repository page no longer shows a bare reference label.

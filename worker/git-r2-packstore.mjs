@@ -158,12 +158,27 @@ export async function buildR2PackStore(bucket, packs, getIndex, maxObjects = 200
       }
       if (type) types.set(offset, type);
       const oid = index.oidAt(entryIndex);
-      if (type && baseOid !== undefined) {
-        entries.set(oid, {
-          oid, packId: position + 1, offset, dataOff, dataLen,
-          type, size: parsed.size, entrySize: parsed.size, baseOid,
-        });
+      entries.set(oid, {
+        oid, packId: position + 1, offset, dataOff, dataLen,
+        type, size: parsed.size, entrySize: parsed.size, baseOid,
+      });
+    }
+  }
+  // Ref-deltas were stored without a type because their base may appear later
+  // or in another pack. Resolve what can be resolved so the synchronous
+  // metadata API used by upload-pack's graph walk sees the object type.
+  for (const entry of entries.values()) {
+    if (entry.type) continue;
+    let base = entry.baseOid;
+    for (let depth = 0; base && depth < 64; depth++) {
+      const parent = entries.get(base);
+      if (!parent) break;
+      if (parent.type) {
+        entry.type = parent.type;
+        entry.size = parent.entrySize ?? parent.size;
+        break;
       }
+      base = parent.baseOid;
     }
   }
   return new R2PackStore(bucket, packs, sizes, entries, total, cache);

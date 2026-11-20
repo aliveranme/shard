@@ -949,6 +949,12 @@ export class R2GitRepository extends DurableObject {
 
   #uploadStore(repository, count, packStore) {
     const typeName = (type) => OBJECT_TYPES[type];
+    const metadata = (oid) => {
+      const entry = packStore.lookup(oid);
+      if (entry?.type) return { type: entry.type, size: entry.entrySize ?? entry.size ?? 0 };
+      const cached = this.#cachedObject(oid);
+      return cached ? { type: typeName(cached.type), size: cached.data.length } : null;
+    };
     const object = async (oid) => {
       const cached = await this.#readObject(oid, 0, repository.packs);
       return cached ? { type: typeName(cached.type), data: cached.data } : null;
@@ -958,11 +964,8 @@ export class R2GitRepository extends DurableObject {
       resolveHead: () => repository.refs.find((ref) => ref.name === repository.head)?.oid ?? null,
       refs: () => repository.refs.map((ref) => ({ name: ref.name, target: ref.oid })),
       get: object,
-      has: async (oid) => (await this.#findObject(oid, repository.packs)) !== null,
-      typeAndSize: async (oid) => {
-        const value = await object(oid);
-        return value ? { type: value.type, size: value.data.length } : null;
-      },
+      has: (oid) => metadata(oid) !== null,
+      typeAndSize: metadata,
       objectCount: () => count,
       reachableCacheValid: () => false,
       loadReachable: () => null,
