@@ -229,6 +229,7 @@ async fn scan_commits(
     max_commits: usize,
     results: &mut SearchResults,
 ) {
+    let full_in_log = handle.log_includes_full_message();
     results.coverage.scan_limited = history.len() > max_commits;
     for commit in history.into_iter().take(max_commits) {
         if !is_object_id(&commit.hash) {
@@ -239,6 +240,8 @@ async fn scan_commits(
             Some(excerpt(&commit.message, 0))
         } else if let Some(detail) = commit_excerpt(&commit.message, query, &mut results.coverage) {
             Some(detail)
+        } else if full_in_log {
+            None
         } else {
             match handle.read_commit(&commit.hash).await {
                 Ok(Some(full)) => commit_excerpt(&full.message, query, &mut results.coverage),
@@ -314,10 +317,18 @@ impl FileScan<'_> {
                 return;
             }
         };
-        self.entries_left -= entries.len() as u32;
+        let Some(remaining) = self.entries_left.checked_sub(entries.len() as u32) else {
+            self.results.coverage.scan_limited = true;
+            return;
+        };
+        self.entries_left = remaining;
         entries.sort_unstable_by(|left, right| left.name.cmp(&right.name));
         let parent_len = self.path.len();
         for entry in entries {
+            if self.code && self.bytes_left == 0 {
+                self.results.coverage.scan_limited = true;
+                break;
+            }
             if parent_len + (parent_len != 0) as usize + entry.name.len() > MAX_PATH_BYTES {
                 self.results.coverage.scan_limited = true;
                 continue;

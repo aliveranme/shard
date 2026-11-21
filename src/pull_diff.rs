@@ -209,7 +209,10 @@ impl Walk<'_> {
         let Some(mut entries) = repo.read_tree_bounded(hash, self.entries_left).await? else {
             return Ok(None);
         };
-        self.entries_left -= entries.len() as u32;
+        let Some(remaining) = self.entries_left.checked_sub(entries.len() as u32) else {
+            return Ok(None);
+        };
+        self.entries_left = remaining;
         entries.sort_unstable_by(|a, b| a.name.cmp(&b.name));
         Ok(Some(entries))
     }

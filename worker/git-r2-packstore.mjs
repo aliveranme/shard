@@ -140,7 +140,7 @@ export async function buildR2PackStore(bucket, packs, getIndex, maxObjects = 200
     const key = packs[position];
     const index = indexes[position];
     const pack = await bucket.head(`${key}.pack`);
-    if (!pack || !Number.isSafeInteger(pack.size) || pack.size < 12) return null;
+    if (!pack || !Number.isSafeInteger(pack.size) || pack.size < 32) return null;
     sizes.push(pack.size);
     total += pack.size;
     const headers = new PackHeaders(bucket, key);
@@ -151,7 +151,9 @@ export async function buildR2PackStore(bucket, packs, getIndex, maxObjects = 200
     const types = new Map();
     for (let positionInPack = 0; positionInPack < order.length; positionInPack++) {
       const { offset, index: entryIndex } = order[positionInPack];
-      const raw = await headers.read(offset, 64);
+      const headerLen = Math.min(64, packEnd - offset);
+      if (headerLen <= 0) return null;
+      const raw = await headers.read(offset, headerLen);
       const parsed = parsePackEntry(raw, offset);
       const next = positionInPack + 1 < order.length ? order[positionInPack + 1].offset : packEnd;
       const dataOff = parsed.start;

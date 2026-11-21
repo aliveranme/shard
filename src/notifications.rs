@@ -74,7 +74,29 @@ pub async fn inbox(req: Request, ctx: RouteContext<AppState>) -> Result<Response
     )
     .await?;
     let pagination = page.finish(&req, &mut notifications, None)?;
-    let has_unread = notifications.first().is_some_and(|row| row.has_unread != 0);
+    let has_unread = if let Some(first) = notifications.first() {
+        first.has_unread != 0
+    } else if page.number > 1 {
+        let [recipient, admin] = viewer_params(state);
+        #[derive(serde::Deserialize)]
+        struct Unread {
+            has_unread: i64,
+        }
+        db::first::<Unread>(
+            &state.db()?,
+            &format!(
+                "SELECT EXISTS (
+                   SELECT 1 {INBOX_FROM} {THREAD_JOINS}
+                   WHERE n.recipient_id = ?1 AND n.read_at IS NULL AND {VISIBLE_REPO_SQL}
+                 ) AS has_unread"
+            ),
+            &[recipient, admin],
+        )
+        .await?
+        .is_some_and(|row| row.has_unread != 0)
+    } else {
+        false
+    };
     render(&InboxPage {
         chrome: Chrome::new(state),
         title: page_title(&[state.locale.t(NotificationText::Notifications)]),

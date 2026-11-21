@@ -182,7 +182,17 @@ async fn mutate(ctx: RouteContext<AppState>, operation: Operation) -> Result<Res
         ],
     ).await?;
     match recorded {
-        Some(review) => crate::handlers::issues::redirect_to_entry(state, &database, &repo, &issue, Some(review.id)).await,
+        Some(review) => {
+            if decision == "approved" {
+                let env = state.env.clone();
+                let repo_id = repo.id;
+                let base_branch = pull.base_branch.clone();
+                state.worker_ctx.wait_until(async move {
+                    crate::branch_rules::wake_branch(&env, repo_id, &base_branch).await;
+                });
+            }
+            crate::handlers::issues::redirect_to_entry(state, &database, &repo, &issue, Some(review.id)).await
+        }
         None => conflict(),
     }
 }
@@ -397,7 +407,7 @@ async fn record_merge(
             return error(state, 502, DiscussionText::MergeUnavailable);
         }
     };
-    let Some(review) = record_observed_merge(database, repo, issue, pull, actor, &tip).await? else {
+    let Some(review) = record_observed_merge(database, repo, issue, pull, Some(actor), &tip, true).await? else {
         return error(state, 409, DiscussionText::ReviewConflict);
     };
     crate::handlers::issues::redirect_to_entry(state, database, repo, issue, Some(review)).await
@@ -409,30 +419,47 @@ pub(crate) async fn record_observed_merge(
     repo: &Repo,
     issue: &Issue,
     pull: &Pull,
-    actor: i64,
+    actor: Option<i64>,
     tip: &str,
+    verify_writer: bool,
 ) -> Result<Option<i64>> {
     if !is_object_id(tip) || issue.repo_id != repo.id || pull.issue_id != issue.id {
         return Ok(None);
     }
     let version = pull.snapshot.comparison_version;
     let now = util::now();
-    let event = database.prepare(
+    let actor_val = actor.map_or_else(util::js_null, util::js_int);
+    let writer_guard = if verify_writer {
+        "AND EXISTS (
+            SELECT 1 FROM repos r JOIN users u ON u.id = ?1
+             WHERE r.id = i.repo_id AND (r.owner_id = u.id OR u.is_admin = 1 OR EXISTS (
+                 SELECT 1 FROM repo_member_roles c
+                 WHERE c.repo_id = r.id AND c.user_id = u.id AND c.role = 'write'
+             ))
+         )"
+    } else {
+        ""
+    };
+    let event = database.prepare(format!(
         "INSERT INTO pull_reviews (issue_id, actor_id, decision, base_commit, head_commit,
                                    merge_base, comparison_version, body, created_at)
          SELECT p.issue_id, ?1, 'merge_verified', p.base_commit, p.head_commit, p.merge_base, p.comparison_version, ?2, ?3
          FROM pulls p JOIN issues i ON i.id = p.issue_id
          WHERE p.issue_id = ?4 AND p.comparison_version = ?5 AND p.merged = 0 AND i.repo_id = ?6
-         RETURNING id",
-    ).bind(&[
-        util::js_int(actor), util::js_text(tip), util::js_int(now), util::js_int(issue.id),
+           {writer_guard}
+         RETURNING id"
+    )).bind(&[
+        actor_val.clone(), util::js_text(tip), util::js_int(now), util::js_int(issue.id),
         util::js_int(version), util::js_int(repo.id),
     ])?;
-    let merge = database.prepare(
-        "UPDATE pulls SET merged = 1, merged_at = ?1, merge_commit = ?2
-         WHERE issue_id = ?3 AND comparison_version = ?4 AND merged = 0
-           AND EXISTS (SELECT 1 FROM issues WHERE id = ?3 AND repo_id = ?5)",
-    ).bind(&[util::js_int(now), util::js_text(tip), util::js_int(issue.id), util::js_int(version), util::js_int(repo.id)])?;
+    let merge = database.prepare(format!(
+        "UPDATE pulls SET merged = 1, merged_at = ?3, merge_commit = ?2
+         WHERE issue_id = ?4 AND comparison_version = ?5 AND merged = 0
+           AND EXISTS (SELECT 1 FROM issues i WHERE i.id = ?4 AND i.repo_id = ?6 {writer_guard})"
+    )).bind(&[
+        actor_val, util::js_text(tip), util::js_int(now), util::js_int(issue.id),
+        util::js_int(version), util::js_int(repo.id),
+    ])?;
     let close = database.prepare(
         "UPDATE issues SET state = 'closed', closed_at = COALESCE(closed_at, ?1), updated_at = ?1
          WHERE id = ?2 AND state <> 'closed' AND EXISTS (SELECT 1 FROM pulls WHERE issue_id = ?2 AND merged = 1)",

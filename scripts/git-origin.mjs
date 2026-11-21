@@ -921,6 +921,7 @@ async function runPushHook(stage) {
     if (intent !== null) {
       await forgeControl(url, headers, { action: "confirm", storage, intent, actor, accepted: updates.map(({ name }) => name) });
     }
+    await rm(state, { force: true }).catch(() => {});
   }
 }
 
@@ -1250,6 +1251,7 @@ export async function createGitOrigin({
     return withWrite(storage, signal, () => withStaging(async (staging) => {
       // A missing pre-receive hook would silently let Git write without a fresh authorization check.
       await access(join(hooks, "pre-receive"), fsConstants.X_OK);
+      const stateFile = join(staging, "push.json");
       const env = {
         ...gitConfig([["core.hooksPath", hooks], ["receive.unpackLimit", "1"], ["core.bigFileThreshold", "64m"]]),
         SHARD_GIT_TOKEN: token,
@@ -1257,9 +1259,20 @@ export async function createGitOrigin({
         SHARD_GIT_HOOK_AUTH: authorization,
         SHARD_GIT_HOOK_IP: ip ?? "",
         SHARD_GIT_HOOK_STORAGE: storage,
-        SHARD_GIT_HOOK_STATE: join(staging, "push.json"),
+        SHARD_GIT_HOOK_STATE: stateFile,
       };
-      await smartHttp(req, res, storage, action, service, { ...options, env });
+      try {
+        await smartHttp(req, res, storage, action, service, { ...options, env });
+      } finally {
+        try {
+          const { intent } = JSON.parse(await readFile(stateFile, "utf8"));
+          if (intent !== null) {
+            await forgeControl(url, forgeHeaders(token, authorization, ip), { action: "release", storage, intent });
+          }
+        } catch {
+          // Hook state absent (no intent staged or already confirmed) or release failed (cron reconciles).
+        }
+      }
     }));
   }
 

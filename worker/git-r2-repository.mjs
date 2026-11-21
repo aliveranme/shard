@@ -126,6 +126,63 @@ function validRef(name) {
     name.split("/").every(part => part && !part.startsWith(".") && !part.endsWith(".lock"));
 }
 
+function hasRefConflict(refs, candidate) {
+  for (const name of refs.keys()) {
+    if (name === candidate) continue;
+    if (name.startsWith(`${candidate}/`) || candidate.startsWith(`${name}/`)) return true;
+  }
+  return false;
+}
+
+async function readPrefixOrSplice(request, limit) {
+  if (!request.body) return { bytes: new Uint8Array(), fallback: null };
+  const reader = request.body.getReader();
+  const chunks = [];
+  let length = 0;
+  for (;;) {
+    const next = await reader.read();
+    if (next.done) {
+      reader.releaseLock();
+      const data = new Uint8Array(length);
+      let offset = 0;
+      for (const chunk of chunks) {
+        data.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return { bytes: data, fallback: null };
+    }
+    const value = next.value instanceof Uint8Array ? next.value : new Uint8Array(next.value);
+    if (!value.byteLength) continue;
+    chunks.push(value);
+    length += value.byteLength;
+    if (length > limit) {
+      let index = 0;
+      const stream = new ReadableStream({
+        async pull(controller) {
+          if (index < chunks.length) {
+            controller.enqueue(chunks[index++]);
+            return;
+          }
+          const more = await reader.read();
+          if (more.done) {
+            reader.releaseLock();
+            controller.close();
+            return;
+          }
+          controller.enqueue(more.value);
+        },
+        async cancel(reason) {
+          try { await reader.cancel(reason); } catch {}
+        },
+      });
+      return {
+        bytes: null,
+        fallback: new Request(request.url, { method: request.method, headers: request.headers, body: stream }),
+      };
+    }
+  }
+}
+
 function validSnapshot(snapshot, validPack) {
   return validRef(snapshot.head) && snapshot.head.startsWith("refs/heads/")
     && Array.isArray(snapshot.refs) && Array.isArray(snapshot.packs)
@@ -764,6 +821,7 @@ export class R2GitRepository extends DurableObject {
         readRange: (offset, length) => this.#packRange(key, offset, length),
         readBase: (base, nextDepth) => this.#readObject(base, nextDepth, keys),
         maxBytes: MAX_DIRECT_FILE,
+        initialDepth: depth,
       });
       if (object) {
         this.#cacheObject(oid, object);
@@ -774,7 +832,8 @@ export class R2GitRepository extends DurableObject {
   }
 
   async #resolveCommit(repository, reference, packs) {
-    const peeled = (reference || repository.head).replace(/\^\{[^}]*\}$/, "");
+    const raw = !reference || reference === "HEAD" ? repository.head : reference;
+    const peeled = raw.replace(/\^\{[^}]*\}$/, "");
     let oid = OID.test(peeled) ? peeled : null;
     if (!oid) {
       const candidates = peeled.startsWith("refs/")
@@ -979,9 +1038,21 @@ export class R2GitRepository extends DurableObject {
     };
   }
 
-  async #directUploadPack(repository, request) {
-    const declared = Number(request.headers.get("content-length") ?? "0");
-    if (Number.isFinite(declared) && declared > MAX_DIRECT_UPLOAD) return null;
+  async #directUploadPack(repository, request, rawBytes) {
+    const encoding = (request.headers.get("content-encoding") ?? "").trim().toLowerCase();
+    let body = rawBytes;
+    if (encoding === "gzip") {
+      try {
+        const decompressed = new Blob([rawBytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+        body = await bytes(decompressed, MAX_DIRECT_UPLOAD, 413);
+      } catch (error) {
+        if (error instanceof GitHttpError) throw error;
+        return null;
+      }
+    } else if (encoding && encoding !== "identity") {
+      return null;
+    }
+    if (body.length > MAX_DIRECT_UPLOAD) throw new GitHttpError(413, "Git upload request is too large");
     const count = await this.#objectCount(repository.packs);
     if (count > MAX_DIRECT_OBJECTS) return null;
     const cacheKey = `${repository.revision}:${repository.packs.join("|")}`;
@@ -994,11 +1065,10 @@ export class R2GitRepository extends DurableObject {
       if (this.#packStores.size > 4) this.#packStores.clear();
       this.#packStores.set(cacheKey, packStore);
     }
-    const body = new Uint8Array(await request.arrayBuffer());
-    if (body.length > MAX_DIRECT_UPLOAD) throw new GitHttpError(413, "Git upload request is too large");
-    if (count > 500) {
-      // Warm the small commit/tree objects before upload-pack's serial graph
-      // walk. Blobs are left as leaves and are not inflated.
+    // Only prewarm commit/tree objects for requests that actually ask for objects.
+    const requestText = new TextDecoder("latin1").decode(body.subarray(0, Math.min(body.length, 4096)));
+    const needsPack = !requestText.includes("command=ls-refs") && requestText.includes("want ");
+    if (needsPack && count > 500) {
       const warm = packStore.oidsOfTypes(["commit", "tree"]);
       for (let start = 0; start < warm.length; start += 8) {
         await Promise.all(warm.slice(start, start + 8).map((oid) =>
@@ -1026,15 +1096,22 @@ export class R2GitRepository extends DurableObject {
       );
     }
     const head = repository.refs.find((ref) => ref.name === repository.head);
+    const caps = `multi_ack_detailed no-done shallow side-band-64k thin-pack ofs-delta ` +
+      `agent=shard/0.4.0 ${head ? `symref=HEAD:${repository.head} ` : ""}object-format=sha1`;
     let body = packet("# service=git-upload-pack\n") + "0000";
+    let capsEmitted = false;
     if (head) {
-      body += packet(`${head.oid} HEAD\0` +
-        `multi_ack_detailed side-band-64k thin-pack ofs-delta deepen-since deepen-not ` +
-        `agent=shard/0.4.0 symref=HEAD:${repository.head} object-format=sha1\n`);
+      body += packet(`${head.oid} HEAD\0${caps}\n`);
+      capsEmitted = true;
     }
     const refs = [];
     for (const ref of repository.refs) {
-      refs.push(packet(`${ref.oid} ${ref.name}\n`));
+      if (!capsEmitted) {
+        refs.push(packet(`${ref.oid} ${ref.name}\0${caps}\n`));
+        capsEmitted = true;
+      } else {
+        refs.push(packet(`${ref.oid} ${ref.name}\n`));
+      }
       if (ref.name.startsWith("refs/tags/")) {
         let oid = ref.oid;
         let peeled = null;
@@ -1046,6 +1123,9 @@ export class R2GitRepository extends DurableObject {
         }
         if (peeled) refs.push(packet(`${peeled} ${ref.name}^{}\n`));
       }
+    }
+    if (!capsEmitted) {
+      refs.push(packet(`${ZERO} capabilities^{}\0${caps}\n`));
     }
     body += refs.join("") + "0000";
     return new Response(body, { headers: {
@@ -1122,8 +1202,9 @@ export class R2GitRepository extends DurableObject {
     return new Response(body, { status: response.status, headers: response.headers });
   }
 
-  async #mutate(repository, path, request) {
+  async #mutate(path, request) {
     return this.#lock(async () => {
+      const repository = this.#repository();
       const payload = await control(request.body);
       const repos = [repository];
       if (payload.source !== undefined && payload.source !== repository.id) {
@@ -1188,27 +1269,27 @@ export class R2GitRepository extends DurableObject {
     }
   }
 
-  async #directReceive(repository, request) {
-    if (request.headers.get("Content-Type") !== INGEST_TYPE) return null;
+  async #directReceive(rawBytes, request) {
     const actor = request.headers.get("x-shard-git-actor");
     if (!ACTOR.test(actor ?? "")) return null;
-    const encoding = (request.headers.get("content-encoding") ?? "").trim().toLowerCase();
-    if (encoding && encoding !== "identity") return null;
-    const declared = Number(request.headers.get("content-length") ?? "0");
-    if (Number.isFinite(declared) && declared > MAX_DIRECT_PUSH) return null;
-    const bytes = new Uint8Array(await request.arrayBuffer());
-    if (bytes.length > MAX_DIRECT_PUSH) return null;
+    if (rawBytes.length > MAX_DIRECT_PUSH) return null;
     let push;
     try {
-      push = parseReceiveBytes(bytes);
+      push = parseReceiveBytes(rawBytes);
     } catch {
       return null;
     }
     if (!push.updates.length) return null;
-    if (push.updates.some((update) => update.name === repository.head && update.after === ZERO)) {
-      return json({ message: "The default Git branch cannot be deleted" }, 422);
+    for (const update of push.updates) {
+      if (!validRef(update.name) || (update.before === ZERO && update.after === ZERO)) {
+        return json({ message: "Invalid Git reference update" }, 422);
+      }
     }
     return await this.#lock(async () => {
+      const repository = this.#repository();
+      if (push.updates.some((update) => update.name === repository.head && update.after === ZERO)) {
+        return json({ message: "The default Git branch cannot be deleted" }, 422);
+      }
       let pack = null;
       if (push.pack.length) {
         try {
@@ -1226,75 +1307,106 @@ export class R2GitRepository extends DurableObject {
       if (!pack && push.updates.some((update) => update.after !== ZERO)) return null;
       const lookup = async (oid) => {
         const local = pack?.objects.get(oid);
-        if (local) return local;
+        if (local) return { ...local, local: true };
         const object = await this.#readObject(oid, 0, repository.packs);
-        return object ? { oid, type: object.type, data: object.data } : null;
+        return object ? { oid, type: object.type, data: object.data, local: false } : null;
       };
+      const seen = new Set();
       let inspected = 0;
-      const checkTree = async (oid) => {
+      const checkObject = async (oid, expectedType = null, depth = 0) => {
+        if (depth > 256) throw new PackTooLargeError("Git push object graph is too deep");
+        if (seen.has(oid)) {
+          if (expectedType === null) return true;
+          const existing = await lookup(oid);
+          return !!existing && existing.type === expectedType;
+        }
         if (++inspected > MAX_DIRECT_OBJECTS) throw new PackTooLargeError("Git push object graph is too large");
         const object = await lookup(oid);
-        if (!object || object.type !== 2) return false;
-        let entries;
-        try {
-          entries = parseTree(object.data);
-        } catch {
-          return false;
-        }
-        for (const entry of entries) {
-          if (entry.mode === "040000") {
-            if (!await checkTree(entry.hash)) return false;
-          } else if (entry.mode !== "160000") {
-            const blob = await lookup(entry.hash);
-            if (!blob || blob.type !== 3) return false;
-          }
-        }
-        return true;
-      };
-      const checkCommit = async (oid) => {
-        const object = await lookup(oid);
-        if (!object || object.type !== 1) return false;
-        let commit;
-        try {
-          commit = parseCommit(oid, object.data);
-        } catch {
-          return false;
-        }
-        for (const parent of commit.parents) {
-          const value = await lookup(parent);
-          if (!value || value.type !== 1) return false;
-        }
-        return await checkTree(commit.tree);
-      };
-      const refs = new Map(repository.refs.map((ref) => [ref.name, ref.oid]));
-      for (const update of push.updates) {
-        if (update.before !== (refs.get(update.name) ?? ZERO)) throw new GitHttpError(409, "Git refs changed during push");
-        if (update.after === ZERO) {
-          refs.delete(update.name);
-          continue;
-        }
-        const object = await lookup(update.after);
-        if (!object) return null;
+        if (!object || (expectedType !== null && object.type !== expectedType)) return false;
+        seen.add(oid);
+        // Objects already durable in existing repository packs were validated when published.
+        if (!object.local) return true;
         if (object.type === 1) {
-          if (!await checkCommit(update.after)) return null;
-        } else if (object.type === 4 && update.name.startsWith("refs/tags/")) {
+          let commit;
+          try {
+            commit = parseCommit(oid, object.data);
+          } catch {
+            return false;
+          }
+          if (!await checkObject(commit.tree, 2, depth + 1)) return false;
+          for (const parent of commit.parents) {
+            if (!await checkObject(parent, 1, depth + 1)) return false;
+          }
+          return true;
+        }
+        if (object.type === 2) {
+          let entries;
+          try {
+            entries = parseTree(object.data);
+          } catch {
+            return false;
+          }
+          for (const entry of entries) {
+            if (entry.mode === "040000") {
+              if (!await checkObject(entry.hash, 2, depth + 1)) return false;
+            } else if (entry.mode !== "160000") {
+              if (!await checkObject(entry.hash, 3, depth + 1)) return false;
+            }
+          }
+          return true;
+        }
+        if (object.type === 3) return true;
+        if (object.type === 4) {
           let target;
           try {
             target = parseTagTarget(object.data);
           } catch {
-            return null;
+            return false;
           }
-          const peeled = await lookup(target);
-          if (!peeled || peeled.type !== 1) return null;
+          return await checkObject(target, null, depth + 1);
+        }
+        return false;
+      };
+      const refs = new Map(repository.refs.map((ref) => [ref.name, ref.oid]));
+      for (const update of push.updates) {
+        if (update.before !== (refs.get(update.name) ?? ZERO)) {
+          if (!push.report) throw new GitHttpError(409, "Git refs changed during push");
+          const report = renderStatus(
+            push.updates.map((item) => ({ ref: item.name, ok: false, msg: "fetch first" })),
+            null,
+            push.sideband,
+          );
+          return result(report);
+        }
+        if (update.after === ZERO) {
+          refs.delete(update.name);
+          continue;
+        }
+        if (hasRefConflict(refs, update.name)) {
+          return json({ message: "Git reference conflicts with an existing reference" }, 422);
+        }
+        const object = await lookup(update.after);
+        if (!object) return null;
+        if (update.name.startsWith("refs/heads/") && object.type !== 1) {
+          return json({ message: "Git branches must reference a commit" }, 422);
+        }
+        if (object.type === 1) {
+          if (!await checkObject(update.after, 1)) return null;
+        } else if (object.type === 4 && update.name.startsWith("refs/tags/")) {
+          if (!await checkObject(update.after, 4)) return null;
+        } else if (update.name.startsWith("refs/tags/") && (object.type === 2 || object.type === 3)) {
+          if (!await checkObject(update.after, object.type)) return null;
         } else {
           return null;
         }
         refs.set(update.name, update.after);
       }
+      const existingHashes = new Set(repository.packs.map((packKey) => packKey.split("/pack-").at(-1)));
+      const storePack = !!pack && pack.entries.length > 0 && !existingHashes.has(pack.packHash);
       const job = await this.#reserve(repository.id, repository.revision, actor);
       let key = null;
       try {
-        if (pack) {
+        if (storePack) {
           key = `${packPrefix(repository.id, job)}pack-${pack.packHash}`;
           await this.#bucket.put(`${key}.pack`, pack.packBytes);
           await this.#bucket.put(`${key}.idx`, pack.idx);
@@ -1321,7 +1433,7 @@ export class R2GitRepository extends DurableObject {
     });
   }
 
-  async #standard(repository, path, request) {
+  async #standard(path, request) {
     if (request.headers.get("Content-Type") !== INGEST_TYPE) return empty(415);
     const actor = request.headers.get("x-shard-git-actor");
     if (!ACTOR.test(actor ?? "") || !request.body) return empty(400);
@@ -1339,6 +1451,7 @@ export class R2GitRepository extends DurableObject {
       },
     }));
     return this.#lock(async () => {
+      const repository = this.#repository();
       let push;
       try {
         push = await shard_receive_request(bounded, "");
@@ -1562,19 +1675,30 @@ export class R2GitRepository extends DurableObject {
         }
       }
       if (smart && action === "git-receive-pack" && request.method === "POST" && !url.search) {
-        const fallback = request.clone();
-        if (this.#directReads) {
-          try {
-            const direct = await this.#directReceive(repository, request);
-            if (direct) return direct;
-          } catch (error) {
-            if (error instanceof GitHttpError) throw error;
-            console.error("R2 direct receive failed", error?.message);
+        const encoding = (request.headers.get("content-encoding") ?? "").trim().toLowerCase();
+        const declared = Number(request.headers.get("content-length") ?? "0");
+        const canDirect = this.#directReads
+          && request.headers.get("Content-Type") === INGEST_TYPE
+          && (!encoding || encoding === "identity")
+          && (!Number.isFinite(declared) || declared <= MAX_DIRECT_PUSH);
+        if (canDirect) {
+          const read = await readPrefixOrSplice(request, MAX_DIRECT_PUSH);
+          if (read.bytes !== null) {
+            try {
+              const direct = await this.#directReceive(read.bytes, request);
+              if (direct) return direct;
+            } catch (error) {
+              if (error instanceof GitHttpError) throw error;
+              console.error("R2 direct receive failed", error?.message);
+            }
+            const replay = new Request(request.url, { method: request.method, headers: request.headers, body: read.bytes });
+            return await this.#standard(url.pathname, replay);
           }
+          return await this.#standard(url.pathname, read.fallback);
         }
-        return await this.#standard(repository, url.pathname, fallback);
+        return await this.#standard(url.pathname, request);
       } else if (command && ["ref", "head", "merge"].includes(action) && request.method === "POST" && !url.search) {
-        return await this.#mutate(repository, url.pathname, request);
+        return await this.#mutate(url.pathname, request);
       } else if (smart && action === "info/refs" && request.method === "GET" &&
         url.searchParams.get("service") === "git-upload-pack" && this.#directReads) {
         const v2 = (request.headers.get("git-protocol") ?? "").toLowerCase().includes("version=2");
@@ -1587,19 +1711,28 @@ export class R2GitRepository extends DurableObject {
         return await this.#read(repository, url, request, false);
       } else if (smart && action === "git-upload-pack" && request.method === "POST" &&
         !url.search && this.#directReads) {
-        const fallback = request.clone();
-        try {
-          const direct = await this.#directUploadPack(repository, request);
-          if (direct) {
-            const headers = new Headers(direct.headers);
-            headers.set("X-Shard-R2-Read", "direct");
-            return new Response(direct.body, { status: direct.status, statusText: direct.statusText, headers });
+        const declared = Number(request.headers.get("content-length") ?? "0");
+        let fallbackRequest = request;
+        if (!Number.isFinite(declared) || declared <= MAX_DIRECT_UPLOAD) {
+          const read = await readPrefixOrSplice(request, MAX_DIRECT_UPLOAD);
+          if (read.bytes !== null) {
+            try {
+              const direct = await this.#directUploadPack(repository, request, read.bytes);
+              if (direct) {
+                const headers = new Headers(direct.headers);
+                headers.set("X-Shard-R2-Read", "direct");
+                return new Response(direct.body, { status: direct.status, statusText: direct.statusText, headers });
+              }
+            } catch (error) {
+              if (error instanceof GitHttpError) throw error;
+              console.error("R2 direct upload-pack failed", error?.message);
+            }
+            fallbackRequest = new Request(request.url, { method: request.method, headers: request.headers, body: read.bytes });
+          } else {
+            fallbackRequest = read.fallback;
           }
-        } catch (error) {
-          if (error instanceof GitHttpError) throw error;
-          console.error("R2 direct upload-pack failed", error?.message);
         }
-        const response = await this.#read(repository, url, fallback, false);
+        const response = await this.#read(repository, url, fallbackRequest, false);
         const headers = new Headers(response.headers);
         headers.set("X-Shard-R2-Read", "container");
         return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
@@ -1614,7 +1747,9 @@ export class R2GitRepository extends DurableObject {
         } catch (error) {
           if (error instanceof GitHttpError) throw error;
           console.error("R2 direct read failed", error?.message);
+          if (action === "archive") throw new GitHttpError(502, "R2 Git archive generation failed");
         }
+        if (action === "archive") throw new GitHttpError(502, "R2 Git archive generation failed");
         const response = await this.#read(repository, url, request, false);
         const headers = new Headers(response.headers);
         headers.set("X-Shard-R2-Read", "container");

@@ -39,7 +39,7 @@ function ustarPath(path) {
 
 function safeComponent(name) {
   if (!name || name.endsWith(".") || name.endsWith(" ") || name.toLowerCase() === ".git"
-      || [...name].some((ch) => ch.charCodeAt(0) < 32 || ch === "\u{fffd}")
+      || /[\u0000-\u001f\u007f-\u009f\ufffd]/.test(name)
       || /[\/\\:<>"|?*]/.test(name)) return false;
   const stem = (name.split(".")[0] ?? "").replace(/ +$/, "");
   if (["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"].some((device) => stem.toLowerCase() === device.toLowerCase())) return false;
@@ -119,7 +119,15 @@ export async function buildSourceTar(commit, readObject) {
   // file while bounded buffering stays below the Durable Object memory limit.
   for (let start = 0; start < files.length; start += 2) {
     await Promise.all(files.slice(start, start + 2).map(async (node) => {
-      const blob = await readObject(node.hash);
+      let blob;
+      try {
+        blob = await readObject(node.hash);
+      } catch (error) {
+        if (/exceeds the read limit|delta sizes/i.test(error?.message ?? "")) {
+          throw new ArchiveLimitError("Archive is too large");
+        }
+        throw error;
+      }
       if (!blob || blob.type !== 3) throw new ArchiveUnsupportedError("Missing Git blob");
       const data = blob.data ?? new Uint8Array();
       buffered += BLOCK + align(data.length);
@@ -147,7 +155,12 @@ function parseTreeEntries(data) {
     const nul = data.indexOf(0, space + 1);
     if (space < 0 || nul < 0 || nul + 21 > data.length) throw new ArchiveUnsupportedError("Invalid Git tree");
     const mode = new TextDecoder().decode(data.subarray(offset, space));
-    const name = new TextDecoder("utf-8", { fatal: true }).decode(data.subarray(space + 1, nul));
+    let name;
+    try {
+      name = new TextDecoder("utf-8", { fatal: true }).decode(data.subarray(space + 1, nul));
+    } catch {
+      throw new ArchiveUnsupportedError("Non-UTF-8 archive entry");
+    }
     const hash = [...data.subarray(nul + 1, nul + 21)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
     entries.push({ mode: mode === "40000" ? "040000" : mode, name, hash });
     offset = nul + 21;

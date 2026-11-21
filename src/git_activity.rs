@@ -10,6 +10,7 @@ use worker::{Env, Error, Result};
 
 const CHECK_DELAY: i64 = 60;
 const RETRY_DELAY: i64 = 300;
+const ADMISSION_TTL: i64 = 300;
 const INTENT_TTL: i64 = 3600;
 
 #[derive(Deserialize)]
@@ -66,7 +67,7 @@ pub(crate) async fn stage(database: &D1Database, repo_id: i64, updates: &[RefUpd
     }
     let time = now();
     let expires_at = time + INTENT_TTL;
-    let admitted_until = if updates.iter().any(|update| update.name.starts_with("refs/heads/")) { expires_at } else { 0 };
+    let admitted_until = if updates.iter().any(|update| update.name.starts_with("refs/heads/")) { time + ADMISSION_TTL } else { 0 };
     let updates = serde_json::to_string(&updates)?;
     let id = database.prepare(concat!(
         "INSERT INTO git_push_intents (repo_id, updates, check_at, expires_at, admitted_until)
@@ -117,6 +118,16 @@ pub(crate) async fn confirm_direct(env: &Env, repo_id: i64, id: i64, actor: i64,
         confirm(env, intent, Some(actor), accepted).await?;
     }
     Ok(())
+}
+
+pub(crate) async fn release_admission(env: &Env, repo_id: i64, id: i64) {
+    if let Ok(database) = env.d1("DB") {
+        let _ = db::run(
+            &database,
+            "UPDATE git_push_intents SET admitted_until = 0, check_at = MIN(check_at, ?1) WHERE id = ?2 AND repo_id = ?3",
+            &[js_int(now()), js_int(id), js_int(repo_id)],
+        ).await;
+    }
 }
 
 pub(crate) async fn record(env: &Env, repo_id: i64, actor: Option<i64>, updates: &[RefUpdate]) {

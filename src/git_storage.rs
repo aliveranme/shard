@@ -235,10 +235,25 @@ impl RepoHandle {
         Ok(self.log(git_ref, 1).await?.into_iter().next())
     }
 
+    pub(crate) fn log_includes_full_message(&self) -> bool {
+        matches!(self, Self::Service(repo) if repo.is_r2())
+    }
+
     pub(crate) async fn read_commit(&self, hash: &str) -> Result<Option<Commit>> {
         match self {
             Self::Artifacts(repo) => repo.read_commit(hash).await,
             Self::Service(repo) => Ok(repo.read_commit(hash).await?.map(|value| value.commit)),
+        }
+    }
+
+    pub(crate) async fn read_commit_with_parents(&self, hash: &str) -> Result<Option<(Commit, Vec<String>)>> {
+        match self {
+            Self::Artifacts(repo) => {
+                let Some(commit) = repo.read_commit(hash).await? else { return Ok(None) };
+                let Some(parents) = repo.commit_parents(&commit.hash).await? else { return Ok(None) };
+                Ok(Some((commit, parents)))
+            }
+            Self::Service(repo) => Ok(repo.read_commit(hash).await?.map(|value| (value.commit, value.parents))),
         }
     }
 
@@ -289,9 +304,9 @@ impl RepoHandle {
 
     /// Build a bounded source archive inside the R2 store, avoiding one Worker
     /// subrequest per tree and blob. Other backends use the Worker builder.
-    pub(crate) async fn source_archive(&self, commit: &str, name: &str) -> Result<Option<Response>> {
+    pub(crate) async fn source_archive(&self, commit: &str, name: &str) -> Result<crate::native_git::ArchiveResponse> {
         match self {
-            Self::Artifacts(_) => Ok(None),
+            Self::Artifacts(_) => Ok(crate::native_git::ArchiveResponse::NotApplicable),
             Self::Service(repo) => repo.source_archive(commit, name).await,
         }
     }

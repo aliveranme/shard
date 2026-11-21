@@ -71,12 +71,21 @@ async fn load_commit(ctx: &RouteContext<AppState>) -> std::result::Result<(Repo,
 
 pub async fn commit(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = &ctx.data;
-    let (repo, handle, commit) = match load_commit(&ctx).await {
-        Ok(loaded) => loaded,
-        Err(error) => return error.response(state),
+    let owner = ctx.param("owner").map_or("", String::as_str);
+    let name = ctx.param("repo").map_or("", String::as_str);
+    let Some(repo) = visible_repo(state, owner, name).await? else {
+        return ObjectError::RepositoryMissing.response(state);
     };
-    let parents = match handle.commit_parents(&commit.hash).await {
-        Ok(Some(parents)) => parents,
+    let hash = ctx.param("hash").map_or("", String::as_str);
+    if !is_object_id(hash) {
+        return ObjectError::CommitMissing.response(state);
+    }
+    let handle = match RepoHandle::open(&state.env, &repo).await {
+        Ok(handle) => handle,
+        Err(error) => return ObjectError::Storage(error).response(state),
+    };
+    let (commit, parents) = match handle.read_commit_with_parents(hash).await {
+        Ok(Some(loaded)) => loaded,
         Ok(None) => return ObjectError::CommitMissing.response(state),
         Err(error) => return ObjectError::Storage(error).response(state),
     };
@@ -111,18 +120,19 @@ pub async fn archive(_req: Request, ctx: RouteContext<AppState>) -> Result<Respo
         Err(error) => return error.response(state),
     };
     let headers = archive_headers(&repo.name, &commit.hash)?;
-    let stored = match handle.source_archive(&commit.hash, &repo.name).await {
-        Ok(stored) => stored,
+    match handle.source_archive(&commit.hash, &repo.name).await {
+        Ok(crate::native_git::ArchiveResponse::Ready(response)) => return Ok(response),
+        Ok(crate::native_git::ArchiveResponse::Limit) => return ObjectError::ArchiveLimit.response(state),
+        Ok(crate::native_git::ArchiveResponse::Unsupported) => return ObjectError::ArchiveUnsupported.response(state),
+        Ok(crate::native_git::ArchiveResponse::Missing) => return ObjectError::CommitMissing.response(state),
+        Ok(crate::native_git::ArchiveResponse::NotApplicable) => {}
         Err(error) => return ObjectError::Storage(error).response(state),
-    };
-    if let Some(response) = stored {
-        return Ok(response);
     }
     let Some(tree) = commit.tree.as_deref().filter(|hash| is_object_id(hash)) else {
         return ObjectError::Storage(Error::RustError("Git commit tree is missing or invalid".into())).response(state);
     };
     let mut path = format!("source-{}", commit.hash);
-    let mut tar = SourceTar { bytes: Vec::new(), remaining_entries: MAX_ENTRIES };
+    let mut tar = SourceTar { bytes: Vec::new(), remaining_entries: MAX_ENTRIES, remaining_reads: MAX_READS };
     let packed = async {
         tar.append(("", &path), 0o755, b'5', &[])?;
         tar.add_tree(&handle, tree, &mut path, 0).await
@@ -148,6 +158,7 @@ const BLOCK_SIZE: usize = 512;
 const END_SIZE: usize = 2 * BLOCK_SIZE;
 const MAX_ARCHIVE_SIZE: usize = 16 * 1024 * 1024;
 const MAX_ENTRIES: u32 = 2_000;
+const MAX_READS: usize = 400;
 const MAX_COMPONENTS: usize = 16;
 const USTAR_PREFIX_SIZE: usize = 155;
 const USTAR_NAME_SIZE: usize = 100;
@@ -155,11 +166,20 @@ const USTAR_NAME_SIZE: usize = 100;
 struct SourceTar {
     bytes: Vec<u8>,
     remaining_entries: u32,
+    remaining_reads: usize,
 }
 
 type ArchiveResult<T> = std::result::Result<T, ObjectError>;
 
 impl SourceTar {
+    fn take_read(&mut self) -> ArchiveResult<()> {
+        if self.remaining_reads == 0 {
+            return Err(ObjectError::ArchiveLimit);
+        }
+        self.remaining_reads -= 1;
+        Ok(())
+    }
+
     async fn add_tree(
         &mut self,
         handle: &RepoHandle,
@@ -167,11 +187,14 @@ impl SourceTar {
         path: &mut String,
         depth: usize,
     ) -> ArchiveResult<()> {
+        self.take_read()?;
         let mut entries = handle
             .read_tree_bounded(tree, self.remaining_entries)
             .await?
             .ok_or(ObjectError::ArchiveLimit)?;
-        self.remaining_entries -= entries.len() as u32;
+        self.remaining_entries = self.remaining_entries
+            .checked_sub(entries.len() as u32)
+            .ok_or(ObjectError::ArchiveLimit)?;
         if depth >= MAX_COMPONENTS && !entries.is_empty() {
             return Err(ObjectError::ArchiveLimit);
         }
@@ -193,6 +216,7 @@ impl SourceTar {
                     Box::pin(self.add_tree(handle, &entry.hash, path, depth + 1)).await?;
                 }
                 "100644" | "100755" => {
+                    self.take_read()?;
                     let space = self.file_capacity()?;
                     let BlobRead::Bytes(blob) = handle.read_blob_bounded(&entry.hash, space).await? else {
                         return Err(ObjectError::ArchiveLimit);

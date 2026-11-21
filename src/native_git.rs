@@ -285,21 +285,44 @@ impl GitService {
     }
 }
 
+pub(crate) enum ArchiveResponse {
+    Ready(Response),
+    Limit,
+    Unsupported,
+    Missing,
+    NotApplicable,
+}
+
 impl GitServiceRepo {
     pub(crate) fn is_durable(&self) -> bool {
         matches!(self.client, GitService::Durable(_))
     }
 
-    pub(crate) async fn source_archive(&self, commit: &str, name: &str) -> Result<Option<Response>> {
+    pub(crate) fn is_r2(&self) -> bool {
+        matches!(self.client, GitService::R2(_))
+    }
+
+    pub(crate) async fn source_archive(&self, commit: &str, name: &str) -> Result<ArchiveResponse> {
         if !matches!(self.client, GitService::R2(_)) {
-            return Ok(None);
+            return Ok(ArchiveResponse::NotApplicable);
         }
         let response = self.read("archive", &[("oid", commit), ("name", name)]).await?;
-        if response.status_code() == 200 {
-            return Ok(Some(response));
+        match response.status_code() {
+            200 => Ok(ArchiveResponse::Ready(response)),
+            413 => {
+                discard(response);
+                Ok(ArchiveResponse::Limit)
+            }
+            422 => {
+                discard(response);
+                Ok(ArchiveResponse::Unsupported)
+            }
+            404 => {
+                discard(response);
+                Ok(ArchiveResponse::Missing)
+            }
+            _ => Err(unexpected(response)),
         }
-        discard(response);
-        Ok(None)
     }
 
     pub(crate) fn shares_comparison_backend(&self, source: &Self) -> bool {
@@ -449,6 +472,9 @@ impl GitServiceRepo {
             return Ok(None);
         }
         let entries: Vec<Entry> = json(response).await?;
+        if entries.len() > limit as usize {
+            return Ok(None);
+        }
         entries.into_iter().map(|entry| TreeEntry::new(entry.name, &entry.mode, entry.hash, entry.size))
             .collect::<Result<_>>().map(Some)
     }
@@ -592,7 +618,7 @@ fn copy_error(response: Response) -> CopyError {
 
 async fn metadata(mut response: Response, id: &str) -> Result<CreatedRepo> {
     let metadata: CreatedRepo = response.json().await?;
-    if metadata.name != id || metadata.default_branch.is_empty() {
+    if metadata.name != id || !crate::git_wire::valid_ref(&metadata.default_branch) {
         return Err(Error::RustError("Git service returned invalid repository metadata".into()));
     }
     Ok(metadata)

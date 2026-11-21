@@ -12,7 +12,10 @@ use crate::models::GitIdentity;
 use crate::i18n::{BranchText, CollaboratorText, CommonText, RepoText};
 use crate::native_git::{GitService, GitServiceRepo};
 use crate::util;
-use wasm_bindgen::JsCast;
+use js_sys::{Reflect, Uint8Array};
+use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen_futures::JsFuture;
+use worker::web_sys::{ReadableStream, ReadableStreamDefaultReader};
 use worker::*;
 
 pub(crate) const ORIGIN_TOKEN: &str = "x-shard-git-origin-token";
@@ -151,7 +154,17 @@ async fn proxy(req: Request, ctx: RouteContext<AppState>, service: &str) -> Resu
     };
     let mut upstream = match handle.git_request(service, query, write, &repo.saved_remote, init).await {
         Ok(response) => response,
-        Err(error) => return upstream_error(state, &error),
+        Err(error) => {
+            if let Some(intent) = intent {
+                let env = state.env.clone();
+                let repo_id = repo.id;
+                let intent_id = intent.id();
+                state.worker_ctx.wait_until(async move {
+                    git_activity::release_admission(&env, repo_id, intent_id).await;
+                });
+            }
+            return upstream_error(state, &error);
+        }
     };
     if r2 && receive.is_some() && upstream.status_code() == 202 {
         let (crate::git_storage::RepoHandle::Service(handle), Some(identity)) = (&handle, &identity) else {
@@ -183,25 +196,54 @@ async fn proxy(req: Request, ctx: RouteContext<AppState>, service: &str) -> Resu
         let env = state.env.clone();
         let actor = identity.as_ref().map(|id| id.user_id);
         let repo_id = repo.id;
+        let intent_id = intent.id();
         if upstream.status_code() == 200 && push.report {
             if let ResponseBody::Stream(stream) = upstream.body() {
                 let halves = stream.tee();
                 let client = halves.get(0).unchecked_into();
                 let observer = halves.get(1).unchecked_into();
                 state.worker_ctx.wait_until(async move {
-                    if let Ok(accepted) = git_wire::receive_report(&observer, push.sideband).await {
-                        if git_activity::confirm(&env, intent, actor, &accepted).await.is_err() {
-                            console_log!("event=git_push_confirmation_failed repo_id={repo_id}");
+                    match git_wire::receive_report(&observer, push.sideband).await {
+                        Ok(accepted) => {
+                            if git_activity::confirm(&env, intent, actor, &accepted).await.is_err() {
+                                console_log!("event=git_push_confirmation_failed repo_id={repo_id}");
+                            }
+                        }
+                        Err(_) => {
+                            git_activity::release_admission(&env, repo_id, intent_id).await;
                         }
                     }
                 });
                 upstream = git_wire::response_with_stream(upstream, client)?;
+            } else {
+                state.worker_ctx.wait_until(async move {
+                    git_activity::release_admission(&env, repo_id, intent_id).await;
+                });
+            }
+        } else if upstream.status_code() == 200 {
+            if let ResponseBody::Stream(stream) = upstream.body() {
+                let halves = stream.tee();
+                let client = halves.get(0).unchecked_into();
+                let observer = halves.get(1).unchecked_into();
+                state.worker_ctx.wait_until(async move {
+                    drain_stream(observer).await;
+                    git_activity::release_admission(&env, repo_id, intent_id).await;
+                });
+                upstream = git_wire::response_with_stream(upstream, client)?;
+            } else {
+                state.worker_ctx.wait_until(async move {
+                    git_activity::release_admission(&env, repo_id, intent_id).await;
+                });
             }
         } else if (400..500).contains(&upstream.status_code()) {
             state.worker_ctx.wait_until(async move {
                 if git_activity::confirm(&env, intent, actor, &[]).await.is_err() {
                     console_log!("event=git_push_confirmation_failed repo_id={repo_id}");
                 }
+            });
+        } else {
+            state.worker_ctx.wait_until(async move {
+                git_activity::release_admission(&env, repo_id, intent_id).await;
             });
         }
     } else if upstream.status_code() == 200 && want_default && service == "info/refs"
@@ -215,7 +257,7 @@ async fn proxy(req: Request, ctx: RouteContext<AppState>, service: &str) -> Resu
     Ok(upstream.with_headers(response_headers))
 }
 
-pub(crate) async fn multipart_upload(mut req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
+pub(crate) async fn multipart_upload(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = &ctx.data;
     let invalid = |code| git_error(state, code, BranchText::InvalidPush);
     let (Some(owner), Some(name)) = (ctx.param("owner"), ctx.param("repo").and_then(|name| name.strip_suffix(".git"))) else {
@@ -223,20 +265,23 @@ pub(crate) async fn multipart_upload(mut req: Request, ctx: RouteContext<AppStat
     };
     let database = state.db()?;
     let Some(repo) = load_repo(&database, owner, name).await? else { return hidden_repo() };
-    if !matches!(repo.git_backend, GitBackend::R2) {
-        return hidden_repo();
-    }
     let actor = match authorize(state, &database, &repo, &req, true).await? {
         Ok(Some(identity)) => identity.user_id,
         Err(response) => return Ok(response),
         Ok(None) => return hidden_repo(),
     };
+    if !matches!(repo.git_backend, GitBackend::R2) {
+        return hidden_repo();
+    }
     let length = util::header(&req, "content-length").and_then(|value| value.parse::<usize>().ok());
     let Some(length) = length.filter(|length| *length <= MAX_MULTIPART_COMMAND_BYTES) else { return invalid(413) };
     if util::header(&req, "content-encoding").is_some() {
         return invalid(415);
     }
-    let bytes = req.bytes().await?;
+    let bytes = match read_bounded_bytes(&req, length).await {
+        Ok(bytes) => bytes,
+        Err(code) => return invalid(code),
+    };
     if bytes.len() != length {
         return invalid(400);
     }
@@ -293,20 +338,38 @@ async fn publish_r2(
     let payload = serde_json::json!({"prepared": prepared.prepared, "actor": actor.to_string()});
     let response = match handle.r2_control("publish", &payload).await {
         Ok(response) => response,
-        Err(error) => return upstream_error(state, &error),
-    };
-    if let Some(intent) = intent.filter(|_| matches!(response.status_code(), 200 | 409)) {
-        let env = state.env.clone();
-        let accepted = if response.status_code() == 200 && response.headers().get("X-Shard-Replayed-Push")?.is_none() {
-            prepared.accepted
-        } else {
-            Vec::new()
-        };
-        state.worker_ctx.wait_until(async move {
-            if git_activity::confirm(&env, intent, Some(actor), &accepted).await.is_err() {
-                console_log!("event=git_push_confirmation_failed repo_id={}", repo.id);
+        Err(error) => {
+            if let Some(intent) = intent {
+                let env = state.env.clone();
+                let repo_id = repo.id;
+                let intent_id = intent.id();
+                state.worker_ctx.wait_until(async move {
+                    git_activity::release_admission(&env, repo_id, intent_id).await;
+                });
             }
-        });
+            return upstream_error(state, &error);
+        }
+    };
+    if let Some(intent) = intent {
+        let env = state.env.clone();
+        if matches!(response.status_code(), 200 | 409) {
+            let accepted = if response.status_code() == 200 && response.headers().get("X-Shard-Replayed-Push")?.is_none() {
+                prepared.accepted
+            } else {
+                Vec::new()
+            };
+            state.worker_ctx.wait_until(async move {
+                if git_activity::confirm(&env, intent, Some(actor), &accepted).await.is_err() {
+                    console_log!("event=git_push_confirmation_failed repo_id={}", repo.id);
+                }
+            });
+        } else {
+            let repo_id = repo.id;
+            let intent_id = intent.id();
+            state.worker_ctx.wait_until(async move {
+                git_activity::release_admission(&env, repo_id, intent_id).await;
+            });
+        }
     }
     Ok(response)
 }
@@ -378,9 +441,10 @@ enum DirectCommand {
     Resolve { write: bool },
     Stage { storage: String, updates: Vec<RefUpdate> },
     Confirm { storage: String, intent: i64, actor: i64, accepted: Vec<String> },
+    Release { storage: String, intent: i64 },
 }
 
-pub(crate) async fn direct_control(mut req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
+pub(crate) async fn direct_control(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = &ctx.data;
     if trusted_direct_origin(&state.env, &req).is_none() {
         return hidden_repo();
@@ -394,11 +458,14 @@ pub(crate) async fn direct_control(mut req: Request, ctx: RouteContext<AppState>
     if util::header(&req, "content-encoding").is_some() {
         return invalid(415);
     }
-    let bytes = req.bytes().await?;
-    let Ok(command) = serde_json::from_slice::<DirectCommand>(&bytes) else { return invalid(400) };
+    let bytes = match read_bounded_bytes(&req, length).await {
+        Ok(bytes) => bytes,
+        Err(code) => return invalid(code),
+    };
     if bytes.len() != length {
         return invalid(400);
     }
+    let Ok(command) = serde_json::from_slice::<DirectCommand>(&bytes) else { return invalid(400) };
     let database = state.db()?;
     let Some(repo) = load_repo(&database, owner, name).await? else { return hidden_repo() };
     if !matches!(repo.git_backend, GitBackend::Native) {
@@ -432,10 +499,55 @@ pub(crate) async fn direct_control(mut req: Request, ctx: RouteContext<AppState>
             git_activity::confirm_direct(&state.env, repo.id, intent, actor, &accepted).await?;
             Response::empty()?.with_status(204)
         }
+        DirectCommand::Release { storage, intent } if storage == repo.storage_id => {
+            git_activity::release_admission(&state.env, repo.id, intent).await;
+            Response::empty()?.with_status(204)
+        }
         _ => return hidden_repo(),
     };
     response.headers_mut().set("Cache-Control", "no-store")?;
     Ok(response)
+}
+
+async fn read_bounded_bytes(req: &Request, limit: usize) -> std::result::Result<Vec<u8>, u16> {
+    let Some(stream) = req.inner().body() else {
+        return Ok(Vec::new());
+    };
+    let reader: ReadableStreamDefaultReader = stream.get_reader().unchecked_into();
+    let done = JsValue::from_str("done");
+    let value = JsValue::from_str("value");
+    let mut bytes = Vec::with_capacity(limit.min(8192));
+    loop {
+        let result = JsFuture::from(reader.read()).await.map_err(|_| 400u16)?;
+        if Reflect::get(&result, &done).ok().and_then(|v| v.as_bool()) == Some(true) {
+            reader.release_lock();
+            return Ok(bytes);
+        }
+        let chunk = Reflect::get(&result, &value)
+            .ok()
+            .and_then(|v| v.dyn_into::<Uint8Array>().ok())
+            .ok_or(400u16)?;
+        let start = bytes.len();
+        let len = chunk.length() as usize;
+        if len > limit - start {
+            let _ = JsFuture::from(reader.cancel()).await;
+            reader.release_lock();
+            return Err(413);
+        }
+        bytes.resize(start + len, 0);
+        chunk.copy_to(&mut bytes[start..]);
+    }
+}
+
+async fn drain_stream(stream: ReadableStream) {
+    let reader: ReadableStreamDefaultReader = stream.get_reader().unchecked_into();
+    let done = JsValue::from_str("done");
+    while let Ok(result) = JsFuture::from(reader.read()).await {
+        if Reflect::get(&result, &done).ok().and_then(|v| v.as_bool()) == Some(true) {
+            break;
+        }
+    }
+    reader.release_lock();
 }
 
 fn git_error(state: &AppState, status: u16, message: BranchText) -> Result<Response> {

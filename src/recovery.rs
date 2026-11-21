@@ -137,7 +137,16 @@ async fn send_link(
         let message = SendEmailBuilder::builder(&mail.sender, &recipient.email, locale.t(purpose.heading()))
             .text(&text)
             .build();
-        mail.binding.send_with_builder(&message).await?;
+        if let Err(error) = mail.binding.send_with_builder(&message).await {
+            // Release the resend cooldown if mail delivery failed so the user can retry.
+            let _ = db::run(
+                &env.d1("DB")?,
+                "UPDATE account_email_links SET next_send_at = 0 WHERE token_hash = ? AND purpose = ?",
+                &[util::js_text(&hash), util::js_text(purpose.key())],
+            )
+            .await;
+            return Err(error.into());
+        }
     }
     Ok(())
 }

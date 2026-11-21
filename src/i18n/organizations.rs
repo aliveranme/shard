@@ -10,6 +10,7 @@ catalog! {
         Members => "Members", "成员";
         AddMember => "Add member", "添加成员";
         RemoveMember => "Remove member", "移除成员";
+        LeaveOrganization => "Leave organization", "退出组织";
         Teams => "Teams", "团队";
         TeamName => "Team name", "团队名称";
         CreateTeam => "Create team", "创建团队";

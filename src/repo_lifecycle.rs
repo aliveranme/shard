@@ -952,8 +952,8 @@ async fn reconcile_copy(env: &Env, database: &D1Database, job: &CopyJob, lfs_lim
             console_error!("Unable to inspect Git copy {}: {error:?}", job.id);
             return Ok(CopyProgress::Unknown);
         }
-        Ok(info) if info.name != job.storage_id => {
-            console_error!("Git storage returned a mismatched identity for copy {}", job.id);
+        Ok(info) if info.name != job.storage_id || !crate::git_wire::valid_ref(&info.default_branch) => {
+            console_error!("Git storage returned a mismatched identity or invalid default branch for copy {}", job.id);
             return Ok(CopyProgress::Unknown);
         }
         Ok(info) => info,

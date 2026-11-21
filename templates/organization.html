@@ -6,6 +6,14 @@
       <p class="page-sub"><a href="/user/organizations">{{ chrome.locale.t(crate::i18n::OrganizationText::Organizations) }}</a></p>
       <h1 class="page-title">{{ organization.slug }}</h1>
     </div>
+    {% if !manager %}
+      <div class="page-head__actions">
+        <form method="post" action="/user/organizations/{{ organization.slug }}">
+          {% include "csrf.html" %}
+          <button class="btn btn--ghost btn--sm" type="submit" name="action" value="leave">{{ chrome.locale.t(crate::i18n::OrganizationText::LeaveOrganization) }}</button>
+        </form>
+      </div>
+    {% endif %}
   </div>
   <div class="settings-layout">
     <nav class="settings-nav" aria-label="{{ chrome.locale.t(crate::i18n::OrganizationText::Organization) }}">

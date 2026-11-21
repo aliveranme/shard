@@ -45,6 +45,11 @@ impl IssueFilters {
         // Literal matching avoids D1's 50-byte LIKE pattern limit. SQLite's
         // lower() uses the same ASCII case folding as the default LIKE operation.
         let query = query.trim();
+        let query = if query.len() > 256 {
+            &query[..query.floor_char_boundary(256)]
+        } else {
+            query
+        };
         if !query.is_empty() {
             sql.push_str(
                 " AND (instr(lower(i.title), lower(?)) > 0 OR instr(lower(i.body), lower(?)) > 0

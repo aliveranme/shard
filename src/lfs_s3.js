@@ -283,6 +283,48 @@ export async function lfsCopy(endpoint, bucket, accessKeyId, secretAccessKey, so
   return copyMultipart(client, destination, sourceUrl, copySource, bytes, sourceEtag, signal, timeout);
 }
 
+async function listUploadParts(client, bucket, key, uploadId) {
+  const parts = [];
+  const signal = AbortSignal.timeout(25_000);
+  const url = withQuery(atObject(client, objectPath(bucket, key)), { uploadId, "max-parts": "1000" });
+  let marker = 0;
+  for (;;) {
+    if (marker) url.searchParams.set("part-number-marker", String(marker));
+    const page = await s3Request(client, "ListParts", url, { method: "GET", signal, xmlRoot: "ListPartsResult" });
+    let last = marker;
+    for (let element = page.firstChild; element; element = element.nextSibling) {
+      if (element.localName !== "Part") continue;
+      const partNumber = decimal(field(element, "PartNumber"));
+      const size = decimal(field(element, "Size"));
+      const etag = quotedEtag(field(element, "ETag")).slice(1, -1);
+      if (!within(partNumber, last + 1, maxParts) || !within(size, 1, maxPartBytes) || etag.length > 256) {
+        throw new Error("R2 returned an invalid upload part");
+      }
+      parts.push({ partNumber, size, etag });
+      last = partNumber;
+    }
+    if (field(page, "IsTruncated") === "false") return parts;
+    const next = decimal(field(page, "NextPartNumberMarker"));
+    if (field(page, "IsTruncated") !== "true" || next !== last || !within(next, marker + 1, maxParts - 1)) {
+      throw new Error("R2 returned an invalid part listing cursor");
+    }
+    marker = next;
+  }
+}
+
+export async function lfsListParts(endpoint, bucket, accessKeyId, secretAccessKey, key, uploadId) {
+  if (!uploadId) throw new Error("Invalid R2 upload ID");
+  const client = s3Client(endpoint, accessKeyId, secretAccessKey);
+  try {
+    return { status: "ok", parts: await listUploadParts(client, bucket, key, uploadId) };
+  } catch (error) {
+    if (error instanceof S3Error && (error.code === "NoSuchUpload" || error.status === 404)) {
+      return { status: "missing", parts: [] };
+    }
+    throw error;
+  }
+}
+
 // Git uploads reconcile against R2 itself, including parts whose PUT response was lost.
 export function gitR2S3(env) {
   const endpoint = env.SHARD_GIT_R2_ENDPOINT;
@@ -298,33 +340,8 @@ export function gitR2S3(env) {
     signPart(key, uploadId, partNumber, size) {
       return lfsPresign(endpoint, bucket, access, secret, key, uploadId, partNumber, size, "");
     },
-    async parts(key, uploadId) {
-      const parts = [];
-      const signal = AbortSignal.timeout(25_000);
-      const url = withQuery(object(key), { uploadId, "max-parts": "1000" });
-      let marker = 0;
-      for (;;) {
-        if (marker) url.searchParams.set("part-number-marker", String(marker));
-        const page = await s3Request(client, "ListParts", url, { method: "GET", signal, xmlRoot: "ListPartsResult" });
-        let last = marker;
-        for (let element = page.firstChild; element; element = element.nextSibling) {
-          if (element.localName !== "Part") continue;
-          const partNumber = decimal(field(element, "PartNumber"));
-          const size = decimal(field(element, "Size"));
-          const etag = quotedEtag(field(element, "ETag")).slice(1, -1);
-          if (!within(partNumber, last + 1, maxParts) || !within(size, 1, maxPartBytes) || etag.length > 256) {
-            throw new Error("R2 returned an invalid upload part");
-          }
-          parts.push({ partNumber, size, etag });
-          last = partNumber;
-        }
-        if (field(page, "IsTruncated") === "false") return parts;
-        const next = decimal(field(page, "NextPartNumberMarker"));
-        if (field(page, "IsTruncated") !== "true" || next !== last || !within(next, marker + 1, maxParts - 1)) {
-          throw new Error("R2 returned an invalid part listing cursor");
-        }
-        marker = next;
-      }
+    parts(key, uploadId) {
+      return listUploadParts(client, bucket, key, uploadId);
     },
     async copy(from, to, source, timeout) {
       const signal = AbortSignal.timeout(timeout);

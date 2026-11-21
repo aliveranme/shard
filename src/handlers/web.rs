@@ -180,12 +180,16 @@ async fn global_list(
            JOIN users o ON o.id = r.owner_id
            LEFT JOIN users u ON u.id = i.author_id
           WHERE {VISIBLE_REPO_SQL}
-            AND i.kind = ? AND (? = 'all' OR i.state = ?)"
+            AND i.kind = ?"
     );
     let mut args = vec![
         viewer_id, viewer_admin,
-        util::js_text(kind), util::js_text(state_filter), util::js_text(state_filter),
+        util::js_text(kind),
     ];
+    if state_filter != "all" {
+        sql.push_str(" AND i.state = ?");
+        args.push(util::js_text(state_filter));
+    }
     filters.append(&mut sql, &mut args, &query);
     sql.push_str(" ORDER BY i.updated_at DESC, i.id DESC LIMIT ? OFFSET ?");
     args.extend([

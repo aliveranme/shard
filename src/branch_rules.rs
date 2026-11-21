@@ -15,6 +15,9 @@ use worker::{durable_object, d1::D1Database, DurableObject, Env, Error, Method, 
 const CLAIM_SECONDS: i64 = 300;
 const MERGE_COORDINATOR: &str = "MERGE_COORDINATOR";
 const WAIT_SECONDS: i64 = 30;
+const MAX_WAIT_SECONDS: i64 = 300;
+const MAX_WAIT_ATTEMPTS: u32 = 12;
+const MAX_ACTIVE_QUEUE_PER_REPO: i64 = 64;
 
 #[derive(Template)]
 #[template(path = "branch_rules.html")]
@@ -241,12 +244,17 @@ pub(crate) async fn request_merge(_req: Request, ctx: RouteContext<AppState>) ->
          SELECT p.issue_id, i.repo_id, p.base_branch, p.comparison_version, ?3, 'queued', ?4, ?4
          FROM pulls p JOIN issues i ON i.id = p.issue_id
          WHERE p.issue_id = ?1 AND p.comparison_version = ?2 AND p.merged = 0 AND i.state = 'open'
+           AND (SELECT COUNT(*) FROM merge_queue active
+                WHERE active.repo_id = i.repo_id AND active.state IN ('queued', 'running')) < ?5
          ON CONFLICT(issue_id) DO UPDATE SET comparison_version = excluded.comparison_version,
              actor_id = excluded.actor_id, state = 'queued', reason = NULL,
              queued_at = excluded.queued_at, changed_at = excluded.changed_at
          WHERE merge_queue.state = 'failed'
          RETURNING issue_id",
-    ).bind(&[util::js_int(issue_id), util::js_int(pull.snapshot.comparison_version), util::js_int(actor), util::js_int(util::now())])?
+    ).bind(&[
+        util::js_int(issue_id), util::js_int(pull.snapshot.comparison_version), util::js_int(actor),
+        util::js_int(util::now()), util::js_int(MAX_ACTIVE_QUEUE_PER_REPO),
+    ])?
         .first::<i64>(Some("issue_id")).await?;
     if enqueued.is_some() {
         let env = state.env.clone();
@@ -306,6 +314,12 @@ async fn signal(namespace: &ObjectNamespace, repo_id: i64, branch: &str) -> Resu
         Ok(())
     } else {
         Err(Error::RustError("Merge coordinator did not accept the wake request".into()))
+    }
+}
+
+pub(crate) async fn wake_branch(env: &Env, repo_id: i64, branch: &str) {
+    if let Ok(namespace) = env.durable_object(MERGE_COORDINATOR) {
+        let _ = signal(&namespace, repo_id, branch).await;
     }
 }
 
@@ -382,15 +396,22 @@ impl DurableObject for MergeQueueCoordinator {
             Some(_) => (),
             None => storage.put("branch", key).await?,
         }
+        let _ = storage.delete("wait_attempts").await;
+        let _ = storage.delete("wait_issue").await;
         self.arm(0).await?;
         Ok(Response::empty()?.with_status(202))
     }
 
     async fn alarm(&self) -> Result<Response> {
-        let key = self.state.storage().get::<String>("branch").await?;
+        let storage = self.state.storage();
+        let key = storage.get::<String>("branch").await?;
         let Some((repo_id, branch)) = key.as_deref().and_then(branch_key) else { return Response::empty() };
         let database = self.env.d1("DB")?;
-        let Some(job) = first_branch_job(&database, repo_id, branch).await? else { return Response::empty() };
+        let Some(job) = first_branch_job(&database, repo_id, branch).await? else {
+            let _ = storage.delete("wait_attempts").await;
+            let _ = storage.delete("wait_issue").await;
+            return Response::empty();
+        };
         let recovery_delay = job.changed_at + CLAIM_SECONDS + 1 - util::now();
         if job.state == "running" && recovery_delay > 0 {
             self.arm(recovery_delay).await?;
@@ -398,14 +419,33 @@ impl DurableObject for MergeQueueCoordinator {
         }
         run_entry(&self.env, job.issue_id).await?;
         if let Some(next) = first_branch_job(&database, repo_id, branch).await? {
-            let delay = if next.state == "running" {
-                (next.changed_at + CLAIM_SECONDS + 1 - util::now()).max(0)
+            if next.state == "running" {
+                let _ = storage.delete("wait_attempts").await;
+                let _ = storage.delete("wait_issue").await;
+                let delay = (next.changed_at + CLAIM_SECONDS + 1 - util::now()).max(0);
+                self.arm(delay).await?;
             } else if next.issue_id == job.issue_id && job.state == "queued" {
-                WAIT_SECONDS
+                let previous_issue = storage.get::<i64>("wait_issue").await?;
+                let attempts = if previous_issue == Some(next.issue_id) {
+                    storage.get::<u32>("wait_attempts").await?.unwrap_or(0).saturating_add(1)
+                } else {
+                    1
+                };
+                if attempts <= MAX_WAIT_ATTEMPTS {
+                    storage.put("wait_issue", next.issue_id).await?;
+                    storage.put("wait_attempts", attempts).await?;
+                    let shift = (attempts - 1).min(4);
+                    let delay = (WAIT_SECONDS << shift).min(MAX_WAIT_SECONDS);
+                    self.arm(delay).await?;
+                }
             } else {
-                0
-            };
-            self.arm(delay).await?;
+                let _ = storage.delete("wait_attempts").await;
+                let _ = storage.delete("wait_issue").await;
+                self.arm(0).await?;
+            }
+        } else {
+            let _ = storage.delete("wait_attempts").await;
+            let _ = storage.delete("wait_issue").await;
         }
         Response::empty()
     }
@@ -435,10 +475,6 @@ async fn run_entry(env: &Env, issue_id: i64) -> Result<()> {
     if job.comparison_version != pull.snapshot.comparison_version || job.base_branch != pull.base_branch || !valid_ref(&job.base_branch) {
         return fail(&database, &job, "stale").await;
     }
-    let Some(actor) = db::first::<Actor>(&database, "SELECT id, is_admin FROM users WHERE id = ?",
-        &[job.actor_id.map_or_else(util::js_null, util::js_int)]).await? else {
-        return fail(&database, &job, "access").await;
-    };
     let target_handle = RepoHandle::open(env, &target).await?;
     let reference = format!("refs/heads/{}", job.base_branch);
     let actual_base = target_handle.head_commit(&reference).await?;
@@ -451,6 +487,10 @@ async fn run_entry(env: &Env, issue_id: i64) -> Result<()> {
         }
         return update_job(&database, &job, "queued", None).await;
     }
+    let Some(actor) = db::first::<Actor>(&database, "SELECT id, is_admin FROM users WHERE id = ?",
+        &[job.actor_id.map_or_else(util::js_null, util::js_int)]).await? else {
+        return fail(&database, &job, "access").await;
+    };
     if !issue.is_open() || repo_role(&database, target.id, target.owner_id, actor.id, actor.is_admin).await? != Some(RepoRole::Write) {
         return fail(&database, &job, "access").await;
     }
@@ -527,13 +567,17 @@ const CLAIM: &str = "WITH latest_reviews AS (
  RETURNING issue_id";
 
 async fn finish(env: &Env, database: &D1Database, job: &QueueEntry, repo: &Repo, issue: &Issue, pull: &Pull, tip: &str) -> Result<()> {
-    let (Some(actor), Some(base)) = (job.actor_id, pull.snapshot.base_commit.as_deref()) else {
+    let Some(base) = pull.snapshot.base_commit.as_deref() else {
         return fail(database, job, "stale").await;
     };
-    if pull_review::record_observed_merge(database, repo, issue, pull, actor, tip).await?.is_some() {
+    if pull_review::record_observed_merge(database, repo, issue, pull, job.actor_id, tip, false).await?.is_some() {
         update_job(database, job, "merged", None).await?;
         let update = RefUpdate { name: format!("refs/heads/{}", job.base_branch), before: base.into(), after: tip.into() };
-        git_activity::record(env, repo.id, Some(actor), &[update]).await;
+        git_activity::record(env, repo.id, job.actor_id, &[update]).await;
+    } else if pull_review::load_pull(database, issue.id).await?.is_some_and(|current| current.merged != 0) {
+        update_job(database, job, "merged", None).await?;
+    } else {
+        fail(database, job, "stale").await?;
     }
     Ok(())
 }

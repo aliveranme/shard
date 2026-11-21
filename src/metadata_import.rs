@@ -17,7 +17,7 @@ const MAX_BUNDLE_BYTES: usize = 256 * 1024;
 const MAX_RECORDS: usize = 100;
 const MAX_OBJECTS: usize = 32;
 const MAX_BODY_BYTES: usize = 64 * 1024;
-const MAX_THREAD_NUMBER: i64 = 9_007_199_254_740_990;
+const MAX_THREAD_NUMBER: i64 = 1_000_000_000;
 const MAX_TIMESTAMP: i64 = 253_402_300_799;
 
 type Failure = (Text, u16);

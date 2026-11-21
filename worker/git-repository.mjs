@@ -913,14 +913,36 @@ export class GitRepository extends RepoCell {
       ]));
     }
     const base = advertisement(this.store, service);
-    const peeled = [];
+    const peeledByTag = new Map();
     for (const { name, target } of this.store.refs()) {
       if (!name.startsWith(TAGS) || this.store.typeAndSize(target)?.type !== "tag") continue;
       const resolved = await this.#peel(target);
-      if (resolved) peeled.push(pkt(`${resolved.oid} ${name}^{}\n`));
+      if (resolved) peeledByTag.set(name, pkt(`${resolved.oid} ${name}^{}\n`));
     }
-    return gitResponse(service, "advertisement", peeled.length ?
-      concat([base.subarray(0, -4), ...peeled, FLUSH]) : base);
+    if (!peeledByTag.size) return gitResponse(service, "advertisement", base);
+    // Insert each peeled tag line immediately after its tag line per Git pack-protocol.
+    const decoder = new TextDecoder();
+    const out = [];
+    let offset = 0;
+    while (offset + 4 <= base.length) {
+      const len = Number.parseInt(decoder.decode(base.subarray(offset, offset + 4)), 16);
+      if (len === 0) {
+        out.push(base.subarray(offset, offset + 4));
+        offset += 4;
+        continue;
+      }
+      const chunk = base.subarray(offset, offset + len);
+      out.push(chunk);
+      offset += len;
+      const line = decoder.decode(chunk.subarray(4)).split("\0", 1)[0].trimEnd();
+      const space = line.indexOf(" ");
+      if (space > 0) {
+        const refName = line.slice(space + 1);
+        const peeled = peeledByTag.get(refName);
+        if (peeled) out.push(peeled);
+      }
+    }
+    return gitResponse(service, "advertisement", concat(out));
   }
 
   async #lsRefs(parser) {
@@ -1012,6 +1034,25 @@ export class GitRepository extends RepoCell {
       if (oversized) return empty(413);
       if (!push.report) return empty(409);
       const results = updates.map(({ name }) => ({ ref: name, ok: false, msg: "cannot delete the default branch" }));
+      return gitResponse(RECEIVE, "result", renderStatus(results, null, push.sideband));
+    }
+    const existingRefs = new Set(this.store.refs().map(({ name }) => name));
+    for (const { name, after } of updates) {
+      if (after === ZERO_OID) existingRefs.delete(name);
+    }
+    const hasDfConflict = updates.some(({ name, after }) => {
+      if (after === ZERO_OID) return false;
+      for (const existing of existingRefs) {
+        if (existing !== name && (existing.startsWith(`${name}/`) || name.startsWith(`${existing}/`))) return true;
+      }
+      existingRefs.add(name);
+      return false;
+    });
+    if (hasDfConflict) {
+      void push.body.cancel().catch(() => {});
+      if (oversized) return empty(413);
+      if (!push.report) return empty(409);
+      const results = updates.map(({ name }) => ({ ref: name, ok: false, msg: "reference directory/file conflict" }));
       return gitResponse(RECEIVE, "result", renderStatus(results, null, push.sideband));
     }
     try {

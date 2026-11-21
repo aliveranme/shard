@@ -29,6 +29,8 @@ catalog! {
         CreatePullRequest => "Create pull request", "创建合并请求";
         Cancel => "Cancel", "取消";
         TitleRequired => "A title is required.", "请填写标题。";
+        TitleTooLong => "Titles must be 300 characters or fewer and contain no control characters.", "标题不得超过 300 个字符，且不能包含控制字符。";
+        BodyTooLong => "Descriptions and comments must be 256 KiB or smaller.", "描述和评论不得超过 256 KiB。";
         ChooseHeadBranch => "Choose the branch that contains your changes.", "请选择包含你的变更的源分支。";
         BranchesMustDiffer => "Head and base branches must differ.", "源分支和目标分支不能相同。";
         GitUnavailable => "Git storage is unavailable.", "Git 存储暂不可用。";

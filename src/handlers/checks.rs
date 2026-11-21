@@ -167,6 +167,10 @@ pub async fn record(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
                        AND (s.owner_id = u.id OR u.is_admin = 1 OR EXISTS (
                            SELECT 1 FROM repo_member_roles m WHERE m.repo_id = s.id AND m.user_id = u.id))))
              ))
+             AND (
+                 EXISTS (SELECT 1 FROM commit_checks e WHERE e.repo_id = r.id AND e.commit_hash = ?2 AND e.context = ?3)
+                 OR (SELECT COUNT(*) FROM commit_checks e WHERE e.repo_id = r.id AND e.commit_hash = ?2) < 64
+             )
              ON CONFLICT (repo_id, commit_hash, context) DO UPDATE SET
                  state = excluded.state, summary = excluded.summary
              RETURNING repo_id",

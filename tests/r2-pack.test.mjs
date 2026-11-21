@@ -5,9 +5,11 @@ import { open } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { PackIndex, parseCommit, parseTagTarget, parseTree, readPackedObject } from "../worker/git-r2-pack.mjs";
+import { applyDelta, PackIndex, parseCommit, parseTagTarget, parseTree, readPackedObject } from "../worker/git-r2-pack.mjs";
 import { buildR2PackStore } from "../worker/git-r2-packstore.mjs";
 import { parseReceivedPack } from "../worker/git-r2-receive.mjs";
+import { createHash } from "node:crypto";
+import pako from "pako";
 
 function git(cwd, ...args) {
   return execFileSync("git", ["-c", "core.autocrlf=false", ...args], { cwd, encoding: "utf8" });
@@ -131,10 +133,90 @@ test("builds reusable raw pack metadata", async () => {
     const received = await parseReceivedPack(new Uint8Array(pack));
     assert.equal(received.entries.length, index.count);
     const rebuilt = new PackIndex(received.idx);
+    // [C1] Verify .idx v2 has valid 40-byte trailer (pack checksum + idx checksum) accepted by `git verify-pack`.
+    const verifyPath = join(dir, "rebuilt.pack");
+    writeFileSync(verifyPath, pack);
+    writeFileSync(join(dir, "rebuilt.idx"), received.idx);
+    git(dir, "verify-pack", "-v", verifyPath);
     for (const oid of git(dir, "cat-file", "--batch-all-objects", "--batch-check=%(objectname)").trim().split("\n")) {
       assert.notEqual(rebuilt.find(oid), null);
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("parseReceivedPack resolves REF_DELTA with exact Git OID and rejects truncated deltas", async () => {
+  const baseData = new TextEncoder().encode("base-content-for-ref-delta\n".repeat(10));
+  const baseHeader = new TextEncoder().encode(`blob ${baseData.length}\0`);
+  const baseOid = createHash("sha1").update(baseHeader).update(baseData).digest("hex");
+  const extra = new TextEncoder().encode("appended-line\n");
+  const resultData = new Uint8Array(baseData.length + extra.length);
+  resultData.set(baseData, 0);
+  resultData.set(extra, baseData.length);
+  const expectedOid = createHash("sha1")
+    .update(new TextEncoder().encode(`blob ${resultData.length}\0`))
+    .update(resultData)
+    .digest("hex");
+
+  // Encode delta: baseLen, resultLen, copy all of baseData, insert extra.
+  const varint = (n) => {
+    const out = [];
+    let v = n;
+    do {
+      let b = v & 0x7f;
+      v >>= 7;
+      if (v) b |= 0x80;
+      out.push(b);
+    } while (v);
+    return out;
+  };
+  const deltaBytes = new Uint8Array([
+    ...varint(baseData.length),
+    ...varint(resultData.length),
+    0x80 | 0x10 | 0x20, // copy at offset 0, size in 2 bytes
+    baseData.length & 0xff,
+    (baseData.length >> 8) & 0xff,
+    extra.length,
+    ...extra,
+  ]);
+  const deflated = pako.deflate(deltaBytes);
+  // Build minimal 1-entry REF_DELTA pack (type = 7).
+  const head = [];
+  let sz = deltaBytes.length;
+  head.push((7 << 4) | (sz & 0x0f) | (sz >= 16 ? 0x80 : 0));
+  sz >>= 4;
+  while (sz > 0) {
+    head.push((sz & 0x7f) | (sz >= 128 ? 0x80 : 0));
+    sz >>= 7;
+  }
+  const baseOidBytes = Buffer.from(baseOid, "hex");
+  const body = Buffer.concat([
+    Buffer.from("PACK"),
+    Buffer.from([0, 0, 0, 2, 0, 0, 0, 1]),
+    Buffer.from(head),
+    baseOidBytes,
+    Buffer.from(deflated),
+  ]);
+  const packHash = createHash("sha1").update(body).digest();
+  const pack = new Uint8Array(Buffer.concat([body, packHash]));
+
+  // [C2] Resolve against external base reader and verify exact blob OID.
+  const parsed = await parseReceivedPack(
+    pack,
+    20_000,
+    async (oid) => (oid === baseOid ? { type: 3, data: baseData } : null),
+  );
+  assert.equal(parsed.entries.length, 1);
+  assert.equal(parsed.entries[0].oid, expectedOid);
+  assert.equal(parsed.entries[0].type, 3);
+
+  // [H11] Truncated copy opcode in applyDelta must throw instead of silently reading undefined.
+  assert.throws(() => applyDelta(baseData, new Uint8Array([...varint(baseData.length), ...varint(4), 0x81]), 1024));
+
+  // [L20] parseTagTarget must ignore 'object ...' lines inside the tag message body.
+  const fakeTag = new TextEncoder().encode(
+    `object ${baseOid}\ntype commit\ntag v2\n\nmessage mentions:\nobject ${expectedOid}\n`,
+  );
+  assert.equal(parseTagTarget(fakeTag), baseOid);
 });

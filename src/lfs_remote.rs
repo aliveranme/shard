@@ -2,10 +2,10 @@
 use super::{
     acquire_write, bounded_stream, empty, failure, json_response, put_object, read_json,
     release_write, validate_oid, Transfer, BAD_DIGEST, HIDDEN, INVALID_OBJECT, MISSING,
-    STORAGE, WRONG_SIZE, WRITE_GRACE, WRITE_LEASE,
+    STORAGE, TOO_LARGE, WRONG_SIZE, WRITE_GRACE, WRITE_LEASE,
 };
 use crate::ctx::AppState;
-use crate::limits::R2_SINGLE_PUT_BYTES;
+use crate::limits::{LfsLimits, LfsMode, R2_SINGLE_PUT_BYTES};
 use crate::util::{js_int, js_text, now};
 use crate::{crypto, db};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -33,6 +33,10 @@ extern "C" {
         endpoint: &str, bucket: &str, access: &str, secret: &str, source: &str,
         target: &str, length: f64, etag: &str, timeout: u32,
     ) -> std::result::Result<bool, JsValue>;
+    #[wasm_bindgen(catch, js_name = lfsListParts)]
+    async fn list_parts_js(
+        endpoint: &str, bucket: &str, access: &str, secret: &str, key: &str, upload_id: &str,
+    ) -> std::result::Result<JsValue, JsValue>;
 }
 
 #[wasm_bindgen(inline_js = r#"
@@ -103,6 +107,31 @@ impl S3 {
             size as f64, etag, timeout).await
             .map_err(|_| Error::RustError("R2 multipart copy failed".into()))
     }
+
+    async fn list_parts(&self, key: &str, upload_id: &str) -> std::result::Result<Option<Vec<ListedPart>>, super::HttpError> {
+        #[derive(Deserialize)]
+        struct Listing {
+            status: String,
+            parts: Vec<ListedPart>,
+        }
+        let value = list_parts_js(&self.endpoint, &self.bucket, &self.access, &self.secret, key, upload_id)
+            .await.map_err(|_| STORAGE)?;
+        let json = js_sys::JSON::stringify(&value).map_err(|_| STORAGE)?.as_string().ok_or(STORAGE)?;
+        let listing: Listing = serde_json::from_str(&json).map_err(|_| STORAGE)?;
+        if listing.status == "missing" {
+            Ok(None)
+        } else {
+            Ok(Some(listing.parts))
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListedPart {
+    part_number: u16,
+    size: u64,
+    etag: String,
 }
 
 fn stage_key(target: i64, oid: &str, attempt: &str) -> String {
@@ -122,6 +151,13 @@ pub(super) async fn direct_actions(
 }
 
 pub(super) async fn verify_direct(state: &AppState, target: &Transfer<'_>, attempt: &str) -> Result<Response> {
+    let settings = LfsLimits::read(&state.env)?;
+    if settings.mode != LfsMode::Direct {
+        return failure((405, "Direct LFS uploads are disabled"));
+    }
+    if target.size > settings.max_bytes {
+        return failure(TOO_LARGE);
+    }
     if validate_oid(attempt).is_err() || target.size > R2_SINGLE_PUT_BYTES {
         return failure(INVALID_OBJECT);
     }
@@ -141,6 +177,7 @@ enum Command {
     Part { upload_id: String, part_number: u16 },
     Record { upload_id: String, part_number: u16, etag: String },
     Finish { upload_id: String },
+    Abort { upload_id: String },
 }
 
 #[derive(Deserialize)]
@@ -196,6 +233,16 @@ pub(super) async fn multipart(req: &Request, ctx: &RouteContext<AppState>, targe
             let Some(session) = session(&database, target, &upload_id).await? else { return failure(STALE) };
             finish(&ctx.data, &database, target, session).await
         }
+        Command::Abort { upload_id } => {
+            let Some(session) = session(&database, target, &upload_id).await? else { return failure(STALE) };
+            let stage = stage_key(target.repo_id, target.oid, &session.attempt);
+            if let Ok(upload) = target.bucket.resume_multipart_upload(&stage, &session.upload_id) {
+                let _ = upload.abort().await;
+            }
+            let _ = target.bucket.delete(&stage).await;
+            drop_session(&database, &session.attempt).await?;
+            empty()
+        }
     }
 }
 
@@ -226,7 +273,21 @@ async fn start(state: &AppState, database: &D1Database, target: &Transfer<'_>) -
             Err(_) => failure(STORAGE),
         };
     }
-    let session = if let Some(session) = active(database, target).await? {
+    let existing = match active(database, target).await? {
+        Some(session) if session.size == target.size => Some(session),
+        Some(mismatched) => {
+            // Do not let a stale/wrong-size session lock out this OID for the full 6-day TTL.
+            let old_stage = stage_key(target.repo_id, target.oid, &mismatched.attempt);
+            if let Ok(upload) = target.bucket.resume_multipart_upload(&old_stage, &mismatched.upload_id) {
+                let _ = upload.abort().await;
+            }
+            let _ = target.bucket.delete(&old_stage).await;
+            drop_session(database, &mismatched.attempt).await?;
+            None
+        }
+        None => None,
+    };
+    let session = if let Some(session) = existing {
         session
     } else {
         let time = now();
@@ -283,11 +344,12 @@ async fn finish(state: &AppState, database: &D1Database, target: &Transfer<'_>, 
         Err(_) => return failure(STORAGE),
     };
     if !staged {
+        let expected_parts = target.size.div_ceil(part_bytes(target.size));
         let parts = db::all::<Part>(database,
             "SELECT part_number, etag FROM repo_lfs_parts WHERE attempt = ? ORDER BY part_number",
             &[js_text(&session.attempt)],
         ).await?;
-        if parts.len() as u64 != target.size.div_ceil(part_bytes(target.size)) {
+        if parts.len() as u64 != expected_parts {
             return failure(INCOMPLETE);
         }
         let upload = target.bucket.resume_multipart_upload(&stage, &session.upload_id)?;
@@ -300,7 +362,47 @@ async fn finish(state: &AppState, database: &D1Database, target: &Transfer<'_>, 
                     drop_session(database, &session.attempt).await?;
                     return failure(STALE);
                 }
-                return failure(STORAGE);
+                // Reconcile against R2's authoritative uploaded parts to recover from stale/poisoned receipts.
+                if let Ok(s3) = S3::read(&state.env) {
+                    if let Ok(listing) = s3.list_parts(&stage, &session.upload_id).await {
+                        let Some(actual) = listing else {
+                            drop_session(database, &session.attempt).await?;
+                            return failure(STALE);
+                        };
+                        let valid: Vec<_> = actual.into_iter()
+                            .filter(|part| part_length(target.size, part.part_number) == Some(part.size))
+                            .collect();
+                        if valid.len() as u64 == expected_parts {
+                            let retry = target.bucket.resume_multipart_upload(&stage, &session.upload_id)?;
+                            if retry.complete(valid.into_iter().map(|p| UploadedPart::new(p.part_number, p.etag))).await.is_ok()
+                                || target.bucket.head(&stage).await?.is_some()
+                            {
+                                // Reconciled and assembled successfully; continue to publish.
+                            } else {
+                                if let Ok(aborted) = target.bucket.resume_multipart_upload(&stage, &session.upload_id) {
+                                    let _ = aborted.abort().await;
+                                }
+                                drop_session(database, &session.attempt).await?;
+                                return failure(STALE);
+                            }
+                        } else {
+                            let _ = db::run(database, "DELETE FROM repo_lfs_parts WHERE attempt = ?", &[js_text(&session.attempt)]).await;
+                            for part in valid {
+                                let _ = db::run(database,
+                                    "INSERT INTO repo_lfs_parts (attempt, part_number, etag)
+                                     SELECT attempt, ?2, ?3 FROM repo_lfs_multipart WHERE attempt = ?1
+                                     ON CONFLICT (attempt, part_number) DO UPDATE SET etag = excluded.etag",
+                                    &[js_text(&session.attempt), js_int(i64::from(part.part_number)), js_text(&part.etag)],
+                                ).await;
+                            }
+                            return failure(INCOMPLETE);
+                        }
+                    } else {
+                        return failure(STORAGE);
+                    }
+                } else {
+                    return failure(STORAGE);
+                }
             }
         }
     }

@@ -128,7 +128,9 @@ pub async fn create(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
     }
     let created = change(
         &state.db()?,
-        "INSERT INTO organizations (slug, owner_id) SELECT ?1, id FROM users WHERE id = ?2
+        "INSERT INTO organizations (slug, owner_id)
+         SELECT ?1, id FROM users WHERE id = ?2
+           AND (SELECT COUNT(*) FROM organizations WHERE owner_id = ?2) < 50
          ON CONFLICT(slug) DO NOTHING",
         &[js_text(slug), js_int(actor)],
     )
@@ -152,7 +154,7 @@ pub async fn show(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
         "SELECT t.id, t.slug FROM organization_teams t WHERE t.organization_id = ?1
            AND (?2 = 1 OR EXISTS (SELECT 1 FROM organization_team_members m
              WHERE m.organization_id = t.organization_id AND m.team_id = t.id AND m.user_id = ?3))
-         ORDER BY t.slug",
+         ORDER BY t.slug LIMIT 200",
         &[js_int(organization.id), js_int(i64::from(manager)), js_int(actor)],
     )
     .await?;
@@ -160,7 +162,7 @@ pub async fn show(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
         db::all(
             &database,
             "SELECT u.id, u.username FROM organization_members m JOIN users u ON u.id = m.user_id
-             WHERE m.organization_id = ?1 ORDER BY u.username",
+             WHERE m.organization_id = ?1 ORDER BY u.username LIMIT 200",
             &[js_int(organization.id)],
         )
         .await?
@@ -186,13 +188,35 @@ pub async fn update(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
     let Some(organization) = find_organization(&database, &ctx, actor).await? else {
         return not_found(state, state.locale.t(Text::OrganizationNotFound));
     };
-    if organization.owner_id != actor {
-        return forbidden(state, state.locale.t(Text::ManageForbidden));
-    }
     let form = state.form()?;
     let path = organization.path();
     let org = organization.id;
-    let changed = match form_value(form, "action").as_deref() {
+    let action = form_value(form, "action");
+    if action.as_deref() == Some("leave") {
+        if organization.owner_id == actor {
+            return error(state, 409, Text::StaleAction);
+        }
+        let results = database.batch(vec![
+            database.prepare(
+                "DELETE FROM organization_repositories WHERE organization_id = ?1 AND accepted = 0
+                   AND EXISTS (SELECT 1 FROM repos r WHERE r.id = organization_repositories.repo_id AND r.owner_id = ?2)",
+            ).bind(&[js_int(org), js_int(actor)])?,
+            database.prepare(
+                "DELETE FROM organization_members WHERE organization_id = ?1 AND user_id = ?2
+                   AND EXISTS (SELECT 1 FROM organizations WHERE id = ?1 AND owner_id <> ?2)
+                 RETURNING user_id",
+            ).bind(&[js_int(org), js_int(actor)])?,
+        ]).await?;
+        let left = !results[1].results::<serde::de::IgnoredAny>()?.is_empty();
+        if !left {
+            return error(state, 409, Text::StaleAction);
+        }
+        return redirect(ORGANIZATIONS);
+    }
+    if organization.owner_id != actor {
+        return forbidden(state, state.locale.t(Text::ManageForbidden));
+    }
+    let changed = match action.as_deref() {
         Some("create_team") => {
             let slug = form_value(form, "slug").unwrap_or_default();
             let slug = slug.trim();
@@ -203,6 +227,7 @@ pub async fn update(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
                 &database,
                 "INSERT INTO organization_teams (organization_id, slug)
                  SELECT id, ?2 FROM organizations WHERE id = ?1 AND owner_id = ?3
+                   AND (SELECT COUNT(*) FROM organization_teams WHERE organization_id = ?1) < 100
                  ON CONFLICT(organization_id, slug) DO NOTHING",
                 &[js_int(org), js_text(slug), js_int(actor)],
             )
@@ -233,13 +258,19 @@ pub async fn update(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
         }
         Some("remove_member") => {
             let Some(user) = form_id(form, "user_id") else { return invalid(state) };
-            change(
-                &database,
-                "DELETE FROM organization_members WHERE organization_id = ?1 AND user_id = ?2
-                   AND EXISTS (SELECT 1 FROM organizations WHERE id = ?1 AND owner_id = ?3 AND owner_id <> ?2)",
-                &[js_int(org), js_int(user), js_int(actor)],
-            )
-            .await?
+            let results = database.batch(vec![
+                database.prepare(
+                    "DELETE FROM organization_repositories WHERE organization_id = ?1 AND accepted = 0
+                       AND EXISTS (SELECT 1 FROM organizations WHERE id = ?1 AND owner_id = ?3 AND owner_id <> ?2)
+                       AND EXISTS (SELECT 1 FROM repos r WHERE r.id = organization_repositories.repo_id AND r.owner_id = ?2)",
+                ).bind(&[js_int(org), js_int(user), js_int(actor)])?,
+                database.prepare(
+                    "DELETE FROM organization_members WHERE organization_id = ?1 AND user_id = ?2
+                       AND EXISTS (SELECT 1 FROM organizations WHERE id = ?1 AND owner_id = ?3 AND owner_id <> ?2)
+                     RETURNING user_id",
+                ).bind(&[js_int(org), js_int(user), js_int(actor)])?,
+            ]).await?;
+            !results[1].results::<serde::de::IgnoredAny>()?.is_empty()
         }
         Some("accept") => {
             let Some(link) = form_id(form, "link_id") else { return invalid(state) };
@@ -247,7 +278,13 @@ pub async fn update(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
                 &database,
                 "UPDATE organization_repositories SET accepted = 1
                  WHERE organization_id = ?1 AND id = ?2 AND accepted = 0
-                   AND EXISTS (SELECT 1 FROM organizations WHERE id = ?1 AND owner_id = ?3)",
+                   AND EXISTS (SELECT 1 FROM organizations WHERE id = ?1 AND owner_id = ?3)
+                   AND EXISTS (
+                       SELECT 1 FROM repos r
+                       JOIN organization_members m ON m.organization_id = organization_repositories.organization_id
+                        AND m.user_id = r.owner_id
+                       WHERE r.id = organization_repositories.repo_id
+                   )",
                 &[js_int(org), js_int(link), js_int(actor)],
             )
             .await?
@@ -282,7 +319,7 @@ pub async fn team(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
     let members = db::all(
         &database,
         "SELECT u.id, u.username FROM organization_team_members m JOIN users u ON u.id = m.user_id
-         WHERE m.organization_id = ?1 AND m.team_id = ?2 ORDER BY u.username",
+         WHERE m.organization_id = ?1 AND m.team_id = ?2 ORDER BY u.username LIMIT 200",
         &[js_int(organization.id), js_int(team.id)],
     )
     .await?;
@@ -293,7 +330,7 @@ pub async fn team(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
              WHERE m.organization_id = ?1 AND NOT EXISTS (
                  SELECT 1 FROM organization_team_members t
                  WHERE t.organization_id = m.organization_id AND t.team_id = ?2 AND t.user_id = m.user_id
-             ) ORDER BY u.username",
+             ) ORDER BY u.username LIMIT 200",
             &[js_int(organization.id), js_int(team.id)],
         )
         .await?
@@ -309,7 +346,7 @@ pub async fn team(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
              JOIN organization_repositories l ON l.id = g.link_id AND l.accepted = 1
              JOIN repos r ON r.id = l.repo_id JOIN users u ON u.id = r.owner_id
              WHERE g.organization_id = ?3 AND g.team_id = ?4 AND (?5 = 1 OR {VISIBLE_REPO_SQL})
-             ORDER BY u.username, r.name COLLATE NOCASE, r.id"
+             ORDER BY u.username, r.name COLLATE NOCASE, r.id LIMIT 200"
         ),
         &[viewer, admin, js_int(organization.id), js_int(team.id), js_int(i64::from(manager))],
     )
@@ -493,7 +530,7 @@ async fn memberships(database: &D1Database, actor: i64) -> Result<Vec<Organizati
     db::all(
         database,
         "SELECT o.id, o.slug, o.owner_id FROM organization_members m JOIN organizations o ON o.id = m.organization_id
-         WHERE m.user_id = ?1 ORDER BY o.slug",
+         WHERE m.user_id = ?1 ORDER BY o.slug LIMIT 200",
         &[js_int(actor)],
     )
     .await

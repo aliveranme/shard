@@ -1676,6 +1676,41 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
       const literalSearch = await guest.get("/explore/repos?q=project");
       assert.match(literalSearch.body, /suiteowner\/project/);
     });
+
+    await t.test("discussion limits and organization member leave/offer cleanup enforce invariants", async () => {
+      const longTitle = await owner.post("/suiteowner/project/issues/new", { title: "t".repeat(301), body: "ok" });
+      assert.equal(longTitle.status, 200);
+      assert.match(longTitle.body, /300/);
+      const controlTitle = await owner.post("/suiteowner/project/issues/new", { title: "bad\u0007title", body: "ok" });
+      assert.equal(controlTitle.status, 200);
+      assert.match(controlTitle.body, /300|control/i);
+      const longBody = await owner.post("/suiteowner/project/issues/new", { title: "valid", body: "x".repeat(256 * 1024 + 1) });
+      assert.equal(longBody.status, 200);
+      assert.match(longBody.body, /256 KiB/);
+
+      const member = new Client();
+      await member.get("/user/sign_up");
+      redirected(await member.post("/user/sign_up", {
+        username: "orgleaver", email: "orgleaver@example.test", password,
+      }));
+      const memberRepo = "/orgleaver/member-repo";
+      await member.get("/new");
+      redirected(await member.post("/repo/create", { name: "member-repo", private: "on" }));
+      const orgPath = "/user/organizations/leave-check";
+      redirected(await owner.post("/user/organizations", { slug: "leave-check" }));
+      redirected(await owner.post(orgPath, { action: "add_member", username: "orgleaver" }));
+      const orgId = (await member.get(`${memberRepo}/settings/organization`)).body
+        .match(/<option value="(\d+)">leave-check</)?.[1];
+      assert.ok(orgId);
+      redirected(await member.post(`${memberRepo}/settings/organization`, { action: "offer", organization_id: orgId }));
+      const pendingBefore = (await owner.get(orgPath)).body;
+      assert.match(pendingBefore, /orgleaver\/member-repo/);
+      // Member voluntarily leaves the organization; pending repo offer is cleared.
+      assert.match((await member.get(orgPath)).body, /name="action" value="leave"/);
+      redirected(await member.post(orgPath, { action: "leave" }), "/user/organizations");
+      assert.equal((await member.get(orgPath)).status, 404);
+      assert.doesNotMatch((await owner.get(orgPath)).body, /orgleaver\/member-repo/);
+    });
   } finally {
     await worker?.stop();
     if (receiver.listening) {

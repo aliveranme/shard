@@ -45,16 +45,20 @@ async fn list(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result<R
     let filters = crate::issue_filters::IssueFilters::from_request(&req);
     let (open_count, closed_count) = filters.repo_counts(&database, repo.id, kind, &query).await?;
     let mut sql = String::from(
-        "SELECT i.id, i.repo_id, i.number, i.kind, i.title, i.state, i.body,
+        "SELECT i.id, i.repo_id, i.number, i.kind, i.title, i.state, '' AS body,
                 i.author_id, u.username AS author_name, i.created_at, i.updated_at, i.closed_at,
                 (SELECT COUNT(*) FROM comments c WHERE c.issue_id = i.id) AS comment_count,
                 (SELECT group_concat(l.name, char(31)) FROM issue_labels il
                    JOIN repo_labels l ON l.repo_id = il.repo_id AND l.id = il.label_id
                   WHERE il.issue_id = i.id) AS label_names
            FROM issues i LEFT JOIN users u ON u.id = i.author_id
-          WHERE i.repo_id = ? AND i.kind = ? AND (? = 'all' OR i.state = ?)"
+          WHERE i.repo_id = ? AND i.kind = ?"
     );
-    let mut args = vec![util::js_int(repo.id), util::js_text(kind), util::js_text(state_filter), util::js_text(state_filter)];
+    let mut args = vec![util::js_int(repo.id), util::js_text(kind)];
+    if state_filter != "all" {
+        sql.push_str(" AND i.state = ?");
+        args.push(util::js_text(state_filter));
+    }
     filters.append(&mut sql, &mut args, &query);
     sql.push_str(" ORDER BY i.updated_at DESC, i.id DESC LIMIT ? OFFSET ?");
     args.extend([util::js_int((PAGE_SIZE + 1) as i64), util::js_int(request_page.offset())]);
@@ -254,8 +258,17 @@ async fn create(_req: Request, ctx: RouteContext<AppState>, kind: &str) -> Resul
         return render_form(template_missing.then(|| locale.t(RepoFeatureText::MissingIssueTemplate).into())).await;
     }
 
-    if title.trim().is_empty() {
+    const MAX_TITLE_CHARS: usize = 300;
+    const MAX_BODY_BYTES: usize = 256 * 1024;
+    let trimmed_title = title.trim();
+    if trimmed_title.is_empty() {
         return invalid(locale.t(DiscussionText::TitleRequired).into()).await;
+    }
+    if trimmed_title.chars().count() > MAX_TITLE_CHARS || trimmed_title.chars().any(char::is_control) {
+        return invalid(locale.t(DiscussionText::TitleTooLong).into()).await;
+    }
+    if body.len() > MAX_BODY_BYTES {
+        return invalid(locale.t(DiscussionText::BodyTooLong).into()).await;
     }
     if kind == "pull" && head_branch.trim().is_empty() {
         return invalid(locale.t(DiscussionText::ChooseHeadBranch).into()).await;
@@ -306,16 +319,25 @@ async fn create(_req: Request, ctx: RouteContext<AppState>, kind: &str) -> Resul
     struct Number {
         number: i64,
     }
+    let [viewer, admin] = crate::handlers::common::viewer_params(&state);
     let now = util::js_int(util::now());
     let mut statements = vec![
-        database.prepare("UPDATE repos SET next_issue_number = next_issue_number + 1 WHERE id = ? RETURNING next_issue_number - 1 AS number")
-            .bind(&[util::js_int(repo.id)])?,
-        database.prepare(
+        database.prepare(format!(
+            "UPDATE repos SET next_issue_number = next_issue_number + 1
+              WHERE id = ?3 AND EXISTS (
+                SELECT 1 FROM repos r WHERE r.id = repos.id AND {}
+              ) RETURNING next_issue_number - 1 AS number",
+            crate::handlers::common::VISIBLE_REPO_SQL,
+        )).bind(&[viewer.clone(), admin.clone(), util::js_int(repo.id)])?,
+        database.prepare(format!(
             "INSERT INTO issues (repo_id, number, kind, title, body, state, author_id, created_at, updated_at)
-             SELECT id, next_issue_number - 1, ?, ?, ?, 'open', ?, ?, ? FROM repos WHERE id = ?",
-        ).bind(&[
-            util::js_text(kind), util::js_text(title.trim()), util::js_text(&body),
-            util::js_int(user.id), now.clone(), now, util::js_int(repo.id),
+             SELECT r.id, r.next_issue_number - 1, ?4, ?5, ?6, 'open', ?7, ?8, ?9
+               FROM repos r WHERE r.id = ?3 AND {}",
+            crate::handlers::common::VISIBLE_REPO_SQL,
+        )).bind(&[
+            viewer.clone(), admin.clone(), util::js_int(repo.id),
+            util::js_text(kind), util::js_text(trimmed_title), util::js_text(&body),
+            util::js_int(user.id), now.clone(), now,
         ])?,
     ];
     if let Some((source_id, base, head, merge_base)) = snapshot {
@@ -338,8 +360,12 @@ async fn create(_req: Request, ctx: RouteContext<AppState>, kind: &str) -> Resul
                JOIN repo_labels l ON l.repo_id = i.repo_id
                 AND l.id IN (SELECT value FROM json_each(?1))
               WHERE i.repo_id = ?2 AND i.number = r.next_issue_number - 1
+                AND (r.owner_id = ?3 OR ?4 = 1 OR EXISTS (
+                    SELECT 1 FROM repo_member_roles c
+                    WHERE c.repo_id = r.id AND c.user_id = ?3 AND c.role = 'write'
+                ))
              ON CONFLICT(issue_id, label_id) DO NOTHING",
-        ).bind(&[util::js_text(&labels), util::js_int(repo.id)])?);
+        ).bind(&[util::js_text(&labels), util::js_int(repo.id), viewer, admin])?);
     }
     let results = database.batch(statements).await?;
     let Some(Number { number }) = results[0].results::<Number>()?.into_iter().next() else {
@@ -611,16 +637,35 @@ pub async fn comment(req: Request, ctx: RouteContext<AppState>) -> Result<Respon
             repo.owner_name, repo.name, section(kind), number, request_page.number
         ));
     }
+    if body.len() > 256 * 1024 {
+        return crate::templates::error_response(
+            &Chrome::new(&state), 413, state.locale.t(DiscussionText::BodyTooLong),
+        );
+    }
+    let [viewer, admin] = crate::handlers::common::viewer_params(&state);
     let now = util::now();
-    let insert = database.prepare(
-        "INSERT INTO comments (issue_id, author_id, body, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
-    ).bind(&[
-        util::js_int(issue.id), util::js_int(user.id), util::js_text(&body),
-        util::js_int(now), util::js_int(now),
+    let insert = database.prepare(format!(
+        "INSERT INTO comments (issue_id, author_id, body, created_at, updated_at)
+         SELECT i.id, ?4, ?5, ?6, ?6
+           FROM issues i JOIN repos r ON r.id = i.repo_id
+          WHERE i.id = ?3 AND {}
+         RETURNING id",
+        crate::handlers::common::VISIBLE_REPO_SQL,
+    )).bind(&[
+        viewer.clone(), admin.clone(), util::js_int(issue.id), util::js_int(user.id), util::js_text(&body),
+        util::js_int(now),
     ])?;
-    let update = database.prepare("UPDATE issues SET updated_at = ? WHERE id = ?")
-        .bind(&[util::js_int(now), util::js_int(issue.id)])?;
-    database.batch(vec![insert, update]).await?;
+    let update = database.prepare(format!(
+        "UPDATE issues SET updated_at = ?4
+          WHERE id = ?3 AND EXISTS (
+            SELECT 1 FROM repos r WHERE r.id = issues.repo_id AND {}
+          )",
+        crate::handlers::common::VISIBLE_REPO_SQL,
+    )).bind(&[viewer, admin, util::js_int(issue.id), util::js_int(now)])?;
+    let results = database.batch(vec![insert, update]).await?;
+    if results[0].results::<serde::de::IgnoredAny>()?.is_empty() {
+        return not_found(&state, state.locale.t(CommonText::RepositoryNotFound));
+    }
     redirect_to_entry(&state, &database, &repo, &issue, None).await
 }
 
@@ -661,34 +706,52 @@ pub async fn set_state(req: Request, ctx: RouteContext<AppState>) -> Result<Resp
     };
     if kind == "pull" {
         #[derive(serde::Deserialize)]
-        struct MergeState { merged: i64 }
+        struct MergeState { merged: i64, running: i64 }
         let merge: Option<MergeState> = db::first(&database,
-            "SELECT merged FROM pulls WHERE issue_id = ?", &[util::js_int(issue.id)],
+            "SELECT p.merged,
+                    EXISTS (SELECT 1 FROM merge_queue q WHERE q.issue_id = p.issue_id AND q.state = 'running') AS running
+               FROM pulls p WHERE p.issue_id = ?",
+            &[util::js_int(issue.id)],
         ).await?;
-        if merge.is_some_and(|row| row.merged != 0) {
+        if merge.is_some_and(|row| row.merged != 0 || row.running != 0) {
             return crate::templates::error_response(&Chrome::new(&state), 409, state.locale.t(DiscussionText::MergeStateLocked));
         }
     }
+    let [viewer, admin] = crate::handlers::common::viewer_params(&state);
     let now = util::now();
-    // D1 executes the batch as one transaction. Test the live state inside it,
-    // so concurrent or repeated submissions cannot create duplicate events.
-    let event = database.prepare(
-        "INSERT INTO issue_events (issue_id, actor_id, event, created_at)
-         SELECT id, ?, ?, ? FROM issues WHERE id = ? AND state <> ?
-           AND NOT EXISTS (SELECT 1 FROM pulls WHERE issue_id = issues.id AND merged = 1)"
-    ).bind(&[
-        util::js_int(user.id), util::js_text(if desired == "closed" { "closed" } else { "reopened" }),
-        util::js_int(now), util::js_int(issue.id), util::js_text(desired),
-    ])?;
-    let update = database.prepare(
-        "UPDATE issues SET state = ?, closed_at = ?, updated_at = ? WHERE id = ? AND state <> ?
-           AND NOT EXISTS (SELECT 1 FROM pulls WHERE issue_id = issues.id AND merged = 1)"
-    ).bind(&[
-        util::js_text(desired),
-        if desired == "closed" { util::js_int(now) } else { util::js_null() },
-        util::js_int(now), util::js_int(issue.id), util::js_text(desired),
-    ])?;
-    database.batch(vec![event, update]).await?;
+    let state_guard = format!(
+        "EXISTS (SELECT 1 FROM repos r WHERE r.id = issues.repo_id AND {} AND (issues.author_id = ?1 OR r.owner_id = ?1 OR ?2 = 1))
+         AND NOT EXISTS (SELECT 1 FROM pulls WHERE issue_id = issues.id AND merged = 1)
+         AND NOT EXISTS (SELECT 1 FROM merge_queue WHERE issue_id = issues.id AND state = 'running')",
+        crate::handlers::common::VISIBLE_REPO_SQL,
+    );
+    // D1 executes the batch as one transaction. Test live state and permissions inside it,
+    // so concurrent or repeated submissions cannot create duplicate events or race revocations.
+    let mut statements = vec![
+        database.prepare(format!(
+            "INSERT INTO issue_events (issue_id, actor_id, event, created_at)
+             SELECT id, ?1, ?5, ?6 FROM issues WHERE id = ?3 AND state <> ?4 AND {state_guard}"
+        )).bind(&[
+            viewer.clone(), admin.clone(), util::js_int(issue.id), util::js_text(desired),
+            util::js_text(if desired == "closed" { "closed" } else { "reopened" }),
+            util::js_int(now),
+        ])?,
+        database.prepare(format!(
+            "UPDATE issues SET state = ?4, closed_at = ?5, updated_at = ?6
+              WHERE id = ?3 AND state <> ?4 AND {state_guard}"
+        )).bind(&[
+            viewer, admin, util::js_int(issue.id), util::js_text(desired),
+            if desired == "closed" { util::js_int(now) } else { util::js_null() },
+            util::js_int(now),
+        ])?,
+    ];
+    if desired == "closed" && kind == "pull" {
+        statements.push(database.prepare(
+            "DELETE FROM merge_queue WHERE issue_id = ?1 AND state = 'queued'
+               AND EXISTS (SELECT 1 FROM issues WHERE id = ?1 AND state = 'closed')"
+        ).bind(&[util::js_int(issue.id)])?);
+    }
+    database.batch(statements).await?;
     redirect_to_entry(&state, &database, &repo, &issue, None).await
 }
 

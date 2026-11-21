@@ -1,11 +1,11 @@
 // Direct receive-pack support for small, non-thin pushes. Large or thin packs
 // fall back to the native Git container.
 import { Inflate, deflate } from "pako";
-import { parsePackEntry } from "./git-r2-pack.mjs";
+import { applyDelta as applyGitDelta, parsePackEntry } from "./git-r2-pack.mjs";
 
 const TYPES = [null, "commit", "tree", "blob", "tag"];
-const OID = /^[0-9a-f]{40}$/;
-const MAX_OBJECT_BYTES = 64 * 1024 * 1024;
+const MAX_OBJECT_BYTES = 32 * 1024 * 1024;
+const MAX_TOTAL_INFLATED = 32 * 1024 * 1024;
 
 export class ThinPackError extends Error {}
 export class PackTooLargeError extends Error {}
@@ -44,13 +44,18 @@ export function parseReceiveBytes(bytes) {
   return { updates, sideband, report, pack: bytes.subarray(offset) };
 }
 
-function inflateEntry(pack, start) {
+function inflateEntry(pack, start, expectedSize, remainingBudget) {
+  if (!Number.isSafeInteger(expectedSize) || expectedSize < 0 || expectedSize > MAX_OBJECT_BYTES || expectedSize > remainingBudget) {
+    throw new PackTooLargeError("Git object exceeds the direct-push limit");
+  }
   const inflater = new Inflate({ chunkSize: 8192, windowBits: 15 });
   const chunks = [];
   let total = 0;
   inflater.onData = (chunk) => {
     total += chunk.length;
-    if (total > MAX_OBJECT_BYTES) throw new PackTooLargeError("Git object exceeds the direct-push limit");
+    if (total > expectedSize || total > remainingBudget) {
+      throw new PackTooLargeError("Git object exceeds the direct-push limit");
+    }
     chunks.push(chunk.slice());
   };
   let position = start;
@@ -60,6 +65,7 @@ function inflateEntry(pack, start) {
     const input = pack.subarray(position, Math.min(position + 64 * 1024, pack.length - 20));
     const before = input.length;
     inflater.push(input, false);
+    if (inflater.err) throw new Error(`Corrupt Git pack entry: ${inflater.msg || inflater.err}`);
     const consumed = before - inflater.strm.avail_in;
     position += consumed;
     if (inflater.ended) break;
@@ -69,6 +75,8 @@ function inflateEntry(pack, start) {
       stall = 0;
     }
   }
+  if (inflater.err) throw new Error(`Corrupt Git pack entry: ${inflater.msg || inflater.err}`);
+  if (total !== expectedSize) throw new Error("Git pack entry size mismatch");
   const data = new Uint8Array(total);
   let offset = 0;
   for (const chunk of chunks) {
@@ -78,56 +86,15 @@ function inflateEntry(pack, start) {
   return { data, end: position };
 }
 
-function deltaVarint(bytes, state) {
-  let value = 0;
-  let shift = 0;
-  for (;;) {
-    if (state.cursor >= bytes.length || shift > 35) throw new Error("Invalid Git delta");
-    const byte = bytes[state.cursor++];
-    value += (byte & 0x7f) * 2 ** shift;
-    if (!(byte & 0x80)) return value;
-    shift += 7;
-  }
-}
-
-function applyDelta(base, delta) {
-  const state = { cursor: 0 };
-  const baseSize = deltaVarint(delta, state);
-  const resultSize = deltaVarint(delta, state);
-  if (baseSize !== base.length || resultSize > MAX_OBJECT_BYTES) throw new PackTooLargeError("Invalid Git delta size");
-  const result = new Uint8Array(resultSize);
-  let written = 0;
-  while (state.cursor < delta.length) {
-    const command = delta[state.cursor++];
-    if (command & 0x80) {
-      let offset = 0;
-      let size = 0;
-      if (command & 0x01) offset += delta[state.cursor++];
-      if (command & 0x02) offset += delta[state.cursor++] << 8;
-      if (command & 0x04) offset += delta[state.cursor++] << 16;
-      if (command & 0x08) offset += delta[state.cursor++] * 2 ** 24;
-      if (command & 0x10) size += delta[state.cursor++];
-      if (command & 0x20) size += delta[state.cursor++] << 8;
-      if (command & 0x40) size += delta[state.cursor++] << 16;
-      if (!size) size = 0x10000;
-      if (offset < 0 || size < 0 || offset + size > base.length || written + size > result.length) {
-        throw new Error("Invalid Git delta copy");
-      }
-      result.set(base.subarray(offset, offset + size), written);
-      written += size;
-    } else if (command) {
-      if (state.cursor + command > delta.length || written + command > result.length) {
-        throw new Error("Invalid Git delta insert");
-      }
-      result.set(delta.subarray(state.cursor, state.cursor + command), written);
-      state.cursor += command;
-      written += command;
-    } else {
-      throw new Error("Invalid Git delta command");
+function applyDelta(base, delta, maxBytes) {
+  try {
+    return applyGitDelta(base, delta, Math.min(MAX_OBJECT_BYTES, maxBytes));
+  } catch (error) {
+    if (error?.message === "Invalid Git delta sizes") {
+      throw new PackTooLargeError("Git delta object exceeds the direct-push limit");
     }
+    throw error;
   }
-  if (written !== result.length) throw new Error("Incomplete Git delta");
-  return result;
 }
 
 async function objectOid(type, data) {
@@ -166,13 +133,14 @@ function hexBytes(hex) {
   return bytes;
 }
 
-function indexBytes(entries) {
+function indexBytes(entries, packHash) {
   const sorted = [...entries].sort((left, right) => left.oid < right.oid ? -1 : left.oid > right.oid ? 1 : 0);
   const fanout = new Uint32Array(256);
   for (const entry of sorted) fanout[Number.parseInt(entry.oid.slice(0, 2), 16)]++;
   for (let index = 1; index < 256; index++) fanout[index] += fanout[index - 1];
   const large = sorted.filter((entry) => entry.offset > 0x7fffffff).length;
-  const size = 8 + 1024 + sorted.length * 20 + sorted.length * 4 + sorted.length * 4 + large * 8 + 20;
+  // Pack index v2 trailer is 40 bytes: 20-byte pack checksum + 20-byte index checksum.
+  const size = 8 + 1024 + sorted.length * 20 + sorted.length * 4 + sorted.length * 4 + large * 8 + 40;
   const bytes = new Uint8Array(size);
   const view = new DataView(bytes.buffer);
   view.setUint32(0, 0xff744f63);
@@ -197,6 +165,7 @@ function indexBytes(entries) {
       view.setUint32(offset + index * 4, entry.offset);
     }
   });
+  bytes.set(hexBytes(packHash), size - 40);
   return { bytes, preTrailer: bytes.subarray(0, size - 20) };
 }
 
@@ -266,13 +235,26 @@ export async function parseReceivedPack(pack, maxObjects = 20_000, readBase = nu
   const byOid = new Map();
   const byOffset = new Map();
   const pending = [];
+  const missingBases = new Set();
   let thin = false;
+  let remainingBudget = MAX_TOTAL_INFLATED;
+  const consumeBudget = (size) => {
+    if (size > remainingBudget) throw new PackTooLargeError("Git pack inflated size exceeds the direct-push limit");
+    remainingBudget -= size;
+  };
+  const registerEntry = (entry) => {
+    if (byOid.has(entry.oid)) throw new Error("Duplicate Git object in pack");
+    byOid.set(entry.oid, entry);
+    byOffset.set(entry.offset, entry);
+    entries.push(entry);
+  };
   let offset = 12;
   for (let index = 0; index < count; index++) {
     if (offset + 1 >= pack.length - 20) throw new Error("Truncated Git pack");
     const parsed = parsePackEntry(pack.subarray(offset, pack.length - 20), offset);
-    const inflated = inflateEntry(pack, parsed.start);
+    const inflated = inflateEntry(pack, parsed.start, parsed.size, remainingBudget);
     const data = inflated.data;
+    consumeBudget(data.length);
     let type = parsed.type;
     let baseOid = parsed.baseOid ?? null;
     if (type === 6) {
@@ -280,44 +262,43 @@ export async function parseReceivedPack(pack, maxObjects = 20_000, readBase = nu
       if (!base) throw new ThinPackError("Git pack references a missing offset base");
       type = base.type;
       baseOid = base.oid;
-      const resolved = applyDelta(base.data, data);
+      const resolved = applyDelta(base.data, data, remainingBudget);
+      consumeBudget(resolved.length);
       const oid = await objectOid(TYPES[type], resolved);
-      const entry = { oid, type, data: resolved, offset, start: parsed.start, end: inflated.end,
-        entrySize: parsed.size, crc: crc32(pack.subarray(offset, inflated.end)), oidBytes: hexBytes(oid) };
-      byOid.set(oid, entry);
-      byOffset.set(offset, entry);
-      entries.push(entry);
+      registerEntry({
+        oid, type, data: resolved, offset, start: parsed.start, end: inflated.end,
+        entrySize: parsed.size, crc: crc32(pack.subarray(offset, inflated.end)), oidBytes: hexBytes(oid),
+      });
     } else if (type === 7) {
       const base = byOid.get(baseOid);
       if (!base) {
         pending.push({ offset, parsed, data, inflated, baseOid });
       } else {
-        const resolved = applyDelta(base.data, data);
-        const oid = await objectOid(base.type, resolved);
-        const entry = { oid, type: base.type, data: resolved, offset, start: parsed.start, end: inflated.end,
-          entrySize: parsed.size, crc: crc32(pack.subarray(offset, inflated.end)), oidBytes: hexBytes(oid) };
-        byOid.set(oid, entry);
-        byOffset.set(offset, entry);
-        entries.push(entry);
+        const resolved = applyDelta(base.data, data, remainingBudget);
+        consumeBudget(resolved.length);
+        const oid = await objectOid(TYPES[base.type], resolved);
+        registerEntry({
+          oid, type: base.type, data: resolved, offset, start: parsed.start, end: inflated.end,
+          entrySize: parsed.size, crc: crc32(pack.subarray(offset, inflated.end)), oidBytes: hexBytes(oid),
+        });
       }
     } else if (type >= 1 && type <= 4) {
       const oid = await objectOid(TYPES[type], data);
-      const entry = { oid, type, data, offset, start: parsed.start, end: inflated.end,
-        entrySize: parsed.size, crc: crc32(pack.subarray(offset, inflated.end)), oidBytes: hexBytes(oid) };
-      byOid.set(oid, entry);
-      byOffset.set(offset, entry);
-      entries.push(entry);
+      registerEntry({
+        oid, type, data, offset, start: parsed.start, end: inflated.end,
+        entrySize: parsed.size, crc: crc32(pack.subarray(offset, inflated.end)), oidBytes: hexBytes(oid),
+      });
     } else {
       throw new Error(`Invalid Git pack entry type ${type} at ${offset}`);
     }
     offset = inflated.end;
   }
   // Ref-delta bases can appear after their dependants in a legal pack.
-  for (let pass = 0; pending.length && pass < pending.length + 1; pass++) {
+  for (let pass = 0; pending.length && pass < 64; pass++) {
     const next = [];
     for (const item of pending) {
       let base = byOid.get(item.baseOid);
-      if (!base && typeof readBase === "function") {
+      if (!base && typeof readBase === "function" && !missingBases.has(item.baseOid)) {
         const external = await readBase(item.baseOid);
         if (external) {
           const type = typeof external.type === "number" ? external.type : TYPES.indexOf(external.type);
@@ -325,42 +306,45 @@ export async function parseReceivedPack(pack, maxObjects = 20_000, readBase = nu
             base = { type, data: external.data };
             thin = true;
           }
+        } else {
+          missingBases.add(item.baseOid);
         }
       }
       if (!base) {
         next.push(item);
         continue;
       }
-      const resolved = applyDelta(base.data, item.data);
-      const oid = await objectOid(base.type, resolved);
-      const entry = { oid, type: base.type, data: resolved, offset: item.offset, start: item.parsed.start,
+      const resolved = applyDelta(base.data, item.data, remainingBudget);
+      consumeBudget(resolved.length);
+      const oid = await objectOid(TYPES[base.type], resolved);
+      registerEntry({
+        oid, type: base.type, data: resolved, offset: item.offset, start: item.parsed.start,
         end: item.inflated.end, entrySize: item.parsed.size, crc: crc32(pack.subarray(item.offset, item.inflated.end)),
-        oidBytes: hexBytes(oid) };
-      byOid.set(oid, entry);
-      byOffset.set(item.offset, entry);
-      entries.push(entry);
+        oidBytes: hexBytes(oid),
+      });
     }
+    if (next.length === pending.length) break;
     pending.length = 0;
     pending.push(...next);
   }
   if (pending.length) throw new ThinPackError("Git pack is thin");
   if (offset !== pack.length - 20) throw new Error("Unexpected bytes after Git pack entries");
-  if (await sha1(pack.subarray(0, pack.length - 20)) !== [...pack.subarray(pack.length - 20)].map((byte) => byte.toString(16).padStart(2, "0")).join("")) {
+  const packHashHex = [...pack.subarray(pack.length - 20)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  if (await sha1(pack.subarray(0, pack.length - 20)) !== packHashHex) {
     throw new Error("Git pack checksum mismatch");
   }
   let finalEntries = entries;
   let packBytes = pack;
-  let packHash = [...pack.subarray(pack.length - 20)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  let packHash = packHashHex;
   if (thin) {
     const rebuilt = await repack(entries);
     finalEntries = rebuilt.entries;
     packBytes = rebuilt.bytes;
     packHash = rebuilt.packHash;
   }
-  const index = indexBytes(finalEntries);
+  const index = indexBytes(finalEntries, packHash);
   const indexDigest = await sha1(index.preTrailer);
-  const idx = new Uint8Array(index.bytes.length);
-  idx.set(index.bytes.subarray(0, index.bytes.length - 20));
+  const idx = index.bytes;
   idx.set(hexBytes(indexDigest), idx.length - 20);
   return { entries: finalEntries, objects: byOid, packBytes, packHash, idx };
 }

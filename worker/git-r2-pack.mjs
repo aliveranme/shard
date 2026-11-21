@@ -47,7 +47,7 @@ export class PackIndex {
     const crcStart = shaStart + this.count * 20;
     const offsetStart = crcStart + this.count * 4;
     const largeStart = offsetStart + this.count * 4;
-    if (largeStart > bytes.length || bytes.length > limit) throw new Error("Invalid Git pack index");
+    if (largeStart + 40 > bytes.length || bytes.length > limit) throw new Error("Invalid Git pack index");
     this.bytes = bytes;
     this.fanout = 8;
     this.shaStart = shaStart;
@@ -155,6 +155,7 @@ async function inflateAt(readRange, start, size, maxBytes) {
     }
     const before = pending.length;
     inflater.push(pending, false);
+    if (inflater.err) throw new Error(`Corrupt Git pack object: ${inflater.msg || inflater.err}`);
     const consumed = before - inflater.strm.avail_in;
     pending = pending.subarray(consumed);
     if (inflater.ended) break;
@@ -164,6 +165,7 @@ async function inflateAt(readRange, start, size, maxBytes) {
       stall = 0;
     }
   }
+  if (inflater.err) throw new Error(`Corrupt Git pack object: ${inflater.msg || inflater.err}`);
   if (total !== size) throw new Error("Git pack object size mismatch");
   const data = new Uint8Array(total);
   let offset = 0;
@@ -186,25 +188,29 @@ function deltaVarint(bytes, state) {
   }
 }
 
-export function applyDelta(base, delta) {
+export function applyDelta(base, delta, maxBytes = 64 * 1024 * 1024) {
   const state = { cursor: 0 };
   const baseSize = deltaVarint(delta, state);
   const resultSize = deltaVarint(delta, state);
-  if (baseSize !== base.length || resultSize > 64 * 1024 * 1024) throw new Error("Invalid Git delta sizes");
+  if (baseSize !== base.length || resultSize > maxBytes) throw new Error("Invalid Git delta sizes");
   const result = new Uint8Array(resultSize);
   let written = 0;
+  const nextByte = () => {
+    if (state.cursor >= delta.length) throw new Error("Truncated Git delta copy");
+    return delta[state.cursor++];
+  };
   while (state.cursor < delta.length) {
     const command = delta[state.cursor++];
     if (command & 0x80) {
       let offset = 0;
       let size = 0;
-      if (command & 0x01) offset |= delta[state.cursor++];
-      if (command & 0x02) offset |= delta[state.cursor++] << 8;
-      if (command & 0x04) offset |= delta[state.cursor++] << 16;
-      if (command & 0x08) offset |= delta[state.cursor++] << 24;
-      if (command & 0x10) size |= delta[state.cursor++];
-      if (command & 0x20) size |= delta[state.cursor++] << 8;
-      if (command & 0x40) size |= delta[state.cursor++] << 16;
+      if (command & 0x01) offset += nextByte();
+      if (command & 0x02) offset += nextByte() << 8;
+      if (command & 0x04) offset += nextByte() << 16;
+      if (command & 0x08) offset += nextByte() * 2 ** 24;
+      if (command & 0x10) size += nextByte();
+      if (command & 0x20) size += nextByte() << 8;
+      if (command & 0x40) size += nextByte() << 16;
       if (!size) size = 0x10000;
       if (offset < 0 || size < 0 || offset + size > base.length || written + size > result.length) {
         throw new Error("Invalid Git delta copy");
@@ -249,6 +255,7 @@ export async function readPackedObject(index, oid, {
   cache = new Map(),
   maxBytes = 64 * 1024 * 1024,
   verify = true,
+  initialDepth = 0,
 } = {}) {
   if (!OID.test(oid) || typeof readRange !== "function") return null;
   if (cache.has(`oid:${oid}`)) return cache.get(`oid:${oid}`);
@@ -258,18 +265,18 @@ export async function readPackedObject(index, oid, {
     if (cached) return cached;
     const header = await readRange(offset, 128 * 1024);
     const parsed = parsePackEntry(header, offset);
-    const delta = parsed.type === 6 || parsed.type === 7;
     const data = await inflateAt(readRange, parsed.start, parsed.size, maxBytes);
     let object;
     if (parsed.type >= 1 && parsed.type <= 4) {
       object = { type: parsed.type, data };
     } else if (parsed.type === 6) {
       const base = await readAt(parsed.baseOffset, depth + 1);
-      object = { type: base.type, data: applyDelta(base.data, data) };
+      if (!base) return null;
+      object = { type: base.type, data: applyDelta(base.data, data, maxBytes) };
     } else if (parsed.type === 7) {
       const base = typeof readBase === "function" ? await readBase(parsed.baseOid, depth + 1) : null;
       if (!base) return null;
-      object = { type: base.type, data: applyDelta(base.data, data) };
+      object = { type: base.type, data: applyDelta(base.data, data, maxBytes) };
     } else {
       throw new Error("Unsupported Git pack entry type");
     }
@@ -278,7 +285,8 @@ export async function readPackedObject(index, oid, {
   };
   const offset = index.find(oid);
   if (offset === null) return null;
-  const object = await readAt(offset, 0);
+  const object = await readAt(offset, initialDepth);
+  if (!object) return null;
   if (verify) await verifyObject(oid, object.type, object.data);
   cache.set(`oid:${oid}`, object);
   return object;
@@ -330,7 +338,9 @@ export function parseTree(data) {
 
 export function parseTagTarget(data) {
   const text = new TextDecoder("utf-8", { fatal: false }).decode(data);
-  const target = /^object ([0-9a-f]{40})$/m.exec(text)?.[1];
+  const separator = text.indexOf("\n\n");
+  const headers = separator < 0 ? text : text.slice(0, separator);
+  const target = /^object ([0-9a-f]{40})(?:\n|$)/.exec(headers)?.[1];
   if (!target) throw new Error("Invalid Git tag");
   return target;
 }
