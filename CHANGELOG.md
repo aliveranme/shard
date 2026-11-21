@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.5.0
+
+### Added
+
+- Appearance preferences at `/user/settings/appearance` persist explicit `light`, `dark`, or `auto` (`data-theme`) choices without JavaScript.
+- Non-owner organization members can now voluntarily leave an organization (`leave`), automatically clearing any pending repository offers they made.
+- Code previews display line numbers with `#L{n}` anchor highlighting; private repository badges add lock styling, and mobile navigation uses the native Popover API.
+- R2 multipart Git LFS adds an explicit `abort` action and `ListParts` reconciliation on completion errors to recover from stale or mismatched part receipts.
+- Migration `0033_audit_indexes_and_triggers.sql` adds 17 composite, partial, and foreign-key indexes across hot D1 tables and hardens the `git_ref_observe` trigger.
+
+### Changed
+
+- Hardened browser CSP to strict `style-src 'self'` with zero inline template styles, added compile-time content-hashed CSS/SVG URLs with immutable 1-year caching, `ETag`/`304` avatar caching, and bfcache-friendly `private, no-cache` on read-only HTML browse pages.
+- Replaced the 1.1 MiB CJK webfont with metric-calibrated local system CJK font stacks and made primary buttons a solid yellow accent.
+- Decoupled Git push admission TTL (5 minutes) from reconciliation intent TTL (1 hour) and ensured non-reporting, failed, or unconfirmed pushes release branch-rule locks immediately.
+- Switched waiting merge queue Durable Object alarms to exponential backoff with an attempt cap, immediate wakeups on approval reviews, and a per-repository active queue limit.
+
+### Fixed
+
+- R2 Git pack engine: wrote full 40-byte v2 `.idx` trailers (pack checksum + index checksum), fixed `REF_DELTA` OID type resolution, upgraded `#directReceive` to a full memoized reachability walk, eliminated `request.clone()` / unbounded `arrayBuffer()` buffering, added cumulative inflate and `applyDelta` bounds checks, guarded ref D/F conflicts and concurrent lock state reads, and aligned archive control-character and error handling.
+- Security & auth: equalized PBKDF2 timing for missing-user logins, expanded reserved usernames, escaped literal explore search patterns, verified all case-insensitive OpenPGP v4/v6 matching User IDs and revocations with packet/signature bounds, re-enforced live SQL repository/writer visibility checks on discussions and merges, and moved auth before R2 backend checks on multipart push control endpoints.
+- Discussions, LFS & reliability: bounded issue/comment title and body sizes, stopped loading discarded issue bodies in list queries, propagated source archive errors instead of falling back to Worker tar assembly, released LFS upload leases on storage failures, reported concurrent signup collisions cleanly, fixed recovery email cooldown rollback on send failure, and prevented wrong-size multipart LFS sessions from locking an OID for 6 days.
+
+### Upgrade
+
+- Apply D1 migration `0033_audit_indexes_and_triggers.sql` before deploying `v0.5.0`. Existing bindings, secrets, and R2/Durable Object state remain fully compatible.
+
 ## 0.4.0
 
 - Large R2 repositories clone without the Durable Object inflating every blob: upload-pack metadata is now synchronous and reads pack entry types directly.

@@ -706,9 +706,9 @@ Paid 环境可运行 `npm run deploy:paid -- --secrets-file .env.deploy.paid`，
 
 Add an exact `## <version>` section to [CHANGELOG.md](CHANGELOG.md) in the
 tagged commit. Pushing `v0.2.0` publishes that version's notes. A prerelease
-such as `v0.4.0-rc.1` requires its own `## 0.4.0-rc.1` section and is marked
+such as `v0.5.0-rc.1` requires its own `## 0.5.0-rc.1` section and is marked
 as a prerelease on GitHub. Check the selected notes locally with
-`mise exec -- node scripts/release-notes.mjs v0.4.0`.
+`mise exec -- node scripts/release-notes.mjs v0.5.0`.
 
 The workflow checks the tag against the npm, Cargo, and built Worker versions.
 It builds and tests both Git container images, dry-runs the extracted archive
