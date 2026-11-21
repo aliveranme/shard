@@ -134,7 +134,7 @@ export function parsePackEntry(bytes, offset) {
   return { type, size, baseOffset, baseOid, start: offset + cursor };
 }
 
-async function inflateAt(readRange, start, size, maxBytes) {
+async function inflateAt(readRange, start, size, maxBytes, initial = new Uint8Array()) {
   if (!Number.isSafeInteger(size) || size < 0 || size > maxBytes) throw new Error("Git object exceeds the read limit");
   const inflater = new Inflate({ chunkSize: 8192, windowBits: 15 });
   const chunks = [];
@@ -144,8 +144,8 @@ async function inflateAt(readRange, start, size, maxBytes) {
     if (total > size || total > maxBytes) throw new Error("Git object exceeded its declared size");
     chunks.push(chunk.slice());
   };
-  let position = start;
-  let pending = new Uint8Array();
+  let position = start + initial.length;
+  let pending = initial;
   let stall = 0;
   while (!inflater.ended) {
     if (!pending.length) {
@@ -265,7 +265,10 @@ export async function readPackedObject(index, oid, {
     if (cached) return cached;
     const header = await readRange(offset, 128 * 1024);
     const parsed = parsePackEntry(header, offset);
-    const data = await inflateAt(readRange, parsed.start, parsed.size, maxBytes);
+    const initial = parsed.start >= offset && parsed.start <= offset + header.length
+      ? header.subarray(parsed.start - offset)
+      : new Uint8Array();
+    const data = await inflateAt(readRange, parsed.start, parsed.size, maxBytes, initial);
     let object;
     if (parsed.type >= 1 && parsed.type <= 4) {
       object = { type: parsed.type, data };
@@ -292,17 +295,49 @@ export async function readPackedObject(index, oid, {
   return object;
 }
 
+const CANONICAL_TREE_MODES = new Set(["40000", "100644", "100755", "120000", "160000"]);
+const IGNORABLE_GIT_CHARS = /[\u200c-\u200f\u202a-\u202e\u206a-\u206f\ufeff]/g;
+
+function isForbiddenDotGit(name) {
+  const stripped = name.replace(IGNORABLE_GIT_CHARS, "");
+  return /^(\.git|git~1)(\.+|$)/i.test(stripped);
+}
+
+function compareTreeEntryBytes(leftBytes, leftIsDir, rightBytes, rightIsDir) {
+  const len = Math.min(leftBytes.length, rightBytes.length);
+  for (let i = 0; i < len; i++) {
+    if (leftBytes[i] !== rightBytes[i]) return leftBytes[i] - rightBytes[i];
+  }
+  if (leftBytes.length === rightBytes.length) return 0;
+  if (leftBytes.length < rightBytes.length) {
+    const leftNext = leftIsDir ? 0x2f : -1;
+    return leftNext - rightBytes[leftBytes.length];
+  }
+  const rightNext = rightIsDir ? 0x2f : -1;
+  return leftBytes[rightBytes.length] - rightNext;
+}
+
 export function parseCommit(oid, data) {
   const text = new TextDecoder("utf-8", { fatal: false }).decode(data);
   const separator = text.indexOf("\n\n");
   const headers = separator < 0 ? text : text.slice(0, separator);
   const message = separator < 0 ? "" : text.slice(separator + 2);
-  const tree = /^tree ([0-9a-f]{40})$/m.exec(headers)?.[1];
+  if (!/^tree [0-9a-f]{40}(?:\n|$)/.test(headers)) throw new Error("Invalid Git commit");
+  const trees = [...headers.matchAll(/^tree ([0-9a-f]{40})$/gm)];
+  const authors = [...headers.matchAll(/^author (.*) <([^<>]*)> (-?\d+) [+-]\d{4}$/gm)];
+  const committers = [...headers.matchAll(/^committer (.*) <([^<>]*)> (-?\d+) [+-]\d{4}$/gm)];
+  if (trees.length !== 1 || authors.length !== 1 || committers.length !== 1) {
+    throw new Error("Invalid Git commit");
+  }
+  const tree = trees[0][1];
+  const author = authors[0];
+  const committer = committers[0];
   const parents = [...headers.matchAll(/^parent ([0-9a-f]{40})$/gm)].map((match) => match[1]);
-  const author = /^author (.*) <([^<>]*)> (-?\d+) [+-]\d{4}$/m.exec(headers);
-  if (!tree || !author) throw new Error("Invalid Git commit");
   const timestamp = Number(author[3]);
-  if (!Number.isSafeInteger(timestamp)) throw new Error("Invalid Git commit timestamp");
+  const committerTimestamp = Number(committer[3]);
+  if (!Number.isSafeInteger(timestamp) || !Number.isSafeInteger(committerTimestamp)) {
+    throw new Error("Invalid Git commit timestamp");
+  }
   return {
     hash: oid,
     tree,
@@ -317,18 +352,30 @@ export function parseCommit(oid, data) {
 export function parseTree(data) {
   const entries = [];
   let cursor = 0;
+  let prevNameBytes = null;
+  let prevIsDir = false;
   while (cursor < data.length) {
     const end = data.indexOf(0, cursor);
     if (end < 0 || end + 21 > data.length) throw new Error("Invalid Git tree");
-    const header = new TextDecoder("utf-8", { fatal: false }).decode(data.subarray(cursor, end));
-    const space = header.indexOf(" ");
+    const headerBytes = data.subarray(cursor, end);
+    const space = headerBytes.indexOf(0x20);
     if (space < 1) throw new Error("Invalid Git tree entry");
-    const mode = header.slice(0, space);
-    const name = header.slice(space + 1);
-    if (!name || name === "." || name === ".." || name.includes("/")) throw new Error("Invalid Git tree name");
+    const mode = new TextDecoder("ascii").decode(headerBytes.subarray(0, space));
+    if (!CANONICAL_TREE_MODES.has(mode)) throw new Error("Invalid Git tree mode");
+    const nameBytes = headerBytes.subarray(space + 1);
+    const name = new TextDecoder("utf-8", { fatal: false }).decode(nameBytes);
+    if (!name || name === "." || name === ".." || name.includes("/") || isForbiddenDotGit(name)) {
+      throw new Error("Invalid Git tree name");
+    }
+    const isDir = mode === "40000";
+    if (prevNameBytes !== null && compareTreeEntryBytes(prevNameBytes, prevIsDir, nameBytes, isDir) >= 0) {
+      throw new Error("Invalid Git tree entry order");
+    }
+    prevNameBytes = nameBytes;
+    prevIsDir = isDir;
     entries.push({
       name,
-      mode: mode === "40000" ? "040000" : mode,
+      mode: isDir ? "040000" : mode,
       hash: hex(data, end + 1, 20),
     });
     cursor = end + 21;

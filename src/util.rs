@@ -78,7 +78,10 @@ pub fn form_value(data: &FormData, name: &str) -> Option<String> {
 }
 
 pub fn form_bool(data: &FormData, name: &str) -> bool {
-    matches!(data.get_field(name).as_deref(), Some("on") | Some("1") | Some("true"))
+    matches!(
+        data.get_field(name).as_deref(),
+        Some("on") | Some("1") | Some("true")
+    )
 }
 
 /// Only allow local, absolute paths as post-login redirect targets.
@@ -88,7 +91,10 @@ pub fn safe_next(next: Option<String>) -> String {
             if n.starts_with('/')
                 && !n.starts_with("//")
                 && !n.contains('\\')
-                && !n.chars().any(char::is_control) => n,
+                && !n.chars().any(char::is_control) =>
+        {
+            n
+        }
         _ => "/".into(),
     }
 }
@@ -101,6 +107,9 @@ pub fn valid_slug(name: &str) -> bool {
     }
     let first = bytes[0] as char;
     if !first.is_ascii_alphanumeric() {
+        return false;
+    }
+    if name.ends_with('.') || name.contains("..") || name.to_ascii_lowercase().ends_with(".git") {
         return false;
     }
     bytes
@@ -123,9 +132,17 @@ pub fn valid_email(email: &str) -> bool {
         && domain.split('.').all(|label| {
             !label.is_empty()
                 && label.len() <= 63
-                && label.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
-                && label.as_bytes().last().is_some_and(u8::is_ascii_alphanumeric)
-                && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                && label
+                    .as_bytes()
+                    .first()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                && label
+                    .as_bytes()
+                    .last()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
         })
 }
 

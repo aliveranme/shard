@@ -219,4 +219,77 @@ test("parseReceivedPack resolves REF_DELTA with exact Git OID and rejects trunca
     `object ${baseOid}\ntype commit\ntag v2\n\nmessage mentions:\nobject ${expectedOid}\n`,
   );
   assert.equal(parseTagTarget(fakeTag), baseOid);
+
+  // [H3] parseTree enforces canonical modes, forbids .git variants, and requires canonical sort order.
+  const rawTreeEntry = (mode, name, oidHex) => Buffer.concat([
+    Buffer.from(`${mode} ${name}\0`),
+    Buffer.from(oidHex, "hex"),
+  ]);
+  assert.throws(() => parseTree(new Uint8Array(rawTreeEntry("040000", "dir", baseOid))), /Invalid Git tree mode/);
+  assert.throws(() => parseTree(new Uint8Array(rawTreeEntry("100664", "file", baseOid))), /Invalid Git tree mode/);
+  assert.throws(() => parseTree(new Uint8Array(rawTreeEntry("100644", ".Git", baseOid))), /Invalid Git tree name/);
+  assert.throws(() => parseTree(new Uint8Array(rawTreeEntry("100644", "GIT~1", baseOid))), /Invalid Git tree name/);
+  assert.throws(() => parseTree(new Uint8Array(Buffer.concat([
+    rawTreeEntry("100644", "b.txt", baseOid),
+    rawTreeEntry("100644", "a.txt", expectedOid),
+  ]))), /Invalid Git tree entry order/);
+
+  // [H3] parseCommit requires tree first and single tree/author/committer headers.
+  assert.throws(() => parseCommit(baseOid, new TextEncoder().encode(
+    `tree ${baseOid}\nauthor A <a@b.c> 100 +0000\n\nmissing committer\n`,
+  )), /Invalid Git commit/);
+
+  // [M4] parseReceivedPack resolves an OFS_DELTA chained onto a REF_DELTA in a thin pack.
+  const secondExtra = new TextEncoder().encode("chained-ofs-line\n");
+  const secondResult = new Uint8Array(resultData.length + secondExtra.length);
+  secondResult.set(resultData, 0);
+  secondResult.set(secondExtra, resultData.length);
+  const secondExpectedOid = createHash("sha1")
+    .update(new TextEncoder().encode(`blob ${secondResult.length}\0`))
+    .update(secondResult)
+    .digest("hex");
+  const secondDelta = new Uint8Array([
+    ...varint(resultData.length),
+    ...varint(secondResult.length),
+    0x80 | 0x10 | 0x20,
+    resultData.length & 0xff,
+    (resultData.length >> 8) & 0xff,
+    secondExtra.length,
+    ...secondExtra,
+  ]);
+  const secondDeflated = pako.deflate(secondDelta);
+  const ofsHead = [];
+  let ofsSz = secondDelta.length;
+  ofsHead.push((6 << 4) | (ofsSz & 0x0f) | (ofsSz >= 16 ? 0x80 : 0));
+  ofsSz >>= 4;
+  while (ofsSz > 0) {
+    ofsHead.push((ofsSz & 0x7f) | (ofsSz >= 128 ? 0x80 : 0));
+    ofsSz >>= 7;
+  }
+  const firstEntryBytes = Buffer.concat([Buffer.from(head), baseOidBytes, Buffer.from(deflated)]);
+  // Negative offset encoding from entry 2 (offset = 12 + firstEntryBytes.length) back to entry 1 (offset = 12).
+  const distance = firstEntryBytes.length;
+  const ofsBytes = [];
+  let rem = distance;
+  ofsBytes.unshift(rem & 0x7f);
+  while ((rem >>= 7) > 0) {
+    rem -= 1;
+    ofsBytes.unshift(0x80 | (rem & 0x7f));
+  }
+  const chainedBody = Buffer.concat([
+    Buffer.from("PACK"),
+    Buffer.from([0, 0, 0, 2, 0, 0, 0, 2]),
+    firstEntryBytes,
+    Buffer.from(ofsHead),
+    Buffer.from(ofsBytes),
+    Buffer.from(secondDeflated),
+  ]);
+  const chainedPack = new Uint8Array(Buffer.concat([chainedBody, createHash("sha1").update(chainedBody).digest()]));
+  const chainedParsed = await parseReceivedPack(
+    chainedPack,
+    20_000,
+    async (oid) => (oid === baseOid ? { type: 3, data: baseData } : null),
+  );
+  assert.equal(chainedParsed.entries.length, 2);
+  assert.equal(chainedParsed.entries[1].oid, secondExpectedOid);
 });

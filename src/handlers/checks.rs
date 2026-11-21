@@ -1,6 +1,6 @@
-use super::common::{RepoRole, load_repo, repo_role};
-use crate::git_storage::{is_object_id, RepoHandle};
+use super::common::{load_repo, repo_role, RepoRole};
 use crate::ctx::AppState;
+use crate::git_storage::{is_object_id, RepoHandle};
 use crate::i18n::{CheckText, Locale, Message, RepoText};
 use crate::{auth, db, util};
 use js_sys::{Reflect, Uint8Array};
@@ -60,7 +60,9 @@ impl CommitCheck {
             && !self.context.chars().any(char::is_control)
             && self.summary.as_ref().is_none_or(|summary| {
                 summary.len() <= SUMMARY_LIMIT
-                    && !summary.chars().any(|ch| ch.is_control() && !matches!(ch, '\n' | '\t'))
+                    && !summary
+                        .chars()
+                        .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\t'))
             })
     }
 }
@@ -97,10 +99,16 @@ pub async fn record(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
             .or_else(|| header.strip_prefix("bearer "))
             .is_some_and(|token| !token.trim().is_empty())
     });
-    let identity = if bearer { auth::git_identity(&state.env, &req).await? } else { None };
+    let identity = if bearer {
+        auth::git_identity(&state.env, &req).await?
+    } else {
+        None
+    };
     let Some(identity) = identity else {
         let mut response = error(state, 401, CheckText::CredentialsRequired)?;
-        response.headers_mut().set("WWW-Authenticate", "Bearer realm=\"shard\"")?;
+        response
+            .headers_mut()
+            .set("WWW-Authenticate", "Bearer realm=\"shard\"")?;
         return Ok(response);
     };
 
@@ -110,7 +118,14 @@ pub async fn record(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
         return empty(404);
     };
     let database = state.db()?;
-    let role = repo_role(&database, repo.id, repo.owner_id, identity.user_id, identity.is_admin).await?;
+    let role = repo_role(
+        &database,
+        repo.id,
+        repo.owner_id,
+        identity.user_id,
+        identity.is_admin,
+    )
+    .await?;
     if repo.visibility != "public" && role.is_none() {
         return empty(404);
     }
@@ -123,7 +138,10 @@ pub async fn record(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
         return error(state, 404, RepoText::CommitNotFound);
     }
     let json = util::header(&req, "content-type").is_some_and(|header| {
-        header.split(';').next().is_some_and(|media| media.trim().eq_ignore_ascii_case("application/json"))
+        header
+            .split(';')
+            .next()
+            .is_some_and(|media| media.trim().eq_ignore_ascii_case("application/json"))
     });
     if !json {
         return error(state, 415, CheckText::JsonRequired);
@@ -189,7 +207,10 @@ pub async fn record(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
     if recorded.is_some() && matches!(check.state, CheckState::Success) {
         let (env, repo_id, head) = (state.env.clone(), repo.id, hash.to_owned());
         state.worker_ctx.wait_until(async move {
-            if crate::branch_rules::wake_for_check(&env, repo_id, &head).await.is_err() {
+            if crate::branch_rules::wake_for_check(&env, repo_id, &head)
+                .await
+                .is_err()
+            {
                 console_log!("event=merge_check_wake_failed repo_id={repo_id}");
             }
         });
@@ -210,8 +231,14 @@ async fn read_body(req: &Request, body: &mut [u8]) -> std::result::Result<usize,
     let value = JsValue::from_str("value");
     let mut len = 0;
     loop {
-        let result = JsFuture::from(reader.read()).await.map_err(|_| PayloadError::Invalid)?;
-        if Reflect::get(&result, &done).ok().and_then(|value| value.as_bool()) == Some(true) {
+        let result = JsFuture::from(reader.read())
+            .await
+            .map_err(|_| PayloadError::Invalid)?;
+        if Reflect::get(&result, &done)
+            .ok()
+            .and_then(|value| value.as_bool())
+            == Some(true)
+        {
             reader.release_lock();
             return Ok(len);
         }
@@ -231,12 +258,17 @@ async fn read_body(req: &Request, body: &mut [u8]) -> std::result::Result<usize,
 }
 
 fn empty(status: u16) -> Result<Response> {
-    Ok(Response::builder().with_status(status).with_header("Cache-Control", "no-store")?.empty())
+    Ok(Response::builder()
+        .with_status(status)
+        .with_header("Cache-Control", "no-store")?
+        .empty())
 }
 
 fn error(state: &AppState, status: u16, message: impl Message) -> Result<Response> {
     let mut response = Response::error(state.locale.t(message), status)?;
     response.headers_mut().set("Cache-Control", "no-store")?;
-    response.headers_mut().set("Content-Type", "text/plain; charset=utf-8")?;
+    response
+        .headers_mut()
+        .set("Content-Type", "text/plain; charset=utf-8")?;
     Ok(response)
 }

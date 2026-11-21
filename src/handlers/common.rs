@@ -25,7 +25,10 @@ pub(crate) const VISIBLE_REPO_SQL: &str = "(r.visibility = 'public' OR r.owner_i
 
 pub(crate) fn viewer_params(state: &AppState) -> [JsValue; 2] {
     match &state.user {
-        Some(user) => [crate::util::js_int(user.id), crate::util::js_int(user.is_admin)],
+        Some(user) => [
+            crate::util::js_int(user.id),
+            crate::util::js_int(user.is_admin),
+        ],
         None => [crate::util::js_null(), crate::util::js_int(0)],
     }
 }
@@ -39,7 +42,11 @@ pub async fn load_repo(state: &AppState, owner: &str, name: &str) -> Result<Opti
             "SELECT {REPO_COLUMNS}, {REPO_VIEWER_COLUMNS} FROM {REPO_PATH_FROM}
              WHERE pu.username = ?2 COLLATE NOCASE AND p.name = ?3 COLLATE NOCASE"
         ),
-        &[viewer, crate::util::js_text(owner), crate::util::js_text(name)],
+        &[
+            viewer,
+            crate::util::js_text(owner),
+            crate::util::js_text(name),
+        ],
     )
     .await
 }
@@ -104,8 +111,10 @@ pub async fn can_write(state: &AppState, repo: &Repo) -> Result<bool> {
     if can_admin(state, repo) {
         return Ok(true);
     }
-    Ok(repo_role(&state.db()?, repo.id, repo.owner_id, user.id, user.is_admin).await?
-        == Some(RepoRole::Write))
+    Ok(
+        repo_role(&state.db()?, repo.id, repo.owner_id, user.id, user.is_admin).await?
+            == Some(RepoRole::Write),
+    )
 }
 
 pub fn not_found(state: &AppState, message: &'static str) -> Result<Response> {
@@ -134,8 +143,10 @@ pub(crate) async fn visible_repo_by_id(state: &AppState, id: i64) -> Result<Opti
     let [viewer, admin] = viewer_params(state);
     db::first(
         &state.db()?,
-        &format!("SELECT {REPO_COLUMNS}, {REPO_VIEWER_COLUMNS} FROM {REPO_FROM}
-                  WHERE r.id = ?3 AND {VISIBLE_REPO_SQL}"),
+        &format!(
+            "SELECT {REPO_COLUMNS}, {REPO_VIEWER_COLUMNS} FROM {REPO_FROM}
+                  WHERE r.id = ?3 AND {VISIBLE_REPO_SQL}"
+        ),
         &[viewer, admin, crate::util::js_int(id)],
     )
     .await

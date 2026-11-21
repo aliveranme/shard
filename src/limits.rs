@@ -12,11 +12,16 @@ pub(crate) enum Profile {
 
 impl Profile {
     pub(crate) fn read(env: &Env) -> Result<Self> {
-        let value = env.var("SHARD_LIMIT_PROFILE").ok().map(|value| value.to_string());
+        let value = env
+            .var("SHARD_LIMIT_PROFILE")
+            .ok()
+            .map(|value| value.to_string());
         match value.as_deref() {
             None | Some("free") => Ok(Self::Free),
             Some("paid") => Ok(Self::Paid),
-            Some(_) => Err(Error::RustError("SHARD_LIMIT_PROFILE must be free or paid".into())),
+            Some(_) => Err(Error::RustError(
+                "SHARD_LIMIT_PROFILE must be free or paid".into(),
+            )),
         }
     }
 }
@@ -82,7 +87,10 @@ pub(crate) struct LfsLimits {
 
 impl LfsLimits {
     pub(crate) fn read(env: &Env) -> Result<Self> {
-        let configured = env.var("SHARD_LFS_UPLOAD_MODE").ok().map(|value| value.to_string());
+        let configured = env
+            .var("SHARD_LFS_UPLOAD_MODE")
+            .ok()
+            .map(|value| value.to_string());
         let (mode, maximum, default) = match configured.as_deref() {
             None | Some("proxy") => {
                 let maximum = match Profile::read(env)? {
@@ -100,13 +108,23 @@ impl LfsLimits {
                 };
                 (LfsMode::Multipart, maximum, R2_SINGLE_PUT_BYTES)
             }
-            Some(_) => return Err(Error::RustError(
-                "SHARD_LFS_UPLOAD_MODE must be proxy, r2-direct or r2-multipart".into(),
-            )),
+            Some(_) => {
+                return Err(Error::RustError(
+                    "SHARD_LFS_UPLOAD_MODE must be proxy, r2-direct or r2-multipart".into(),
+                ))
+            }
         };
         let max_bytes = match env.var("SHARD_LFS_MAX_BYTES") {
-            Ok(value) => value.to_string().parse().ok().filter(|value| (1..=maximum).contains(value))
-                .ok_or_else(|| Error::RustError(format!("SHARD_LFS_MAX_BYTES must be between 1 and {maximum}")))?,
+            Ok(value) => value
+                .to_string()
+                .parse()
+                .ok()
+                .filter(|value| (1..=maximum).contains(value))
+                .ok_or_else(|| {
+                    Error::RustError(format!(
+                        "SHARD_LFS_MAX_BYTES must be between 1 and {maximum}"
+                    ))
+                })?,
             Err(_) => default,
         };
         Ok(Self { mode, max_bytes })

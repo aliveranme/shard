@@ -1,9 +1,9 @@
-use crate::git_storage::{is_object_id, BlobRead, Commit, RepoHandle};
 use crate::ctx::AppState;
+use crate::git_storage::{is_object_id, BlobRead, Commit, RepoHandle};
 use crate::handlers::common::{can_admin, not_found, page_title, visible_repo};
 use crate::i18n::{CommonText, RepoObjectText, RepoText};
 use crate::models::{Repo, Ts};
-use crate::templates::{Avatar, Chrome, error_response, render};
+use crate::templates::{error_response, render, Avatar, Chrome};
 use crate::util;
 use askama::Template;
 use worker::*;
@@ -43,7 +43,9 @@ impl ObjectError {
     fn response(self, state: &AppState) -> Result<Response> {
         let locale = state.locale;
         let (status, message) = match self {
-            Self::RepositoryMissing => return not_found(state, locale.t(CommonText::RepositoryNotFound)),
+            Self::RepositoryMissing => {
+                return not_found(state, locale.t(CommonText::RepositoryNotFound))
+            }
             Self::CommitMissing => return not_found(state, locale.t(RepoText::CommitNotFound)),
             Self::Storage(error) => {
                 console_log!("Repository object read failed: {error}");
@@ -56,16 +58,23 @@ impl ObjectError {
     }
 }
 
-async fn load_commit(ctx: &RouteContext<AppState>) -> std::result::Result<(Repo, RepoHandle, Commit), ObjectError> {
+async fn load_commit(
+    ctx: &RouteContext<AppState>,
+) -> std::result::Result<(Repo, RepoHandle, Commit), ObjectError> {
     let owner = ctx.param("owner").map_or("", String::as_str);
     let name = ctx.param("repo").map_or("", String::as_str);
-    let repo = visible_repo(&ctx.data, owner, name).await?.ok_or(ObjectError::RepositoryMissing)?;
+    let repo = visible_repo(&ctx.data, owner, name)
+        .await?
+        .ok_or(ObjectError::RepositoryMissing)?;
     let hash = ctx.param("hash").map_or("", String::as_str);
     if !is_object_id(hash) {
         return Err(ObjectError::CommitMissing);
     }
     let handle = RepoHandle::open(&ctx.data.env, &repo).await?;
-    let commit = handle.read_commit(hash).await?.ok_or(ObjectError::CommitMissing)?;
+    let commit = handle
+        .read_commit(hash)
+        .await?
+        .ok_or(ObjectError::CommitMissing)?;
     Ok((repo, handle, commit))
 }
 
@@ -91,12 +100,25 @@ pub async fn commit(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
     };
     let branch = util::query_param(&req, "branch");
     let checks = crate::handlers::checks::load(state, repo.id, &commit.hash).await?;
-    let avatars = crate::avatar::git_author_ids(state, commit.author_email.iter().map(String::as_str)).await?;
-    let author_avatar = Avatar::new(&commit.author, commit.author_email.as_ref().and_then(|email| avatars.get(email)).copied());
+    let avatars =
+        crate::avatar::git_author_ids(state, commit.author_email.iter().map(String::as_str))
+            .await?;
+    let author_avatar = Avatar::new(
+        &commit.author,
+        commit
+            .author_email
+            .as_ref()
+            .and_then(|email| avatars.get(email))
+            .copied(),
+    );
     let signature = crate::gpg::verify_commit(state, &handle, &commit.hash).await;
     let page = CommitPage {
         chrome: Chrome::new(state),
-        title: page_title(&[&repo.full_name(), state.locale.t(RepoObjectText::Commit), &commit.hash[..12]]),
+        title: page_title(&[
+            &repo.full_name(),
+            state.locale.t(RepoObjectText::Commit),
+            &commit.hash[..12],
+        ]),
         tab: "commits",
         is_owner: can_admin(state, &repo),
         branch_url: util::url_path(branch.as_deref().unwrap_or(&repo.default_branch)),
@@ -109,7 +131,9 @@ pub async fn commit(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
         signature,
     };
     let mut response = render(&page)?;
-    response.headers_mut().set("Cache-Control", "private, no-store")?;
+    response
+        .headers_mut()
+        .set("Cache-Control", "private, no-store")?;
     Ok(response)
 }
 
@@ -122,21 +146,35 @@ pub async fn archive(_req: Request, ctx: RouteContext<AppState>) -> Result<Respo
     let headers = archive_headers(&repo.name, &commit.hash)?;
     match handle.source_archive(&commit.hash, &repo.name).await {
         Ok(crate::native_git::ArchiveResponse::Ready(response)) => return Ok(response),
-        Ok(crate::native_git::ArchiveResponse::Limit) => return ObjectError::ArchiveLimit.response(state),
-        Ok(crate::native_git::ArchiveResponse::Unsupported) => return ObjectError::ArchiveUnsupported.response(state),
-        Ok(crate::native_git::ArchiveResponse::Missing) => return ObjectError::CommitMissing.response(state),
+        Ok(crate::native_git::ArchiveResponse::Limit) => {
+            return ObjectError::ArchiveLimit.response(state)
+        }
+        Ok(crate::native_git::ArchiveResponse::Unsupported) => {
+            return ObjectError::ArchiveUnsupported.response(state)
+        }
+        Ok(crate::native_git::ArchiveResponse::Missing) => {
+            return ObjectError::CommitMissing.response(state)
+        }
         Ok(crate::native_git::ArchiveResponse::NotApplicable) => {}
         Err(error) => return ObjectError::Storage(error).response(state),
     }
     let Some(tree) = commit.tree.as_deref().filter(|hash| is_object_id(hash)) else {
-        return ObjectError::Storage(Error::RustError("Git commit tree is missing or invalid".into())).response(state);
+        return ObjectError::Storage(Error::RustError(
+            "Git commit tree is missing or invalid".into(),
+        ))
+        .response(state);
     };
     let mut path = format!("source-{}", commit.hash);
-    let mut tar = SourceTar { bytes: Vec::new(), remaining_entries: MAX_ENTRIES, remaining_reads: MAX_READS };
+    let mut tar = SourceTar {
+        bytes: Vec::new(),
+        remaining_entries: MAX_ENTRIES,
+        remaining_reads: MAX_READS,
+    };
     let packed = async {
         tar.append(("", &path), 0o755, b'5', &[])?;
         tar.add_tree(&handle, tree, &mut path, 0).await
-    }.await;
+    }
+    .await;
     if let Err(error) = packed {
         return error.response(state);
     }
@@ -148,7 +186,13 @@ fn archive_headers(repo: &str, hash: &str) -> Result<Headers> {
     let filename = format!("{repo}-{hash}.tar");
     let headers = Headers::new();
     headers.set("Content-Type", "application/x-tar")?;
-    headers.set("Content-Disposition", &format!("attachment; filename*=UTF-8''{}", urlencoding::encode(&filename)))?;
+    headers.set(
+        "Content-Disposition",
+        &format!(
+            "attachment; filename*=UTF-8''{}",
+            urlencoding::encode(&filename)
+        ),
+    )?;
     headers.set("Cache-Control", "private, no-store")?;
     headers.set("X-Content-Type-Options", "nosniff")?;
     Ok(headers)
@@ -192,7 +236,8 @@ impl SourceTar {
             .read_tree_bounded(tree, self.remaining_entries)
             .await?
             .ok_or(ObjectError::ArchiveLimit)?;
-        self.remaining_entries = self.remaining_entries
+        self.remaining_entries = self
+            .remaining_entries
             .checked_sub(entries.len() as u32)
             .ok_or(ObjectError::ArchiveLimit)?;
         if depth >= MAX_COMPONENTS && !entries.is_empty() {
@@ -218,7 +263,9 @@ impl SourceTar {
                 "100644" | "100755" => {
                     self.take_read()?;
                     let space = self.file_capacity()?;
-                    let BlobRead::Bytes(blob) = handle.read_blob_bounded(&entry.hash, space).await? else {
+                    let BlobRead::Bytes(blob) =
+                        handle.read_blob_bounded(&entry.hash, space).await?
+                    else {
                         return Err(ObjectError::ArchiveLimit);
                     };
                     let mode = if entry.mode == "100755" { 0o755 } else { 0o644 };
@@ -237,7 +284,13 @@ impl SourceTar {
             .ok_or(ObjectError::ArchiveLimit)
     }
 
-    fn append(&mut self, (prefix, name): (&str, &str), mode: usize, kind: u8, contents: &[u8]) -> ArchiveResult<()> {
+    fn append(
+        &mut self,
+        (prefix, name): (&str, &str),
+        mode: usize,
+        kind: u8,
+        contents: &[u8],
+    ) -> ArchiveResult<()> {
         if contents.len() > self.file_capacity()? {
             return Err(ObjectError::ArchiveLimit);
         }
@@ -257,7 +310,8 @@ impl SourceTar {
         header[155] = b' ';
         self.bytes.extend_from_slice(&header);
         self.bytes.extend_from_slice(contents);
-        self.bytes.resize(self.bytes.len().next_multiple_of(BLOCK_SIZE), 0);
+        self.bytes
+            .resize(self.bytes.len().next_multiple_of(BLOCK_SIZE), 0);
         Ok(())
     }
 }
@@ -288,16 +342,29 @@ fn safe_component(name: &str) -> bool {
         || name.ends_with(['.', ' '])
         || name.eq_ignore_ascii_case(".git")
         || name.chars().any(|ch| ch.is_control() || ch == '\u{fffd}')
-        || name.bytes().any(|b| matches!(b, b'/' | b'\\' | b':' | b'<' | b'>' | b'"' | b'|' | b'?' | b'*'))
+        || name.bytes().any(|b| {
+            matches!(
+                b,
+                b'/' | b'\\' | b':' | b'<' | b'>' | b'"' | b'|' | b'?' | b'*'
+            )
+        })
     {
         return false;
     }
     // DOS device names also apply inside directories and with extensions.
-    let stem = name.split('.').next().unwrap_or_default().trim_end_matches(' ');
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches(' ');
     !["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
-        .iter().any(|device| stem.eq_ignore_ascii_case(device))
+        .iter()
+        .any(|device| stem.eq_ignore_ascii_case(device))
         && !stem.get(..3).is_some_and(|prefix| {
             (prefix.eq_ignore_ascii_case("COM") || prefix.eq_ignore_ascii_case("LPT"))
-                && matches!(&stem[3..], "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³")
+                && matches!(
+                    &stem[3..],
+                    "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+                )
         })
 }

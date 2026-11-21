@@ -87,6 +87,14 @@ struct Recipient {
     email: String,
 }
 
+#[derive(Deserialize)]
+struct ExistingLink {
+    user_id: i64,
+    email: String,
+    token_hash: Option<String>,
+    expires_at: i64,
+}
+
 async fn send_link(
     env: &Env,
     mail: Mail,
@@ -98,8 +106,24 @@ async fn send_link(
     let token = crypto::random_token()?;
     let hash = crypto::sha256_hex(&token).await?;
     let now = util::now();
+    let database = env.d1("DB")?;
+    let previous: Option<ExistingLink> = db::first(
+        &database,
+        "SELECT l.user_id, l.email, l.token_hash, l.expires_at
+           FROM account_email_links l
+           JOIN users u ON u.id = l.user_id
+          WHERE l.purpose = ?1
+            AND u.email = ?2 COLLATE NOCASE
+            AND ((?1 = 'verify' AND u.id = ?3) OR ?1 = 'reset')",
+        &[
+            util::js_text(purpose.key()),
+            util::js_text(email),
+            util::js_int(user_id.unwrap_or(0)),
+        ],
+    )
+    .await?;
     let recipient: Option<Recipient> = db::first(
-        &env.d1("DB")?,
+        &database,
         "INSERT INTO account_email_links (user_id, purpose, email, token_hash, expires_at, next_send_at)
          SELECT id, ?1, email, ?2, ?3, ?4 FROM users
           WHERE email = ?5 COLLATE NOCASE
@@ -108,7 +132,9 @@ async fn send_link(
          ON CONFLICT (user_id, purpose) DO UPDATE SET
            email = excluded.email, token_hash = excluded.token_hash,
            expires_at = excluded.expires_at, next_send_at = excluded.next_send_at
-         WHERE account_email_links.next_send_at <= ?7
+         WHERE account_email_links.token_hash IS NULL
+            OR account_email_links.expires_at <= ?7
+            OR (?1 = 'verify' AND account_email_links.next_send_at <= ?7)
          RETURNING email",
         &[
             util::js_text(purpose.key()),
@@ -134,15 +160,39 @@ async fn send_link(
             token,
             locale.t(AccountText::IgnoreEmail),
         );
-        let message = SendEmailBuilder::builder(&mail.sender, &recipient.email, locale.t(purpose.heading()))
-            .text(&text)
-            .build();
+        let message =
+            SendEmailBuilder::builder(&mail.sender, &recipient.email, locale.t(purpose.heading()))
+                .text(&text)
+                .build();
         if let Err(error) = mail.binding.send_with_builder(&message).await {
-            // Release the resend cooldown if mail delivery failed so the user can retry.
+            // Restore any previous active link or clear the unsent token hash and release cooldown.
+            let (restored_hash, restored_expires) = match previous {
+                Some(prev)
+                    if prev.email == recipient.email
+                        && prev.token_hash.is_some()
+                        && prev.expires_at > now =>
+                {
+                    let _ = prev.user_id;
+                    (
+                        prev.token_hash
+                            .as_deref()
+                            .map_or_else(util::js_null, util::js_text),
+                        util::js_int(prev.expires_at),
+                    )
+                }
+                _ => (util::js_null(), util::js_int(0)),
+            };
             let _ = db::run(
-                &env.d1("DB")?,
-                "UPDATE account_email_links SET next_send_at = 0 WHERE token_hash = ? AND purpose = ?",
-                &[util::js_text(&hash), util::js_text(purpose.key())],
+                &database,
+                "UPDATE account_email_links
+                    SET token_hash = ?1, expires_at = ?2, next_send_at = 0
+                  WHERE token_hash = ?3 AND purpose = ?4",
+                &[
+                    restored_hash,
+                    restored_expires,
+                    util::js_text(&hash),
+                    util::js_text(purpose.key()),
+                ],
             )
             .await;
             return Err(error.into());
@@ -152,7 +202,11 @@ async fn send_link(
 }
 
 fn unavailable(state: &AppState) -> Result<Response> {
-    error_response(&Chrome::new(state), 503, state.locale.t(AccountText::MailUnavailable))
+    error_response(
+        &Chrome::new(state),
+        503,
+        state.locale.t(AccountText::MailUnavailable),
+    )
 }
 
 #[derive(Template)]
@@ -202,7 +256,9 @@ impl<'a> RecoveryPage<'a> {
     fn response(&self, status: u16) -> Result<Response> {
         let mut response = render(self)?.with_status(status);
         // Suppress token-bearing paths without nulling Origin on form POSTs.
-        response.headers_mut().set("Referrer-Policy", "strict-origin")?;
+        response
+            .headers_mut()
+            .set("Referrer-Policy", "strict-origin")?;
         response.headers_mut().set("Cache-Control", "no-store")?;
         Ok(response)
     }
@@ -231,7 +287,10 @@ pub async fn request_submit(_req: Request, ctx: RouteContext<AppState>) -> Resul
         let locale = state.locale;
         // Complete the same HTTP response independently of lookup and delivery.
         state.worker_ctx.wait_until(async move {
-            if send_link(&env, mail, locale, Purpose::Reset, None, email.trim()).await.is_err() {
+            if send_link(&env, mail, locale, Purpose::Reset, None, email.trim())
+                .await
+                .is_err()
+            {
                 console_error!("Account recovery email failed");
             }
         });
@@ -249,12 +308,23 @@ pub async fn request_verification(_req: Request, ctx: RouteContext<AppState>) ->
     let Some(mail) = Mail::from_env(&state.env) else {
         return unavailable(state);
     };
-    if send_link(&state.env, mail, state.locale, Purpose::Verify, Some(user.id), &user.email)
-        .await
-        .is_err()
+    if send_link(
+        &state.env,
+        mail,
+        state.locale,
+        Purpose::Verify,
+        Some(user.id),
+        &user.email,
+    )
+    .await
+    .is_err()
     {
         console_error!("Email verification send failed");
-        return error_response(&Chrome::new(state), 503, state.locale.t(AccountText::MailSendFailed));
+        return error_response(
+            &Chrome::new(state),
+            503,
+            state.locale.t(AccountText::MailSendFailed),
+        );
     }
     util::redirect("/user/settings?updated=verification-requested")
 }
@@ -280,26 +350,44 @@ async fn active_owner(state: &AppState, hash: &str, purpose: Purpose) -> Result<
     db::first(
         &state.db()?,
         ACTIVE_LINK,
-        &[util::js_text(hash), util::js_text(purpose.key()), util::js_int(util::now())],
+        &[
+            util::js_text(hash),
+            util::js_text(purpose.key()),
+            util::js_int(util::now()),
+        ],
     )
     .await
 }
 
-async fn consume(state: &AppState, hash: &str, purpose: Purpose, value: wasm_bindgen::JsValue) -> Result<Option<LinkOwner>> {
+async fn consume(
+    state: &AppState,
+    hash: &str,
+    purpose: Purpose,
+    value: wasm_bindgen::JsValue,
+) -> Result<Option<LinkOwner>> {
     let column = match purpose {
         Purpose::Verify => "email_verified_at",
         Purpose::Reset => "password_hash",
     };
     let database = state.db()?;
-    let args = [util::js_text(hash), util::js_text(purpose.key()), util::js_int(util::now())];
-    let update = database.prepare(format!(
-        "UPDATE users SET {column} = ?4 WHERE id = ({ACTIVE_LINK}) RETURNING id AS user_id"
-    )).bind(&[args[0].clone(), args[1].clone(), args[2].clone(), value])?;
+    let args = [
+        util::js_text(hash),
+        util::js_text(purpose.key()),
+        util::js_int(util::now()),
+    ];
+    let update = database
+        .prepare(format!(
+            "UPDATE users SET {column} = ?4 WHERE id = ({ACTIVE_LINK}) RETURNING id AS user_id"
+        ))
+        .bind(&[args[0].clone(), args[1].clone(), args[2].clone(), value])?;
     if matches!(purpose, Purpose::Verify) {
         return update.first(None).await;
     }
     // Revoke Git tokens before the password trigger consumes this link and deletes browser sessions.
-    let revoke = database.prepare(format!("DELETE FROM access_tokens WHERE user_id = ({ACTIVE_LINK})"))
+    let revoke = database
+        .prepare(format!(
+            "DELETE FROM access_tokens WHERE user_id = ({ACTIVE_LINK})"
+        ))
         .bind(&args)?;
     let results = database.batch(vec![revoke, update]).await?;
     Ok(results[1].results::<LinkOwner>()?.into_iter().next())
@@ -317,10 +405,16 @@ fn invalid_link(state: &AppState, purpose: Purpose) -> Result<Response> {
 
 async fn show_link(req: Request, state: &AppState, purpose: Purpose) -> Result<Response> {
     let token = util::query_param(&req, "token").unwrap_or_default();
-    if !token_shape(&token) || active_owner(state, &crypto::sha256_hex(&token).await?, purpose).await?.is_none() {
+    if !token_shape(&token)
+        || active_owner(state, &crypto::sha256_hex(&token).await?, purpose)
+            .await?
+            .is_none()
+    {
         return invalid_link(state, purpose);
     }
-    RecoveryPage::new(state, purpose.heading()).link_form(purpose, &token).response(200)
+    RecoveryPage::new(state, purpose.heading())
+        .link_form(purpose, &token)
+        .response(200)
 }
 
 pub async fn verify_form(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
@@ -336,7 +430,14 @@ pub async fn verify_submit(_req: Request, ctx: RouteContext<AppState>) -> Result
     let purpose = Purpose::Verify;
     let token = util::form_value(state.form()?, "token").unwrap_or_default();
     if !token_shape(&token)
-        || consume(state, &crypto::sha256_hex(&token).await?, purpose, util::js_int(util::now())).await?.is_none()
+        || consume(
+            state,
+            &crypto::sha256_hex(&token).await?,
+            purpose,
+            util::js_int(util::now()),
+        )
+        .await?
+        .is_none()
     {
         return invalid_link(state, purpose);
     }
@@ -389,7 +490,9 @@ pub async fn reset_submit(_req: Request, ctx: RouteContext<AppState>) -> Result<
     page.notice = Some(state.locale.t(AccountText::PasswordReset));
     let mut response = page.response(200)?;
     if signed_out {
-        response.headers_mut().append("Set-Cookie", &util::clear_cookie())?;
+        response
+            .headers_mut()
+            .append("Set-Cookie", &util::clear_cookie())?;
     }
     Ok(response)
 }

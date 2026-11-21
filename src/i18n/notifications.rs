@@ -26,7 +26,11 @@ pub enum NotificationAction {
 }
 
 impl super::Locale {
-    pub fn notification_activity(self, action: NotificationAction, actor: &str) -> impl fmt::Display + '_ {
+    pub fn notification_activity(
+        self,
+        action: NotificationAction,
+        actor: &str,
+    ) -> impl fmt::Display + '_ {
         use NotificationAction::*;
 
         fmt::from_fn(move |f| match (self, action) {

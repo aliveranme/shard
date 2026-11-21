@@ -1166,6 +1166,7 @@ a.file-row:hover { background-color: var(--hover); text-decoration: none; }
   color: var(--muted);
   background-color: var(--diff-gutter);
   font-family: var(--font-mono);
+  user-select: none;
 }
 .diff-table__text { width: 100%; white-space: pre; tab-size: 4; }
 .diff-table__added { background: var(--positive-surface); }
@@ -1375,7 +1376,6 @@ a.file-row:hover { background-color: var(--hover); text-decoration: none; }
     transform var(--motion-feedback) var(--ease-out);
 }
 :is(.btn, .search button):not(:disabled):active { transform: scale(0.98); }
-.nav__menu > summary .icon { transition: transform var(--motion-feedback) var(--ease-out); }
 .refs-row__arrow { transition: opacity var(--motion-feedback) var(--ease-out), transform var(--motion-feedback) var(--ease-out); }
 
 .hero__grid { animation: surface-enter var(--motion-enter) var(--ease-out); }

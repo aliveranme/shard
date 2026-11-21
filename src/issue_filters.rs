@@ -25,7 +25,11 @@ impl IssueFilters {
                 };
                 field.get_or_insert_with(|| {
                     let trimmed = value.trim();
-                    if trimmed.len() == value.len() { value.into_owned() } else { trimmed.to_owned() }
+                    if trimmed.len() == value.len() {
+                        value.into_owned()
+                    } else {
+                        trimmed.to_owned()
+                    }
                 });
             }
         }

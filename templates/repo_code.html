@@ -41,7 +41,11 @@
           <a href="/{{ repo.owner_name }}/{{ repo.name }}/src?branch={{ branch_url }}">{{ repo.name }}</a>
           {% for crumb in crumbs %}
             <span class="sep" aria-hidden="true">/</span>
-            <a href="/{{ repo.owner_name }}/{{ repo.name }}/src/{{ crumb.url_path }}?branch={{ branch_url }}">{{ crumb.name }}</a>
+            {% if loop.last %}
+              <span aria-current="page">{{ crumb.name }}</span>
+            {% else %}
+              <a href="/{{ repo.owner_name }}/{{ repo.name }}/src/{{ crumb.url_path }}?branch={{ branch_url }}">{{ crumb.name }}</a>
+            {% endif %}
           {% endfor %}
         </div>
       {% endif %}

@@ -1,6 +1,6 @@
 use crate::git_storage::{is_object_id, BlobRead, RepoHandle, TreeEntry};
-use crate::native_git::{GitServiceRepo, SnapshotRead};
 use crate::limits::Profile;
+use crate::native_git::{GitServiceRepo, SnapshotRead};
 use serde::{Deserialize, Deserializer};
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -73,7 +73,10 @@ impl ChangedFile {
             }
         }
         let mut text = [String::new(), String::new()];
-        for ((entry, repo), output) in [(&self.before, target), (&self.after, source)].into_iter().zip(&mut text) {
+        for ((entry, repo), output) in [(&self.before, target), (&self.after, source)]
+            .into_iter()
+            .zip(&mut text)
+        {
             let Some(entry) = entry else { continue };
             if entry.mode.0 == "160000" {
                 return Ok(FileDiff::Submodule);
@@ -94,7 +97,13 @@ impl ChangedFile {
     }
 }
 
-pub async fn compare(env: &Env, target: &RepoHandle, source: &RepoHandle, base: &str, head: &str) -> Result<Comparison> {
+pub async fn compare(
+    env: &Env,
+    target: &RepoHandle,
+    source: &RepoHandle,
+    base: &str,
+    head: &str,
+) -> Result<Comparison> {
     if !is_object_id(base) || !is_object_id(head) {
         return Ok(Comparison::MissingSnapshot);
     }
@@ -157,28 +166,39 @@ fn native_files(mut files: Vec<ChangedFile>) -> Result<Comparison> {
     }
     for file in &mut files {
         let mut parts = file.path.split('/');
-        if file.path.len() > MAX_PATH_BYTES || parts.clone().nth(usize::from(MAX_DEPTH) + 1).is_some() {
+        if file.path.len() > MAX_PATH_BYTES
+            || parts.clone().nth(usize::from(MAX_DEPTH) + 1).is_some()
+        {
             return Ok(Comparison::Limited);
         }
         if parts.any(|part| matches!(part, "" | "." | "..") || part.contains('\0'))
             || (file.before.is_none() && file.after.is_none())
-            || [&file.before, &file.after].into_iter().flatten().any(|object| {
-                !is_object_id(&object.hash) || object.hash.bytes().all(|byte| byte == b'0')
-            })
+            || [&file.before, &file.after]
+                .into_iter()
+                .flatten()
+                .any(|object| {
+                    !is_object_id(&object.hash) || object.hash.bytes().all(|byte| byte == b'0')
+                })
         {
-            return Err(worker::Error::RustError("Native Git origin returned an invalid file change".into()));
+            return Err(worker::Error::RustError(
+                "Native Git origin returned an invalid file change".into(),
+            ));
         }
         file.url_path = crate::util::url_path(&file.path);
     }
     files.sort_unstable_by(|a, b| a.path.cmp(&b.path));
     if files.windows(2).any(|pair| pair[0].path == pair[1].path) {
-        return Err(worker::Error::RustError("Native Git origin returned duplicate file changes".into()));
+        return Err(worker::Error::RustError(
+            "Native Git origin returned duplicate file changes".into(),
+        ));
     }
     Ok(Comparison::Complete(files))
 }
 
 async fn commit_tree(repo: &RepoHandle, id: &str) -> Result<Option<String>> {
-    Ok(repo.read_commit(id).await?
+    Ok(repo
+        .read_commit(id)
+        .await?
         .and_then(|commit| commit.tree)
         .filter(|tree| is_object_id(tree)))
 }
@@ -194,8 +214,14 @@ struct Walk<'a> {
 }
 
 impl Walk<'_> {
-    async fn entries(&mut self, repo: &RepoHandle, hash: Option<&str>) -> Result<Option<Vec<TreeEntry>>> {
-        let Some(hash) = hash else { return Ok(Some(Vec::new())) };
+    async fn entries(
+        &mut self,
+        repo: &RepoHandle,
+        hash: Option<&str>,
+    ) -> Result<Option<Vec<TreeEntry>>> {
+        let Some(hash) = hash else {
+            return Ok(Some(Vec::new()));
+        };
         if self.reads_left == 0 {
             return Ok(None);
         }
@@ -224,8 +250,12 @@ impl Walk<'_> {
         if depth > MAX_DEPTH {
             return Ok(false);
         }
-        let Some(base) = self.entries(self.target, base).await? else { return Ok(false) };
-        let Some(head) = self.entries(self.source, head).await? else { return Ok(false) };
+        let Some(base) = self.entries(self.target, base).await? else {
+            return Ok(false);
+        };
+        let Some(head) = self.entries(self.source, head).await? else {
+            return Ok(false);
+        };
         let mut base = base.into_iter().peekable();
         let mut head = head.into_iter().peekable();
         loop {
@@ -268,7 +298,9 @@ impl Walk<'_> {
                     after: after_file,
                 });
             }
-            if !Box::pin(self.pair(before_tree.as_deref(), after_tree.as_deref(), depth + 1)).await? {
+            if !Box::pin(self.pair(before_tree.as_deref(), after_tree.as_deref(), depth + 1))
+                .await?
+            {
                 return Ok(false);
             }
             self.path.truncate(prefix_len);
@@ -279,7 +311,13 @@ impl Walk<'_> {
 fn split_entry(entry: Option<TreeEntry>) -> (Option<String>, Option<FileObject>) {
     match entry {
         Some(entry) if entry.is_dir => (Some(entry.hash), None),
-        Some(TreeEntry { hash, mode, .. }) => (None, Some(FileObject { hash, mode: FileMode(mode) })),
+        Some(TreeEntry { hash, mode, .. }) => (
+            None,
+            Some(FileObject {
+                hash,
+                mode: FileMode(mode),
+            }),
+        ),
         None => (None, None),
     }
 }
@@ -350,29 +388,41 @@ impl LineDiff {
         let (mut old_at, mut new_at) = (0, 0);
         let mut rows = Vec::with_capacity(old.len() + new.len());
         while i < old.len() || j < new.len() {
-            let (old_number, new_number, bytes) = if i < old.len() && j < new.len() && old_ids[i] == new_ids[j] {
-                let start = old_at;
-                old_at += old[i].len();
-                new_at += new[j].len();
-                i += 1;
-                j += 1;
-                (i, j, start..old_at)
-            } else if i < old.len() && (j == new.len() || lcs[(i + 1) * cols + j] >= lcs[i * cols + j + 1]) {
-                let start = old_at;
-                old_at += old[i].len();
-                i += 1;
-                (i, 0, start..old_at)
-            } else {
-                let start = new_at;
-                new_at += new[j].len();
-                j += 1;
-                (0, j, start..new_at)
-            };
-            rows.push(Line { old: old_number, new: new_number, bytes, gap: false });
+            let (old_number, new_number, bytes) =
+                if i < old.len() && j < new.len() && old_ids[i] == new_ids[j] {
+                    let start = old_at;
+                    old_at += old[i].len();
+                    new_at += new[j].len();
+                    i += 1;
+                    j += 1;
+                    (i, j, start..old_at)
+                } else if i < old.len()
+                    && (j == new.len() || lcs[(i + 1) * cols + j] >= lcs[i * cols + j + 1])
+                {
+                    let start = old_at;
+                    old_at += old[i].len();
+                    i += 1;
+                    (i, 0, start..old_at)
+                } else {
+                    let start = new_at;
+                    new_at += new[j].len();
+                    j += 1;
+                    (0, j, start..new_at)
+                };
+            rows.push(Line {
+                old: old_number,
+                new: new_number,
+                bytes,
+                gap: false,
+            });
         }
 
         let mut keep = vec![false; rows.len()];
-        for (i, _) in rows.iter().enumerate().filter(|(_, row)| row.old == 0 || row.new == 0) {
+        for (i, _) in rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.old == 0 || row.new == 0)
+        {
             let end = (i + CONTEXT + 1).min(keep.len());
             keep[i.saturating_sub(CONTEXT)..end].fill(true);
         }

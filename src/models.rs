@@ -13,16 +13,20 @@ impl Ts {
     pub fn relative(&self, locale: &Locale) -> impl fmt::Display {
         let locale = *locale;
         let date = *self;
-        let elapsed = crate::util::now() - date.0;
+        let elapsed = crate::util::now().saturating_sub(date.0);
         fmt::from_fn(move |f| match (locale, elapsed) {
-            (_, d) if d < 60 => f.write_str(locale.t(CommonText::JustNow)),
-            (Locale::En, d) if d < 3600 => write!(f, "{} min ago", d / 60),
-            (Locale::ZhHans, d) if d < 3600 => write!(f, "{} 分钟前", d / 60),
-            (Locale::En, d) if d < 86_400 => write!(f, "{} h ago", d / 3600),
-            (Locale::ZhHans, d) if d < 86_400 => write!(f, "{} 小时前", d / 3600),
-            (Locale::En, d) if d < 172_800 => f.write_str("1 day ago"),
-            (Locale::En, d) if d < 2_592_000 => write!(f, "{} days ago", d / 86_400),
-            (Locale::ZhHans, d) if d < 2_592_000 => write!(f, "{} 天前", d / 86_400),
+            (_, d) if (0..60).contains(&d) => f.write_str(locale.t(CommonText::JustNow)),
+            (Locale::En, d) if (60..3600).contains(&d) => write!(f, "{} min ago", d / 60),
+            (Locale::ZhHans, d) if (60..3600).contains(&d) => write!(f, "{} 分钟前", d / 60),
+            (Locale::En, d) if (3600..86_400).contains(&d) => write!(f, "{} h ago", d / 3600),
+            (Locale::ZhHans, d) if (3600..86_400).contains(&d) => write!(f, "{} 小时前", d / 3600),
+            (Locale::En, d) if (86_400..172_800).contains(&d) => f.write_str("1 day ago"),
+            (Locale::En, d) if (172_800..2_592_000).contains(&d) => {
+                write!(f, "{} days ago", d / 86_400)
+            }
+            (Locale::ZhHans, d) if (86_400..2_592_000).contains(&d) => {
+                write!(f, "{} 天前", d / 86_400)
+            }
             _ => write!(f, "{date}"),
         })
     }
@@ -30,7 +34,12 @@ impl Ts {
 
 impl fmt::Display for Ts {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let date = js_sys::Date::new(&JsValue::from_f64((self.0 * 1000) as f64));
+        const MAX_JS_DATE_SECONDS: i64 = 8_640_000_000_000;
+        let clamped = self.0.clamp(-MAX_JS_DATE_SECONDS, MAX_JS_DATE_SECONDS);
+        let date = js_sys::Date::new(&JsValue::from_f64((clamped * 1000) as f64));
+        if date.get_time().is_nan() {
+            return f.write_str("1970-01-01");
+        }
         let iso: String = date.to_iso_string().into();
         // "2026-11-17T12:34:56.000Z" -> "2026-11-17"
         write!(f, "{}", iso.split('T').next().unwrap_or(""))
@@ -110,7 +119,6 @@ impl Issue {
         self.state == "open"
     }
 }
-
 
 #[derive(Clone, Deserialize)]
 pub struct Pull {

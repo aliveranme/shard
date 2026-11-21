@@ -116,7 +116,8 @@ extern "C" {
     ) -> std::result::Result<u16, JsValue>;
 
     #[wasm_bindgen(catch)]
-    async fn shard_webhook_sign(key: &JsValue, json: &str) -> std::result::Result<JsValue, JsValue>;
+    async fn shard_webhook_sign(key: &JsValue, json: &str)
+        -> std::result::Result<JsValue, JsValue>;
 
     #[wasm_bindgen(catch)]
     async fn shard_webhook_post_signed(
@@ -189,7 +190,9 @@ fn legacy_endpoint(raw: &str, local_http: bool) -> Option<Url> {
             || authority
                 .strip_prefix(literal)
                 .and_then(|suffix| suffix.strip_prefix(':'))
-                .is_some_and(|port| !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit()))
+                .is_some_and(|port| {
+                    !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit())
+                })
         {
             return Some(url);
         }
@@ -205,7 +208,9 @@ async fn deliver_legacy(env: &Env, database: &D1Database, limit: usize) -> Resul
     ) else {
         return Ok(());
     };
-    let local_http = env.var("WEBHOOK_LOCAL_HTTP").is_ok_and(|v| v.to_string() == "1");
+    let local_http = env
+        .var("WEBHOOK_LOCAL_HTTP")
+        .is_ok_and(|v| v.to_string() == "1");
     let repo = repo.to_string();
     let secret = secret.to_string();
     let url = legacy_endpoint(&url.to_string(), local_http)
@@ -292,7 +297,11 @@ async fn deliver_legacy(env: &Env, database: &D1Database, limit: usize) -> Resul
             .ok();
         let now = util::now();
         let (state, next_attempt) = delivery_result(status, event.attempts, now);
-        let finished_at = if state == "pending" { util::js_null() } else { util::js_int(now) };
+        let finished_at = if state == "pending" {
+            util::js_null()
+        } else {
+            util::js_int(now)
+        };
         db::run(
             database,
             "UPDATE webhook_deliveries SET state = ?3, next_attempt_at = ?4,
@@ -326,7 +335,9 @@ fn subscription_endpoint(raw: &str, env: &Env) -> Option<Url> {
         || authority.is_empty()
         || authority.contains('@')
         || raw.contains('\\')
-        || raw.chars().any(|char| char.is_whitespace() || char.is_control())
+        || raw
+            .chars()
+            .any(|char| char.is_whitespace() || char.is_control())
     {
         return None;
     }
@@ -335,7 +346,10 @@ fn subscription_endpoint(raw: &str, env: &Env) -> Option<Url> {
         return None;
     }
     if url.scheme() == "http" {
-        if !env.var("WEBHOOK_LOCAL_HTTP").is_ok_and(|var| var.to_string() == "1") {
+        if !env
+            .var("WEBHOOK_LOCAL_HTTP")
+            .is_ok_and(|var| var.to_string() == "1")
+        {
             return None;
         }
         let configured = env.var("WEBHOOK_LOCAL_HTTP_ORIGIN").ok()?.to_string();
@@ -352,11 +366,28 @@ fn subscription_endpoint(raw: &str, env: &Env) -> Option<Url> {
                 && label.len() <= 63
                 && label.as_bytes()[0].is_ascii_alphanumeric()
                 && label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
-                && label.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
         })
         || !(suffix.bytes().all(|byte| byte.is_ascii_alphabetic()) || suffix.starts_with("xn--"))
-        || matches!(suffix, "alt" | "arpa" | "corp" | "example" | "home" | "internal" | "invalid"
-            | "lan" | "local" | "localdomain" | "localhost" | "onion" | "svc" | "test")
+        || matches!(
+            suffix,
+            "alt"
+                | "arpa"
+                | "corp"
+                | "example"
+                | "home"
+                | "internal"
+                | "invalid"
+                | "lan"
+                | "local"
+                | "localdomain"
+                | "localhost"
+                | "onion"
+                | "svc"
+                | "test"
+        )
     {
         return None;
     }
@@ -461,11 +492,18 @@ async fn render_settings(
                    JOIN webhook_events e ON e.repo_id = d.repo_id AND e.id = d.event_id
                   WHERE {SETTINGS_ACCESS} ORDER BY s.id DESC, d.id DESC"
             ),
-            &[args[0].clone(), args[1].clone(), util::js_int(RECENT_DELIVERIES)],
+            &[
+                args[0].clone(),
+                args[1].clone(),
+                util::js_int(RECENT_DELIVERIES),
+            ],
         )
         .await?;
         for delivery in recent {
-            if let Some(subscription) = subscriptions.iter_mut().find(|s| s.id == delivery.subscription_id) {
+            if let Some(subscription) = subscriptions
+                .iter_mut()
+                .find(|s| s.id == delivery.subscription_id)
+            {
                 subscription.recent.push(delivery);
             }
         }
@@ -635,6 +673,11 @@ async fn clean_subscriptions(database: &D1Database) -> Result<()> {
              )",
         ).bind(&[util::js_int(now - RETENTION_SECONDS), limit.clone()])?,
         database.prepare(
+            "DELETE FROM webhook_deliveries WHERE event_id IN (
+                 SELECT event_id FROM webhook_deliveries WHERE created_at < ?1 ORDER BY created_at, event_id LIMIT ?2
+             )",
+        ).bind(&[util::js_int(now - RETENTION_SECONDS), limit.clone()])?,
+        database.prepare(
             "UPDATE webhook_subscription_deliveries SET state = 'canceled' WHERE id IN (
                  SELECT d.id FROM webhook_subscription_deliveries d
                  JOIN webhook_subscriptions s ON s.repo_id = d.repo_id AND s.id = d.subscription_id
@@ -667,7 +710,8 @@ async fn try_subscription(
         &event.repo_id.to_string(),
         endpoint.as_str(),
         &event.encrypted_secret,
-    ).await;
+    )
+    .await;
     let Ok(key) = key else {
         return Ok(None);
     };
@@ -685,7 +729,8 @@ async fn try_subscription(
             before: event.before_oid.as_deref(),
             after: event.after_oid.as_deref(),
         }),
-    }).map_err(|_| webhook_error("webhook serialization failed"))?;
+    })
+    .map_err(|_| webhook_error("webhook serialization failed"))?;
     let Ok(signed) = shard_webhook_sign(&key, &body).await else {
         return Ok(None);
     };
@@ -698,12 +743,20 @@ async fn try_subscription(
           WHERE d.id = ?1 AND d.attempts = ?2 AND d.state = 'sending'
             AND d.next_attempt_at > unixepoch() AND s.disabled_at IS NULL",
         &[util::js_int(claim.id), util::js_int(claim.attempts)],
-    ).await?;
+    )
+    .await?;
     if active.is_none() {
         return Ok(None);
     }
-    Ok(shard_webhook_post_signed(endpoint.as_str(), &event.event_id.to_string(), &claim.id.to_string(), &signed)
-        .await.ok().filter(|&status| status != 0))
+    Ok(shard_webhook_post_signed(
+        endpoint.as_str(),
+        &event.event_id.to_string(),
+        &claim.id.to_string(),
+        &signed,
+    )
+    .await
+    .ok()
+    .filter(|&status| status != 0))
 }
 
 async fn deliver_subscriptions(env: &Env, database: &D1Database, limit: usize) -> Result<()> {
@@ -712,7 +765,8 @@ async fn deliver_subscriptions(env: &Env, database: &D1Database, limit: usize) -
         return Ok(());
     };
     let key = shard_webhook_encryption_key(&secret)
-        .await.map_err(|_| webhook_error("webhook encryption key import failed"))?;
+        .await
+        .map_err(|_| webhook_error("webhook encryption key import failed"))?;
     let max_attempts = util::js_int(MAX_ATTEMPTS);
     for _ in 0..limit {
         let now = util::now();
@@ -727,8 +781,14 @@ async fn deliver_subscriptions(env: &Env, database: &D1Database, limit: usize) -
                    AND d.attempts < ?3 AND s.disabled_at IS NULL
                  ORDER BY d.next_attempt_at, d.id LIMIT 1
               ) RETURNING id, attempts",
-            &[util::js_int(now), util::js_int(now + LEASE_SECONDS), max_attempts.clone()],
-        ).await? else {
+            &[
+                util::js_int(now),
+                util::js_int(now + LEASE_SECONDS),
+                max_attempts.clone(),
+            ],
+        )
+        .await?
+        else {
             break;
         };
         let id = util::js_int(claim.id);
@@ -775,8 +835,14 @@ fn delivery_result(status: Option<u16>, attempts: i64, now: i64) -> (&'static st
     }
 }
 
-pub(crate) async fn deliver_pending(env: &Env, subscriptions_limit: usize, legacy_limit: usize) -> Result<()> {
+pub(crate) async fn deliver_pending(
+    env: &Env,
+    subscriptions_limit: usize,
+    legacy_limit: usize,
+) -> Result<()> {
     let database = env.d1("DB")?;
     let subscriptions = deliver_subscriptions(env, &database, subscriptions_limit).await;
-    deliver_legacy(env, &database, legacy_limit).await.and(subscriptions)
+    deliver_legacy(env, &database, legacy_limit)
+        .await
+        .and(subscriptions)
 }

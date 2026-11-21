@@ -19,7 +19,11 @@ pub struct Avatar {
 
 impl Avatar {
     pub fn new(name: &str, id: Option<i64>) -> Self {
-        let initial = if id.is_none() { initial(name) } else { String::new() };
+        let initial = if id.is_none() {
+            initial(name)
+        } else {
+            String::new()
+        };
         Self { id, initial }
     }
 }
@@ -208,7 +212,6 @@ impl PullView {
         }
     }
 }
-
 
 #[derive(Template)]
 #[template(path = "home.html")]
@@ -421,8 +424,6 @@ pub struct SettingsPage {
     pub visibility_value: String,
     pub is_owner: bool,
 }
-
-
 
 /// Single uppercase character for an avatar bubble.
 pub fn initial(name: &str) -> String {

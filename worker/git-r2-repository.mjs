@@ -121,9 +121,20 @@ function partLength(upload, number) {
 }
 
 function validRef(name) {
-  return typeof name === "string" && name.startsWith("refs/") && name.isWellFormed() && UTF8.encode(name).byteLength <= 4096 &&
-    !/[\x00-\x20\x7f~^:?*\[\\]/.test(name) && !name.includes("..") && !name.includes("@{") && !name.endsWith(".") &&
-    name.split("/").every(part => part && !part.startsWith(".") && !part.endsWith(".lock"));
+  if (typeof name !== "string" || !name.startsWith("refs/") || !name.isWellFormed() || UTF8.encode(name).byteLength > 4096 ||
+      /[\x00-\x20\x7f~^:?*\[\\]/.test(name) || name.includes("..") || name.includes("@{") || name.endsWith(".") ||
+      !name.split("/").every(part => part && !part.startsWith(".") && !part.endsWith(".lock"))) {
+    return false;
+  }
+  const short = name.startsWith("refs/heads/")
+    ? name.slice("refs/heads/".length)
+    : name.startsWith("refs/tags/")
+      ? name.slice("refs/tags/".length)
+      : null;
+  if (short !== null && (!short || short.startsWith("-") || UTF8.encode(short).length > 255)) {
+    return false;
+  }
+  return true;
 }
 
 function hasRefConflict(refs, candidate) {
@@ -696,44 +707,52 @@ export class R2GitRepository extends DurableObject {
         return json(this.#metadata(initial), 201);
       }
       if (payload.kind !== "fork" && payload.kind !== "import") return empty(422);
+      if (payload.kind === "fork" && (typeof payload.source !== "string" || payload.source === id || payload.credential !== undefined)) {
+        return empty(422);
+      }
       const job = await this.#reserve(id, 0);
       let next;
-      if (payload.kind === "fork") {
-        if (typeof payload.source !== "string" || payload.source === id || payload.credential !== undefined) return empty(422);
-        const source = await this.#snapshot(payload.source);
-        const deadline = Date.now() + WORK_MS;
-        next = { ...source, id, packs: [], packSizes: [] };
-        for (const key of source.packs) {
-          const target = `${packPrefix(id, job)}pack-${key.slice(-40)}`;
-          let bytes = 0;
-          for (const extension of [".pack", ".idx"]) {
-            const object = await this.#bucket.head(key + extension);
-            const remaining = deadline - Date.now();
-            if (remaining <= 0) throw new GitHttpError(504, "Git fork exceeded its copy time limit");
-            if (!object || !await this.#signer().copy(key + extension, target + extension, object, Math.min(remaining, WORK_MS / 2))) {
-              throw new GitHttpError(502, "Could not copy an existing Git pack");
+      let persisted = false;
+      try {
+        if (payload.kind === "fork") {
+          const source = await this.#snapshot(payload.source);
+          const deadline = Date.now() + WORK_MS;
+          next = { ...source, id, packs: [], packSizes: [] };
+          for (const key of source.packs) {
+            const target = `${packPrefix(id, job)}pack-${key.slice(-40)}`;
+            let bytes = 0;
+            for (const extension of [".pack", ".idx"]) {
+              const object = await this.#bucket.head(key + extension);
+              const remaining = deadline - Date.now();
+              if (remaining <= 0) throw new GitHttpError(504, "Git fork exceeded its copy time limit");
+              if (!object || !await this.#signer().copy(key + extension, target + extension, object, Math.min(remaining, WORK_MS / 2))) {
+                throw new GitHttpError(502, "Could not copy an existing Git pack");
+              }
+              bytes += object.size;
             }
-            bytes += object.size;
+            next.packs.push(target);
+            next.packSizes.push(bytes);
           }
-          next.packs.push(target);
-          next.packSizes.push(bytes);
+        } else {
+          const workspace = await this.#workspace(job, []);
+          try {
+            const response = await workspace.fetch(path, { method: "POST", payload });
+            await response.body?.cancel();
+            if (response.status !== 201) return empty(response.status);
+            next = await this.#capture(workspace, initial, job);
+            next.id = id;
+          } finally {
+            await workspace.close();
+          }
         }
-      } else {
-        const workspace = await this.#workspace(job, []);
-        try {
-          const response = await workspace.fetch(path, { method: "POST", payload });
-          await response.body?.cancel();
-          if (response.status !== 201) return empty(response.status);
-          next = await this.#capture(workspace, initial, job);
-          next.id = id;
-        } finally {
-          await workspace.close();
-        }
+        this.ctx.storage.transactionSync(() => {
+          this.#insert(id, next);
+          this.#sql.exec("DELETE FROM work WHERE id = ?", job);
+        });
+        persisted = true;
+      } finally {
+        if (!persisted) await this.#dropWork({ id: job, repo: id, published: false });
       }
-      this.ctx.storage.transactionSync(() => {
-        this.#insert(id, next);
-        this.#sql.exec("DELETE FROM work WHERE id = ?", job);
-      });
       this.ctx.waitUntil(this.#arm());
       return json(this.#metadata(next), 201);
     });
@@ -756,6 +775,10 @@ export class R2GitRepository extends DurableObject {
         this.#sql.exec("DELETE FROM work; DELETE FROM packs; DELETE FROM retired_packs;");
         this.#sql.exec("UPDATE repository SET head = '', refs = '[]' WHERE singleton = 1");
       });
+      this.#indexes.clear();
+      this.#counts.clear();
+      this.#packStores.clear();
+      await this.ctx.storage.deleteAlarm().catch(() => {});
       return empty(204);
     });
   }
@@ -766,10 +789,15 @@ export class R2GitRepository extends DurableObject {
     const object = await this.#bucket.get(`${key}.idx`);
     if (!object || object.size > MAX_DIRECT_INDEX) throw new Error("Git pack index is unavailable");
     const index = new PackIndex(new Uint8Array(await object.arrayBuffer()), MAX_DIRECT_INDEX);
-    this.#indexes.set(key, index);
-    if (this.#indexes.size > MAX_DIRECT_INDEXES) {
-      this.#indexes.delete(this.#indexes.keys().next().value);
+    let totalBytes = index.bytes.byteLength;
+    for (const entry of this.#indexes.values()) totalBytes += entry.bytes.byteLength;
+    while (this.#indexes.size >= MAX_DIRECT_INDEXES || (this.#indexes.size > 0 && totalBytes > 16 * MiB)) {
+      const oldestKey = this.#indexes.keys().next().value;
+      const oldest = this.#indexes.get(oldestKey);
+      this.#indexes.delete(oldestKey);
+      if (oldest) totalBytes -= oldest.bytes.byteLength;
     }
+    this.#indexes.set(key, index);
     return index;
   }
 
@@ -1038,6 +1066,57 @@ export class R2GitRepository extends DurableObject {
     };
   }
 
+  async #peelTag(startOid, packs) {
+    let oid = startOid;
+    let peeled = null;
+    for (let depth = 0; depth < 8; depth++) {
+      const object = await this.#readObject(oid, 0, packs);
+      if (!object || object.type !== 4) break;
+      oid = parseTagTarget(object.data);
+      peeled = oid;
+    }
+    return peeled;
+  }
+
+  async #lsRefs(repository, lines) {
+    const prefixes = [];
+    let symrefs = false;
+    let peel = false;
+    let unborn = false;
+    for (const line of lines) {
+      if (line === "symrefs") symrefs = true;
+      else if (line === "peel") peel = true;
+      else if (line === "unborn") unborn = true;
+      else if (line.startsWith("ref-prefix ")) prefixes.push(line.slice("ref-prefix ".length));
+    }
+    const matches = (name) => !prefixes.length || prefixes.some((prefix) => name.startsWith(prefix));
+    const packet = (text) => {
+      const length = UTF8.encode(text).byteLength + 4;
+      if (length > 0xffff) throw new GitHttpError(413, "Git advertisement is too large");
+      return length.toString(16).padStart(4, "0") + text;
+    };
+    const out = [];
+    const head = repository.refs.find((ref) => ref.name === repository.head);
+    if (matches("HEAD")) {
+      if (head) out.push(packet(`${head.oid} HEAD${symrefs ? ` symref-target:${repository.head}` : ""}\n`));
+      else if (unborn && symrefs) out.push(packet(`unborn HEAD symref-target:${repository.head}\n`));
+    }
+    for (const ref of repository.refs) {
+      if (!matches(ref.name)) continue;
+      const peeled = peel && ref.name.startsWith("refs/tags/")
+        ? await this.#peelTag(ref.oid, repository.packs)
+        : null;
+      out.push(packet(`${ref.oid} ${ref.name}${peeled ? ` peeled:${peeled}` : ""}\n`));
+    }
+    out.push("0000");
+    return new Response(out.join(""), {
+      headers: {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/x-git-upload-pack-result",
+      },
+    });
+  }
+
   async #directUploadPack(repository, request, rawBytes) {
     const encoding = (request.headers.get("content-encoding") ?? "").trim().toLowerCase();
     let body = rawBytes;
@@ -1053,6 +1132,29 @@ export class R2GitRepository extends DurableObject {
       return null;
     }
     if (body.length > MAX_DIRECT_UPLOAD) throw new GitHttpError(413, "Git upload request is too large");
+    // Parse initial v2 packets so command=ls-refs never has to build R2PackStore.
+    const decoder = new TextDecoder();
+    let offset = 0;
+    let isLsRefs = false;
+    const lsArgs = [];
+    while (offset + 4 <= body.length) {
+      const hex = decoder.decode(body.subarray(offset, offset + 4));
+      if (!/^[0-9a-fA-F]{4}$/.test(hex)) break;
+      const len = Number.parseInt(hex, 16);
+      offset += 4;
+      if (len === 0) break;
+      if (len <= 4) continue;
+      if (offset + len - 4 > body.length) break;
+      const text = decoder.decode(body.subarray(offset, offset + len - 4)).replace(/\n$/, "");
+      offset += len - 4;
+      if (!isLsRefs) {
+        if (text === "command=ls-refs") isLsRefs = true;
+        else if (text.startsWith("command=")) break;
+      } else {
+        lsArgs.push(text);
+      }
+    }
+    if (isLsRefs) return await this.#lsRefs(repository, lsArgs);
     const count = await this.#objectCount(repository.packs);
     if (count > MAX_DIRECT_OBJECTS) return null;
     const cacheKey = `${repository.revision}:${repository.packs.join("|")}`;
@@ -1062,8 +1164,11 @@ export class R2GitRepository extends DurableObject {
         this.#bucket, repository.packs, (key) => this.#packIndex(key), MAX_DIRECT_OBJECTS,
       );
       if (!packStore) return null;
-      if (this.#packStores.size > 4) this.#packStores.clear();
+      this.#packStores.clear();
       this.#packStores.set(cacheKey, packStore);
+    }
+    for (const entry of packStore.entries.values()) {
+      if (!entry.type || (entry.entrySize ?? entry.size ?? 0) > MAX_DIRECT_FILE) return null;
     }
     // Only prewarm commit/tree objects for requests that actually ask for objects.
     const requestText = new TextDecoder("latin1").decode(body.subarray(0, Math.min(body.length, 4096)));
@@ -1087,7 +1192,7 @@ export class R2GitRepository extends DurableObject {
     };
     if (v2) {
       return new Response(
-        packet("version 2\n") + packet("agent=shard/0.5.0\n") +
+        packet("version 2\n") + packet("agent=shard/0.5.1\n") +
         packet("ls-refs\n") + packet("fetch=shallow\n") + "0000",
         { headers: {
           "Cache-Control": "no-store",
@@ -1097,7 +1202,7 @@ export class R2GitRepository extends DurableObject {
     }
     const head = repository.refs.find((ref) => ref.name === repository.head);
     const caps = `multi_ack_detailed no-done shallow side-band-64k thin-pack ofs-delta ` +
-      `agent=shard/0.5.0 ${head ? `symref=HEAD:${repository.head} ` : ""}object-format=sha1`;
+      `agent=shard/0.5.1 ${head ? `symref=HEAD:${repository.head} ` : ""}object-format=sha1`;
     let body = packet("# service=git-upload-pack\n") + "0000";
     let capsEmitted = false;
     if (head) {
@@ -1141,7 +1246,7 @@ export class R2GitRepository extends DurableObject {
       if (length > 0xffff) throw new GitHttpError(413, "Git advertisement is too large");
       return length.toString(16).padStart(4, "0") + text;
     };
-    const capabilities = "report-status delete-refs side-band-64k ofs-delta agent=shard/0.5.0 object-format=sha1";
+    const capabilities = "report-status delete-refs side-band-64k ofs-delta agent=shard/0.5.1 object-format=sha1";
     const head = repository.refs.find((ref) => ref.name === repository.head);
     const ordered = head
       ? [{ name: "HEAD", oid: head.oid }, ...repository.refs.filter((ref) => ref.name !== "HEAD")]
@@ -1378,10 +1483,12 @@ export class R2GitRepository extends DurableObject {
           );
           return result(report);
         }
-        if (update.after === ZERO) {
-          refs.delete(update.name);
-          continue;
-        }
+      }
+      for (const update of push.updates) {
+        if (update.after === ZERO) refs.delete(update.name);
+      }
+      for (const update of push.updates) {
+        if (update.after === ZERO) continue;
         if (hasRefConflict(refs, update.name)) {
           return json({ message: "Git reference conflicts with an existing reference" }, 422);
         }
@@ -1415,7 +1522,7 @@ export class R2GitRepository extends DurableObject {
           id: repository.id,
           revision: repository.revision,
           head: repository.head,
-          refs: [...refs].map(([name, oid]) => ({ name, oid })),
+          refs: [...refs].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([name, oid]) => ({ name, oid })),
           packs: key ? [key] : [],
           packSizes: key ? [pack.packBytes.length + pack.idx.length] : [],
         };
@@ -1480,32 +1587,44 @@ export class R2GitRepository extends DurableObject {
   }
 
   async #publish(request) {
-    const { prepared, actor } = await control(request.body);
-    if (typeof prepared !== "string" || !UUID.test(prepared) || typeof actor !== "string" || !ACTOR.test(actor)) return empty(400);
-    const job = this.#one("SELECT * FROM work WHERE id = ? AND actor = ? AND expires > ?", prepared, actor, Date.now());
-    if (!job || job.report === null) return empty(409);
-    if (job.published) return result(job.report, true);
-    const upload = job.upload === null ? null : this.#one("SELECT id, report FROM uploads WHERE id = ? AND actor = ? AND aborted = 0 AND expires > ?", job.upload, actor, Date.now());
-    if (job.upload !== null && !upload) return empty(409);
-    if (upload && upload.report !== null) return result(upload.report, true);
-    const current = this.#current();
-    if (current?.deleted || !current) return empty(409);
-    if (upload && current.revision !== job.revision) {
-      // Finish will prepare against the new snapshot and recheck branch protection.
-      return Response.json({ message: "Git refs changed during preparation" }, {
-        status: 409, headers: { ...NO_STORE, "Retry-After": "1" },
+    return this.#lock(async () => {
+      const { prepared, actor, abort } = await control(request.body);
+      if (typeof prepared !== "string" || !UUID.test(prepared) || typeof actor !== "string" || !ACTOR.test(actor)) return empty(400);
+      const job = this.#one("SELECT * FROM work WHERE id = ? AND actor = ? AND expires > ?", prepared, actor, Date.now());
+      if (abort === true) {
+        if (job && !job.published && job.upload === null) {
+          await this.#dropWork(job);
+        }
+        return empty(204);
+      }
+      if (!job || job.report === null) return empty(409);
+      if (job.published) return result(job.report, true);
+      const upload = job.upload === null ? null : this.#one("SELECT id, report FROM uploads WHERE id = ? AND actor = ? AND aborted = 0 AND expires > ?", job.upload, actor, Date.now());
+      if (job.upload !== null && !upload) return empty(409);
+      if (upload && upload.report !== null) return result(upload.report, true);
+      const current = this.#current();
+      if (current?.deleted || !current) return empty(409);
+      if (current.revision !== job.revision) {
+        if (upload) {
+          // Finish will prepare against the new snapshot and recheck branch protection.
+          return Response.json({ message: "Git refs changed during preparation" }, {
+            status: 409, headers: { ...NO_STORE, "Retry-After": "1" },
+          });
+        }
+        await this.#dropWork(job);
+        return empty(409);
+      }
+      const candidate = JSON.parse(job.candidate);
+      // The new pack/index pairs are already durable. Refs and the retry receipt become visible together.
+      this.ctx.storage.transactionSync(() => {
+        this.#update(job.revision, candidate);
+        this.#sql.exec("UPDATE work SET published = 1, candidate = NULL WHERE id = ?", job.id);
+        if (upload) this.#sql.exec("UPDATE uploads SET report = ? WHERE id = ?", job.report, upload.id);
       });
-    }
-    const candidate = JSON.parse(job.candidate);
-    // The new pack/index pairs are already durable. Refs and the retry receipt become visible together.
-    this.ctx.storage.transactionSync(() => {
-      this.#update(job.revision, candidate);
-      this.#sql.exec("UPDATE work SET published = 1, candidate = NULL WHERE id = ?", job.id);
-      if (upload) this.#sql.exec("UPDATE uploads SET report = ? WHERE id = ?", job.report, upload.id);
+      this.ctx.waitUntil(this.#arm());
+      if (upload) this.ctx.waitUntil(this.#deleteStaged(job.repo, upload.id));
+      return result(job.report);
     });
-    this.ctx.waitUntil(this.#arm());
-    if (upload) this.ctx.waitUntil(this.#deleteStaged(job.repo, upload.id));
-    return result(job.report);
   }
 
   async #parts(upload, key) {

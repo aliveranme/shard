@@ -1,15 +1,15 @@
 use crate::ctx::AppState;
 use crate::db;
-use crate::git_storage::{RepoHandle, is_object_id};
+use crate::git_storage::{is_object_id, RepoHandle};
 use crate::handlers::common::{
-    REPO_COLUMNS, VISIBLE_REPO_SQL, can_admin, can_write, forbidden, not_found, page_title,
-    viewer_params, visible_repo,
+    can_admin, can_write, forbidden, not_found, page_title, viewer_params, visible_repo,
+    REPO_COLUMNS, VISIBLE_REPO_SQL,
 };
 use crate::i18n::{CommonText, Locale, RepoFeatureText as Text, RepoText};
 use crate::models::{Repo, Ts};
-use crate::pagination::{PAGE_SIZE, PageRequest, Pagination};
+use crate::pagination::{PageRequest, Pagination, PAGE_SIZE};
 use crate::refs::{self, RefsError, Tag};
-use crate::templates::{Chrome, RepoRow, error_response, render};
+use crate::templates::{error_response, render, Chrome, RepoRow};
 use crate::util::{form_value, js_int, js_text, now, query_param, redirect};
 use askama::Template;
 use serde::Deserialize;
@@ -37,7 +37,10 @@ fn failure(state: &AppState, status: u16, message: Text) -> Result<Response> {
 }
 
 fn parse_id(value: &str) -> Option<i64> {
-    value.parse().ok().filter(|id| (1..=9_007_199_254_740_991).contains(id))
+    value
+        .parse()
+        .ok()
+        .filter(|id| (1..=9_007_199_254_740_991).contains(id))
 }
 
 fn route_id(ctx: &RouteContext<AppState>) -> Option<i64> {
@@ -107,7 +110,10 @@ impl ReleaseInput {
 
     fn error(&self) -> Option<Text> {
         let title = self.title.trim();
-        if title.is_empty() || title.chars().count() > MAX_TITLE_CHARS || title.chars().any(char::is_control) {
+        if title.is_empty()
+            || title.chars().count() > MAX_TITLE_CHARS
+            || title.chars().any(char::is_control)
+        {
             Some(Text::InvalidReleaseTitle)
         } else if self.notes.len() > MAX_TEXT_BYTES {
             Some(Text::ReleaseNotesTooLong)
@@ -138,7 +144,9 @@ struct ReleaseEditor {
 
 pub async fn releases(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = &ctx.data;
-    let Some(repo) = repository(&ctx).await? else { return repo_missing(state) };
+    let Some(repo) = repository(&ctx).await? else {
+        return repo_missing(state);
+    };
     let writer = can_write(state, &repo).await?;
     let page = PageRequest::new(&req, "page");
     let [viewer, admin] = viewer_params(state);
@@ -175,18 +183,26 @@ async fn load_release(state: &AppState, repo_id: i64, id: i64) -> Result<Option<
                AND (l.published_at IS NOT NULL OR {WRITER_SQL})"
         ),
         &[viewer, admin, js_int(repo_id), js_int(id)],
-    ).await
+    )
+    .await
 }
 
 pub async fn release(_req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = &ctx.data;
-    let Some(repo) = repository(&ctx).await? else { return repo_missing(state) };
-    let Some(id) = route_id(&ctx) else { return failure(state, 404, Text::MissingRelease) };
+    let Some(repo) = repository(&ctx).await? else {
+        return repo_missing(state);
+    };
+    let Some(id) = route_id(&ctx) else {
+        return failure(state, 404, Text::MissingRelease);
+    };
     let writer = can_write(state, &repo).await?;
     let Some(release) = load_release(state, repo.id, id).await? else {
         return failure(state, 404, Text::MissingRelease);
     };
-    let notes_html = crate::markdown::render(&release.notes, &crate::markdown::Context::new(&repo, &release.commit_hash, ""));
+    let notes_html = crate::markdown::render(
+        &release.notes,
+        &crate::markdown::Context::new(&repo, &release.commit_hash, ""),
+    );
     render(&ReleasePage {
         chrome: Chrome::new(state),
         title: page_title(&[&repo.full_name(), &release.title]),
@@ -213,19 +229,29 @@ fn refs_message(error: RefsError) -> RepoText {
     }
 }
 
-async fn resolve_tag(state: &AppState, repo: &Repo, tag_name: &str) -> std::result::Result<String, TagError> {
+async fn resolve_tag(
+    state: &AppState,
+    repo: &Repo,
+    tag_name: &str,
+) -> std::result::Result<String, TagError> {
     if tag_name.is_empty() {
         return Err(TagError::Missing);
     }
     let handle = open_git(state, repo).await?;
     let inventory = refs::load(&handle).await?;
-    let tag = inventory.tags.into_iter().find(|tag| tag.name == tag_name).ok_or(TagError::Missing)?;
+    let tag = inventory
+        .tags
+        .into_iter()
+        .find(|tag| tag.name == tag_name)
+        .ok_or(TagError::Missing)?;
     let hash = tag.peeled.unwrap_or(tag.oid);
     let commit = handle.read_commit(&hash).await.map_err(|error| {
         console_log!("releases: read tag target: {error}");
         RefsError::Unavailable
     })?;
-    if commit.is_some_and(|commit| commit.hash == hash && commit.tree.as_deref().is_some_and(is_object_id)) {
+    if commit.is_some_and(|commit| {
+        commit.hash == hash && commit.tree.as_deref().is_some_and(is_object_id)
+    }) {
         Ok(hash)
     } else {
         Err(TagError::Missing)
@@ -238,7 +264,9 @@ enum TagError {
 }
 
 impl From<RefsError> for TagError {
-    fn from(error: RefsError) -> Self { Self::Refs(error) }
+    fn from(error: RefsError) -> Self {
+        Self::Refs(error)
+    }
 }
 
 async fn release_editor(
@@ -248,8 +276,14 @@ async fn release_editor(
     fields: ReleaseInput,
     error: Option<(u16, Text)>,
 ) -> Result<Response> {
-    let heading = if current.is_some() { Text::EditRelease } else { Text::NewRelease };
-    let published = current.as_ref().is_some_and(|release| release.published_at.is_some());
+    let heading = if current.is_some() {
+        Text::EditRelease
+    } else {
+        Text::NewRelease
+    };
+    let published = current
+        .as_ref()
+        .is_some_and(|release| release.published_at.is_some());
     let (tags, tag_notice) = if published {
         (Vec::new(), None)
     } else {
@@ -262,7 +296,8 @@ async fn release_editor(
             Err(error) => (Vec::new(), Some(state.locale.t(refs_message(error)))),
         }
     };
-    let missing_selection = !fields.tag_name.is_empty() && !tags.iter().any(|tag| tag.name == fields.tag_name);
+    let missing_selection =
+        !fields.tag_name.is_empty() && !tags.iter().any(|tag| tag.name == fields.tag_name);
     let page = ReleaseEditor {
         chrome: Chrome::new(state),
         title: page_title(&[&repo.full_name(), state.locale.t(heading)]),
@@ -290,14 +325,29 @@ async fn tag_error(
     error: TagError,
 ) -> Result<Response> {
     match error {
-        TagError::Missing => release_editor(state, repo, current, fields, Some((422, Text::TagMustPointToCommit))).await,
-        TagError::Refs(error) => error_response(&Chrome::new(state), 502, state.locale.t(refs_message(error))),
+        TagError::Missing => {
+            release_editor(
+                state,
+                repo,
+                current,
+                fields,
+                Some((422, Text::TagMustPointToCommit)),
+            )
+            .await
+        }
+        TagError::Refs(error) => error_response(
+            &Chrome::new(state),
+            502,
+            state.locale.t(refs_message(error)),
+        ),
     }
 }
 
 pub async fn new_release(_req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = &ctx.data;
-    let Some(repo) = repository(&ctx).await? else { return repo_missing(state) };
+    let Some(repo) = repository(&ctx).await? else {
+        return repo_missing(state);
+    };
     if !can_write(state, &repo).await? {
         return forbidden(state, state.locale.t(Text::ReleaseWriteRequired));
     }
@@ -306,7 +356,9 @@ pub async fn new_release(_req: Request, ctx: RouteContext<AppState>) -> Result<R
 
 pub async fn create_release(_req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = &ctx.data;
-    let Some(repo) = repository(&ctx).await? else { return repo_missing(state) };
+    let Some(repo) = repository(&ctx).await? else {
+        return repo_missing(state);
+    };
     if !can_write(state, &repo).await? {
         return forbidden(state, state.locale.t(Text::ReleaseWriteRequired));
     }
@@ -319,14 +371,25 @@ pub async fn create_release(_req: Request, ctx: RouteContext<AppState>) -> Resul
         Err(error) => return tag_error(state, repo, None, fields, error).await,
     };
     let [viewer, admin] = viewer_params(state);
-    let id = state.db()?.prepare(format!(
-        "INSERT INTO repo_releases (repo_id, tag_name, commit_hash, title, notes, created_at)
+    let id = state
+        .db()?
+        .prepare(format!(
+            "INSERT INTO repo_releases (repo_id, tag_name, commit_hash, title, notes, created_at)
          SELECT r.id, ?4, ?5, ?6, ?7, ?8 FROM repos r WHERE r.id = ?3 AND {WRITER_SQL}
          ON CONFLICT(repo_id, tag_name) DO NOTHING RETURNING id"
-    )).bind(&[
-        viewer, admin, js_int(repo.id), js_text(&fields.tag_name), js_text(&commit),
-        js_text(fields.title.trim()), js_text(&fields.notes), js_int(now()),
-    ])?.first::<i64>(Some("id")).await?;
+        ))
+        .bind(&[
+            viewer,
+            admin,
+            js_int(repo.id),
+            js_text(&fields.tag_name),
+            js_text(&commit),
+            js_text(fields.title.trim()),
+            js_text(&fields.notes),
+            js_int(now()),
+        ])?
+        .first::<i64>(Some("id"))
+        .await?;
     match id {
         Some(id) => redirect(&format!("/{}/releases/{id}/edit", repo.full_name())),
         None => release_editor(state, repo, None, fields, Some((409, Text::ReleaseTagUsed))).await,
@@ -335,11 +398,15 @@ pub async fn create_release(_req: Request, ctx: RouteContext<AppState>) -> Resul
 
 pub async fn edit_release(_req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = &ctx.data;
-    let Some(repo) = repository(&ctx).await? else { return repo_missing(state) };
+    let Some(repo) = repository(&ctx).await? else {
+        return repo_missing(state);
+    };
     if !can_write(state, &repo).await? {
         return forbidden(state, state.locale.t(Text::ReleaseWriteRequired));
     }
-    let Some(id) = route_id(&ctx) else { return failure(state, 404, Text::MissingRelease) };
+    let Some(id) = route_id(&ctx) else {
+        return failure(state, 404, Text::MissingRelease);
+    };
     let Some(mut current) = load_release(state, repo.id, id).await? else {
         return failure(state, 404, Text::MissingRelease);
     };
@@ -353,11 +420,15 @@ pub async fn edit_release(_req: Request, ctx: RouteContext<AppState>) -> Result<
 
 pub async fn update_release(_req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = &ctx.data;
-    let Some(repo) = repository(&ctx).await? else { return repo_missing(state) };
+    let Some(repo) = repository(&ctx).await? else {
+        return repo_missing(state);
+    };
     if !can_write(state, &repo).await? {
         return forbidden(state, state.locale.t(Text::ReleaseWriteRequired));
     }
-    let Some(id) = route_id(&ctx) else { return failure(state, 404, Text::MissingRelease) };
+    let Some(id) = route_id(&ctx) else {
+        return failure(state, 404, Text::MissingRelease);
+    };
     let Some(current) = load_release(state, repo.id, id).await? else {
         return failure(state, 404, Text::MissingRelease);
     };
@@ -385,8 +456,9 @@ pub async fn update_release(_req: Request, ctx: RouteContext<AppState>) -> Resul
     let commit = resolved.as_deref().unwrap_or(&current.commit_hash);
     let [viewer, admin] = viewer_params(state);
     let database = state.db()?;
-    let updated = database.prepare(format!(
-        "UPDATE repo_releases
+    let updated = database
+        .prepare(format!(
+            "UPDATE repo_releases
          SET tag_name = ?6, commit_hash = ?7, title = ?8, notes = ?9, version = version + 1,
              published_at = CASE WHEN ?10 = 1 THEN ?11 ELSE published_at END
          WHERE repo_id = ?3 AND id = ?4 AND version = ?5
@@ -394,18 +466,47 @@ pub async fn update_release(_req: Request, ctx: RouteContext<AppState>) -> Resul
            AND NOT EXISTS (SELECT 1 FROM repo_releases other
                            WHERE other.repo_id = ?3 AND other.tag_name = ?6 AND other.id <> ?4)
          RETURNING id"
-    )).bind(&[
-        viewer, admin, js_int(repo.id), js_int(id), js_int(current.version), js_text(&fields.tag_name),
-        js_text(commit), js_text(fields.title.trim()), js_text(&fields.notes), js_int(i64::from(publish)), js_int(now()),
-    ])?.first::<i64>(Some("id")).await?;
+        ))
+        .bind(&[
+            viewer,
+            admin,
+            js_int(repo.id),
+            js_int(id),
+            js_int(current.version),
+            js_text(&fields.tag_name),
+            js_text(commit),
+            js_text(fields.title.trim()),
+            js_text(&fields.notes),
+            js_int(i64::from(publish)),
+            js_int(now()),
+        ])?
+        .first::<i64>(Some("id"))
+        .await?;
     if updated.is_none() {
         let [viewer, admin] = viewer_params(state);
-        let duplicate = database.prepare(format!(
-            "SELECT l.id FROM repo_releases l JOIN repos r ON r.id = l.repo_id
+        let duplicate = database
+            .prepare(format!(
+                "SELECT l.id FROM repo_releases l JOIN repos r ON r.id = l.repo_id
              WHERE r.id = ?3 AND l.tag_name = ?4 AND l.id <> ?5 AND {WRITER_SQL}"
-        )).bind(&[viewer, admin, js_int(repo.id), js_text(&fields.tag_name), js_int(id)])?.first::<i64>(Some("id")).await?;
+            ))
+            .bind(&[
+                viewer,
+                admin,
+                js_int(repo.id),
+                js_text(&fields.tag_name),
+                js_int(id),
+            ])?
+            .first::<i64>(Some("id"))
+            .await?;
         return if duplicate.is_some() {
-            release_editor(state, repo, Some(current), fields, Some((409, Text::ReleaseTagUsed))).await
+            release_editor(
+                state,
+                repo,
+                Some(current),
+                fields,
+                Some((409, Text::ReleaseTagUsed)),
+            )
+            .await
         } else {
             failure(state, 409, Text::ReleaseChanged)
         };
@@ -415,20 +516,29 @@ pub async fn update_release(_req: Request, ctx: RouteContext<AppState>) -> Resul
 
 pub async fn delete_release(_req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = &ctx.data;
-    let Some(repo) = repository(&ctx).await? else { return repo_missing(state) };
+    let Some(repo) = repository(&ctx).await? else {
+        return repo_missing(state);
+    };
     if !can_write(state, &repo).await? {
         return forbidden(state, state.locale.t(Text::ReleaseWriteRequired));
     }
-    let Some(id) = route_id(&ctx) else { return failure(state, 404, Text::MissingRelease) };
+    let Some(id) = route_id(&ctx) else {
+        return failure(state, 404, Text::MissingRelease);
+    };
     let form = state.form()?;
     let Some(version) = form_value(form, "version").and_then(|value| parse_id(&value)) else {
         return failure(state, 409, Text::ReleaseChanged);
     };
     let [viewer, admin] = viewer_params(state);
-    let removed = state.db()?.prepare(format!(
-        "DELETE FROM repo_releases WHERE repo_id = ?3 AND id = ?4 AND version = ?5
+    let removed = state
+        .db()?
+        .prepare(format!(
+            "DELETE FROM repo_releases WHERE repo_id = ?3 AND id = ?4 AND version = ?5
          AND EXISTS (SELECT 1 FROM repos r WHERE r.id = ?3 AND {WRITER_SQL}) RETURNING id"
-    )).bind(&[viewer, admin, js_int(repo.id), js_int(id), js_int(version)])?.first::<i64>(Some("id")).await?;
+        ))
+        .bind(&[viewer, admin, js_int(repo.id), js_int(id), js_int(version)])?
+        .first::<i64>(Some("id"))
+        .await?;
     if removed.is_none() {
         return failure(state, 409, Text::ReleaseChanged);
     }
@@ -453,20 +563,29 @@ pub struct IssueTemplateDefaults {
     pub body: String,
 }
 
-pub async fn issue_template_choices(state: &AppState, repo_id: i64) -> Result<Vec<IssueTemplateChoice>> {
+pub async fn issue_template_choices(
+    state: &AppState,
+    repo_id: i64,
+) -> Result<Vec<IssueTemplateChoice>> {
     db::all(
         &state.db()?,
         "SELECT id, name FROM issue_templates WHERE repo_id = ?1 ORDER BY name, id",
         &[js_int(repo_id)],
-    ).await
+    )
+    .await
 }
 
-pub async fn issue_template_defaults(state: &AppState, repo_id: i64, id: i64) -> Result<Option<IssueTemplateDefaults>> {
+pub async fn issue_template_defaults(
+    state: &AppState,
+    repo_id: i64,
+    id: i64,
+) -> Result<Option<IssueTemplateDefaults>> {
     db::first(
         &state.db()?,
         "SELECT title, body FROM issue_templates WHERE repo_id = ?1 AND id = ?2",
         &[js_int(repo_id), js_int(id)],
-    ).await
+    )
+    .await
 }
 
 #[derive(Default, Deserialize)]
@@ -482,7 +601,10 @@ impl IssueTemplateEditor {
     fn error(&self) -> Option<Text> {
         let name = self.name.trim();
         let title = self.title.trim();
-        if name.is_empty() || name.chars().count() > MAX_TEMPLATE_NAME_CHARS || name.chars().any(char::is_control) {
+        if name.is_empty()
+            || name.chars().count() > MAX_TEMPLATE_NAME_CHARS
+            || name.chars().any(char::is_control)
+        {
             Some(Text::InvalidIssueTemplateName)
         } else if title.chars().count() > MAX_TITLE_CHARS || title.chars().any(char::is_control) {
             Some(Text::InvalidIssueTemplateTitle)
@@ -514,7 +636,11 @@ async fn issue_templates_page(
     editor: Option<IssueTemplateEditor>,
     error: Option<(u16, Text)>,
 ) -> Result<Response> {
-    let choices = if editor.is_none() { issue_template_choices(state, repo.id).await? } else { Vec::new() };
+    let choices = if editor.is_none() {
+        issue_template_choices(state, repo.id).await?
+    } else {
+        Vec::new()
+    };
     Ok(render(&IssueTemplatesPage {
         chrome: Chrome::new(state),
         title: page_title(&[&repo.full_name(), state.locale.t(Text::IssueTemplates)]),
@@ -525,19 +651,24 @@ async fn issue_templates_page(
         choices,
         editor,
         error: error.map(|(_, message)| state.locale.t(message)),
-    })?.with_status(error.map_or(200, |(status, _)| status)))
+    })?
+    .with_status(error.map_or(200, |(status, _)| status)))
 }
 
 pub async fn issue_templates(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = &ctx.data;
-    let Some(repo) = repository(&ctx).await? else { return repo_missing(state) };
+    let Some(repo) = repository(&ctx).await? else {
+        return repo_missing(state);
+    };
     if !can_admin(state, &repo) {
         return forbidden(state, state.locale.t(RepoText::SettingsForbidden));
     }
     let editor = match query_param(&req, "edit").as_deref() {
         Some("new") => Some(IssueTemplateEditor::default()),
         Some(value) => {
-            let Some(id) = parse_id(value) else { return failure(state, 404, Text::MissingIssueTemplate) };
+            let Some(id) = parse_id(value) else {
+                return failure(state, 404, Text::MissingIssueTemplate);
+            };
             let editor = db::first(
                 &state.db()?, "SELECT id, version, name, title, body FROM issue_templates WHERE repo_id = ?1 AND id = ?2",
                 &[js_int(repo.id), js_int(id)],
@@ -554,7 +685,9 @@ pub async fn issue_templates(req: Request, ctx: RouteContext<AppState>) -> Resul
 
 pub async fn save_issue_template(_req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = &ctx.data;
-    let Some(repo) = repository(&ctx).await? else { return repo_missing(state) };
+    let Some(repo) = repository(&ctx).await? else {
+        return repo_missing(state);
+    };
     if !can_admin(state, &repo) {
         return forbidden(state, state.locale.t(RepoText::SettingsForbidden));
     }
@@ -568,7 +701,9 @@ pub async fn save_issue_template(_req: Request, ctx: RouteContext<AppState>) -> 
     };
     let editor = IssueTemplateEditor {
         id,
-        version: form_value(form, "version").and_then(|value| parse_id(&value)).unwrap_or_default(),
+        version: form_value(form, "version")
+            .and_then(|value| parse_id(&value))
+            .unwrap_or_default(),
         name: form_value(form, "name").unwrap_or_default(),
         title: form_value(form, "title").unwrap_or_default(),
         body: form_value(form, "body").unwrap_or_default(),
@@ -578,7 +713,14 @@ pub async fn save_issue_template(_req: Request, ctx: RouteContext<AppState>) -> 
     }
     let [viewer, admin] = viewer_params(state);
     let database = state.db()?;
-    let mut args = vec![viewer, admin, js_int(repo.id), js_text(editor.name.trim()), js_text(editor.title.trim()), js_text(&editor.body)];
+    let mut args = vec![
+        viewer,
+        admin,
+        js_int(repo.id),
+        js_text(editor.name.trim()),
+        js_text(editor.title.trim()),
+        js_text(&editor.body),
+    ];
     let sql = if let Some(id) = editor.id {
         args.extend([js_int(id), js_int(editor.version)]);
         format!(
@@ -595,16 +737,35 @@ pub async fn save_issue_template(_req: Request, ctx: RouteContext<AppState>) -> 
              ON CONFLICT(repo_id, name) DO NOTHING RETURNING id"
         )
     };
-    let saved = database.prepare(&sql).bind(&args)?.first::<i64>(Some("id")).await?;
+    let saved = database
+        .prepare(&sql)
+        .bind(&args)?
+        .first::<i64>(Some("id"))
+        .await?;
     if saved.is_none() {
         let [viewer, admin] = viewer_params(state);
-        let duplicate = database.prepare(format!(
-            "SELECT t.id FROM issue_templates t JOIN repos r ON r.id = t.repo_id
+        let duplicate = database
+            .prepare(format!(
+                "SELECT t.id FROM issue_templates t JOIN repos r ON r.id = t.repo_id
              WHERE r.id = ?3 AND t.name = ?4 AND t.id IS NOT ?5 AND {ADMIN_SQL}"
-        )).bind(&[viewer, admin, js_int(repo.id), js_text(editor.name.trim()), editor.id.map_or_else(crate::util::js_null, js_int)])?
-            .first::<i64>(Some("id")).await?;
+            ))
+            .bind(&[
+                viewer,
+                admin,
+                js_int(repo.id),
+                js_text(editor.name.trim()),
+                editor.id.map_or_else(crate::util::js_null, js_int),
+            ])?
+            .first::<i64>(Some("id"))
+            .await?;
         return if duplicate.is_some() {
-            issue_templates_page(state, repo, Some(editor), Some((409, Text::IssueTemplateNameUsed))).await
+            issue_templates_page(
+                state,
+                repo,
+                Some(editor),
+                Some((409, Text::IssueTemplateNameUsed)),
+            )
+            .await
         } else {
             failure(state, 409, Text::IssueTemplateChanged)
         };
@@ -614,20 +775,29 @@ pub async fn save_issue_template(_req: Request, ctx: RouteContext<AppState>) -> 
 
 pub async fn delete_issue_template(_req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = &ctx.data;
-    let Some(repo) = repository(&ctx).await? else { return repo_missing(state) };
+    let Some(repo) = repository(&ctx).await? else {
+        return repo_missing(state);
+    };
     if !can_admin(state, &repo) {
         return forbidden(state, state.locale.t(RepoText::SettingsForbidden));
     }
-    let Some(id) = route_id(&ctx) else { return failure(state, 404, Text::MissingIssueTemplate) };
+    let Some(id) = route_id(&ctx) else {
+        return failure(state, 404, Text::MissingIssueTemplate);
+    };
     let form = state.form()?;
     let Some(version) = form_value(form, "version").and_then(|value| parse_id(&value)) else {
         return failure(state, 409, Text::IssueTemplateChanged);
     };
     let [viewer, admin] = viewer_params(state);
-    let removed = state.db()?.prepare(format!(
-        "DELETE FROM issue_templates WHERE repo_id = ?3 AND id = ?4 AND version = ?5
+    let removed = state
+        .db()?
+        .prepare(format!(
+            "DELETE FROM issue_templates WHERE repo_id = ?3 AND id = ?4 AND version = ?5
          AND EXISTS (SELECT 1 FROM repos r WHERE r.id = ?3 AND {ADMIN_SQL}) RETURNING id"
-    )).bind(&[viewer, admin, js_int(repo.id), js_int(id), js_int(version)])?.first::<i64>(Some("id")).await?;
+        ))
+        .bind(&[viewer, admin, js_int(repo.id), js_int(id), js_int(version)])?
+        .first::<i64>(Some("id"))
+        .await?;
     if removed.is_none() {
         return failure(state, 409, Text::IssueTemplateChanged);
     }
@@ -658,12 +828,24 @@ pub async fn reactions(state: &AppState, issue_id: i64) -> Result<Vec<Reaction>>
         &state.db()?,
         "SELECT reaction, COUNT(*) AS total, COALESCE(MAX(user_id = ?2), 0) AS active
          FROM issue_reactions WHERE issue_id = ?1 GROUP BY reaction",
-        &[js_int(issue_id), state.user_id().map_or_else(crate::util::js_null, js_int)],
-    ).await?;
-    Ok([("up", Text::Upvote), ("down", Text::Downvote)].into_iter().map(|(kind, label)| {
-        let count = counts.iter().find(|count| count.reaction == kind);
-        Reaction { kind, label, count: count.map_or(0, |count| count.total), active: count.is_some_and(|count| count.active == 1) }
-    }).collect())
+        &[
+            js_int(issue_id),
+            state.user_id().map_or_else(crate::util::js_null, js_int),
+        ],
+    )
+    .await?;
+    Ok([("up", Text::Upvote), ("down", Text::Downvote)]
+        .into_iter()
+        .map(|(kind, label)| {
+            let count = counts.iter().find(|count| count.reaction == kind);
+            Reaction {
+                kind,
+                label,
+                count: count.map_or(0, |count| count.total),
+                active: count.is_some_and(|count| count.active == 1),
+            }
+        })
+        .collect())
 }
 
 fn active(form: &FormData) -> Option<bool> {
@@ -676,9 +858,13 @@ fn active(form: &FormData) -> Option<bool> {
 
 pub async fn react(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = &ctx.data;
-    let Some(repo) = repository(&ctx).await? else { return repo_missing(state) };
+    let Some(repo) = repository(&ctx).await? else {
+        return repo_missing(state);
+    };
     let missing = || not_found(state, state.locale.t(CommonText::NotFound));
-    let Some(number) = ctx.param("number").and_then(|number| parse_id(number)) else { return missing() };
+    let Some(number) = ctx.param("number").and_then(|number| parse_id(number)) else {
+        return missing();
+    };
     let path = format!("/{}/issues/{number}", repo.full_name());
     if state.user.is_none() {
         return redirect(&format!("/user/login?next={path}"));
@@ -694,8 +880,20 @@ pub async fn react(req: Request, ctx: RouteContext<AppState>) -> Result<Response
          WHERE r.id = ?3 AND i.number = ?4 AND i.kind = 'issue' AND {VISIBLE_REPO_SQL}"
     );
     let database = state.db()?;
-    let args = [viewer, admin, js_int(repo.id), js_int(number), js_text(&kind)];
-    if database.prepare(&eligible).bind(&args[..4])?.first::<i64>(Some("id")).await?.is_none() {
+    let args = [
+        viewer,
+        admin,
+        js_int(repo.id),
+        js_int(number),
+        js_text(&kind),
+    ];
+    if database
+        .prepare(&eligible)
+        .bind(&args[..4])?
+        .first::<i64>(Some("id"))
+        .await?
+        .is_none()
+    {
         return missing();
     }
     let sql = if enabled {
@@ -720,15 +918,25 @@ pub async fn star(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
     set_repo_preference(req, ctx, true).await
 }
 
-async fn set_repo_preference(req: Request, ctx: RouteContext<AppState>, star: bool) -> Result<Response> {
+async fn set_repo_preference(
+    req: Request,
+    ctx: RouteContext<AppState>,
+    star: bool,
+) -> Result<Response> {
     let state = &ctx.data;
-    let Some(repo) = repository(&ctx).await? else { return repo_missing(state) };
+    let Some(repo) = repository(&ctx).await? else {
+        return repo_missing(state);
+    };
     let path = format!("/{}", repo.full_name());
     if state.user.is_none() {
         return redirect(&format!("/user/login?next={path}"));
     }
     let Some(enabled) = active(state.form()?) else {
-        return error_response(&Chrome::new(state), 400, state.locale.t(CommonText::UnreadableForm));
+        return error_response(
+            &Chrome::new(state),
+            400,
+            state.locale.t(CommonText::UnreadableForm),
+        );
     };
     let [viewer, admin] = viewer_params(state);
     let mut args = vec![viewer, admin, js_int(repo.id)];
@@ -748,8 +956,10 @@ async fn set_repo_preference(req: Request, ctx: RouteContext<AppState>, star: bo
         ),
         (_, false) => {
             let table = if star { "repo_stars" } else { "repo_watches" };
-            format!("DELETE FROM {table} WHERE user_id = ?1 AND repo_id = ?3
-                     AND EXISTS (SELECT 1 FROM repos r WHERE r.id = ?3 AND {VISIBLE_REPO_SQL})")
+            format!(
+                "DELETE FROM {table} WHERE user_id = ?1 AND repo_id = ?3
+                     AND EXISTS (SELECT 1 FROM repos r WHERE r.id = ?3 AND {VISIBLE_REPO_SQL})"
+            )
         }
     };
     db::run(&state.db()?, &sql, &args).await?;
@@ -758,10 +968,17 @@ async fn set_repo_preference(req: Request, ctx: RouteContext<AppState>, star: bo
 
 fn redirect_to_repo_page(req: &Request, path: &str) -> Result<Response> {
     let request_url = req.url()?;
-    if let Some(source) = crate::util::header(req, "referer").and_then(|url| Url::parse(&url).ok()) {
+    if let Some(source) = crate::util::header(req, "referer").and_then(|url| Url::parse(&url).ok())
+    {
         let source_path = source.path();
-        let within_repo = source_path == path || source_path.strip_prefix(path).is_some_and(|suffix| suffix.starts_with('/'));
-        if source.origin() == request_url.origin() && within_repo && source_path != request_url.path() {
+        let within_repo = source_path == path
+            || source_path
+                .strip_prefix(path)
+                .is_some_and(|suffix| suffix.starts_with('/'));
+        if source.origin() == request_url.origin()
+            && within_repo
+            && source_path != request_url.path()
+        {
             return if let Some(query) = source.query() {
                 redirect(&format!("{source_path}?{query}"))
             } else {

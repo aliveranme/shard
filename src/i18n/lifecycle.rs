@@ -48,7 +48,6 @@ catalog! {
         CopyNotFound => "Repository copy not found.", "未找到仓库复制任务。";
         CheckCopy => "Check status", "检查状态";
         BackToRepositorySettings => "Back to repository settings", "返回仓库设置";
-        BackToAccountSettings => "Back to account settings", "返回账号设置";
         MetadataImport => "Import repository metadata", "导入仓库元数据";
         MetadataHelp => "Import issues, pull requests, and releases into this repository from a JSON bundle. Copy Git history and tags first.", "从 JSON 数据包向此仓库导入议题、拉取请求和发行版本。请先复制 Git 历史和标签。";
         MetadataBundle => "JSON bundle", "JSON 数据包";
@@ -73,12 +72,20 @@ catalog! {
 impl super::Locale {
     pub fn transfer_destination(self, recipient: &str, name: &str) -> String {
         match self {
-            Self::En => format!("Accepting this transfer moves the repository to {recipient}/{name}."),
+            Self::En => {
+                format!("Accepting this transfer moves the repository to {recipient}/{name}.")
+            }
             Self::ZhHans => format!("接受转让后，仓库将移至 {recipient}/{name}。"),
         }
     }
 
-    pub fn metadata_imported(self, issues: usize, pulls: usize, releases: usize, without_comparison: usize) -> String {
+    pub fn metadata_imported(
+        self,
+        issues: usize,
+        pulls: usize,
+        releases: usize,
+        without_comparison: usize,
+    ) -> String {
         match self {
             Self::En => format!("Imported {issues} issues, {pulls} pull requests, and {releases} releases. Pull requests without a comparison: {without_comparison}."),
             Self::ZhHans => format!("已导入 {issues} 个议题、{pulls} 个拉取请求和 {releases} 个发行版本。无法查看比较的拉取请求有 {without_comparison} 个。"),

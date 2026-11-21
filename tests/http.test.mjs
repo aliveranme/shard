@@ -1705,7 +1705,10 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
       redirected(await member.post(`${memberRepo}/settings/organization`, { action: "offer", organization_id: orgId }));
       const pendingBefore = (await owner.get(orgPath)).body;
       assert.match(pendingBefore, /orgleaver\/member-repo/);
-      // Member voluntarily leaves the organization; pending repo offer is cleared.
+      const leaveLinkId = pendingBefore.match(/name="link_id" value="(\d+)"/)?.[1];
+      assert.ok(leaveLinkId);
+      redirected(await owner.post(orgPath, { action: "accept", link_id: leaveLinkId }));
+      // Member voluntarily leaves the organization; accepted repo link is also revoked.
       assert.match((await member.get(orgPath)).body, /name="action" value="leave"/);
       redirected(await member.post(orgPath, { action: "leave" }), "/user/organizations");
       assert.equal((await member.get(orgPath)).status, 404);

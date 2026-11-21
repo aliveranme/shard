@@ -30,7 +30,11 @@ impl SearchLimits {
         match profile {
             Profile::Free => Self {
                 // Native reads leave room for authentication and snapshot lookup within 50 external calls.
-                reads: if matches!(backend, GitBackend::Durable) { 64 } else { 36 },
+                reads: if matches!(backend, GitBackend::Durable) {
+                    64
+                } else {
+                    36
+                },
                 entries: 2_048,
                 content_bytes: 512 * 1024,
                 commits: 24,
@@ -97,7 +101,11 @@ struct Coverage {
 
 impl Coverage {
     fn partial(&self) -> bool {
-        self.scan_limited || self.large_files || self.long_messages || self.result_limited || self.read_failed
+        self.scan_limited
+            || self.large_files
+            || self.long_messages
+            || self.result_limited
+            || self.read_failed
     }
 }
 
@@ -148,7 +156,8 @@ pub async fn search(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
         let loaded = async {
             let handle = RepoHandle::open(&state.env, &page.repo).await?;
             load_results(&handle, &page.repo, &page.branch, query, mode, limits).await
-        }.await;
+        }
+        .await;
         match loaded {
             Ok(Some(results)) => {
                 page.results = Some(results);
@@ -163,15 +172,21 @@ pub async fn search(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
     };
     page.error = error;
     let mut response = render(&page)?.with_status(status);
-    response.headers_mut().set("Cache-Control", "private, no-store")?;
+    response
+        .headers_mut()
+        .set("Cache-Control", "private, no-store")?;
     Ok(response)
 }
 
 fn valid_ref(reference: &str) -> bool {
-    !reference.is_empty() && reference.len() <= MAX_REF_BYTES && reference != "@"
-        && !reference.contains("..") && !reference.contains("@{")
-        && !reference.chars().any(|ch| ch.is_control() || ch == ' '
-            || matches!(ch, '~' | '^' | ':' | '?' | '*' | '[' | '\\'))
+    !reference.is_empty()
+        && reference.len() <= MAX_REF_BYTES
+        && reference != "@"
+        && !reference.contains("..")
+        && !reference.contains("@{")
+        && !reference.chars().any(|ch| {
+            ch.is_control() || ch == ' ' || matches!(ch, '~' | '^' | ':' | '?' | '*' | '[' | '\\')
+        })
 }
 
 async fn load_results(
@@ -182,9 +197,15 @@ async fn load_results(
     mode: SearchMode,
     limits: SearchLimits,
 ) -> Result<Option<SearchResults>> {
-    let history_limit = if mode == SearchMode::Commits { limits.commits as u32 + 1 } else { 1 };
+    let history_limit = if mode == SearchMode::Commits {
+        limits.commits as u32 + 1
+    } else {
+        1
+    };
     let history = handle.log(branch, history_limit).await?;
-    let Some(head) = history.first() else { return Ok(None) };
+    let Some(head) = history.first() else {
+        return Ok(None);
+    };
     if !is_object_id(&head.hash) {
         return Err(Error::RustError("Invalid Git snapshot ID".into()));
     }
@@ -195,12 +216,26 @@ async fn load_results(
     };
     let repo_url = format!("/{}/{}", repo.owner_name, repo.name);
     if mode == SearchMode::Commits {
-        scan_commits(handle, &repo_url, query, history, limits.commits, &mut results).await;
+        scan_commits(
+            handle,
+            &repo_url,
+            query,
+            history,
+            limits.commits,
+            &mut results,
+        )
+        .await;
     } else {
         let tree = if let Some(tree) = &head.tree {
             Cow::Borrowed(tree.as_str())
         } else {
-            Cow::Owned(handle.read_commit(&head.hash).await?.and_then(|commit| commit.tree).unwrap_or_default())
+            Cow::Owned(
+                handle
+                    .read_commit(&head.hash)
+                    .await?
+                    .and_then(|commit| commit.tree)
+                    .unwrap_or_default(),
+            )
         };
         if !is_object_id(&tree) {
             return Err(Error::RustError("Invalid Git snapshot tree ID".into()));
@@ -257,7 +292,10 @@ async fn scan_commits(
                 break;
             }
             results.hits.push(Hit {
-                url: format!("{repo_url}/commit/{}?branch={}", commit.hash, results.snapshot),
+                url: format!(
+                    "{repo_url}/commit/{}?branch={}",
+                    commit.hash, results.snapshot
+                ),
                 title: commit.hash,
                 detail: Some(detail),
                 line: None,
@@ -381,8 +419,12 @@ impl FileScan<'_> {
             }
         };
         self.bytes_left -= bytes.len();
-        let Ok(text) = std::str::from_utf8(&bytes) else { return };
-        let Some(offset) = text.find(self.query) else { return };
+        let Ok(text) = std::str::from_utf8(&bytes) else {
+            return;
+        };
+        let Some(offset) = text.find(self.query) else {
+            return;
+        };
         if bytes.contains(&0) {
             return;
         }
@@ -400,7 +442,12 @@ impl FileScan<'_> {
             return;
         }
         self.results.hits.push(Hit {
-            url: format!("{}/blob/{}?branch={}", self.repo_url, url_path(&self.path), self.results.snapshot),
+            url: format!(
+                "{}/blob/{}?branch={}",
+                self.repo_url,
+                url_path(&self.path),
+                self.results.snapshot
+            ),
             title: self.path.clone(),
             detail,
             line,

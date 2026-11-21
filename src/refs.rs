@@ -55,22 +55,32 @@ fn unavailable(stage: &str) -> RefsError {
 
 pub(crate) async fn load(handle: &RepoHandle) -> Result<Inventory, RefsError> {
     let headers = Headers::new();
-    headers.set("Accept", ADVERTISEMENT).map_err(|_| unavailable("set accept header"))?;
+    headers
+        .set("Accept", ADVERTISEMENT)
+        .map_err(|_| unavailable("set accept header"))?;
     // Omit Git-Protocol so upload-pack advertises refs directly, without v2 negotiation.
     let init = RequestInit {
         headers,
         ..Default::default()
     };
-    let response = handle.git_request("info/refs", "service=git-upload-pack", false, "", init)
-        .await.map_err(|_| unavailable("fetch advertisement"))?;
+    let response = handle
+        .git_request("info/refs", "service=git-upload-pack", false, "", init)
+        .await
+        .map_err(|_| unavailable("fetch advertisement"))?;
     let status = response.status_code();
     if status != 200 {
         worker::console_log!("repository references: advertisement returned HTTP {status}");
         return Err(RefsError::Unavailable);
     }
-    let content_type = response.headers().get("content-type").map_err(|_| unavailable("read content type"))?;
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .map_err(|_| unavailable("read content type"))?;
     if !content_type.as_deref().is_some_and(|value| {
-        value.split(';').next().is_some_and(|mime| mime.trim().eq_ignore_ascii_case(ADVERTISEMENT))
+        value
+            .split(';')
+            .next()
+            .is_some_and(|mime| mime.trim().eq_ignore_ascii_case(ADVERTISEMENT))
     }) {
         return Err(unavailable("validate advertisement content type"));
     }
@@ -82,13 +92,20 @@ pub(crate) async fn load(handle: &RepoHandle) -> Result<Inventory, RefsError> {
             let done = JsValue::from_str("done");
             let value = JsValue::from_str("value");
             loop {
-                let chunk = JsFuture::from(reader.read()).await.map_err(|_| unavailable("read advertisement stream"))?;
-                if Reflect::get(&chunk, &done).ok().and_then(|done| done.as_bool()) == Some(true) {
+                let chunk = JsFuture::from(reader.read())
+                    .await
+                    .map_err(|_| unavailable("read advertisement stream"))?;
+                if Reflect::get(&chunk, &done)
+                    .ok()
+                    .and_then(|done| done.as_bool())
+                    == Some(true)
+                {
                     return parse_advertisement(&bytes);
                 }
                 let chunk: Uint8Array = Reflect::get(&chunk, &value)
                     .map_err(|_| unavailable("access advertisement chunk"))?
-                    .dyn_into().map_err(|_| unavailable("validate advertisement chunk"))?;
+                    .dyn_into()
+                    .map_err(|_| unavailable("validate advertisement chunk"))?;
                 let len = chunk.length() as usize;
                 if len > MAX_BYTES - bytes.len() {
                     let _ = reader.cancel();
@@ -115,8 +132,11 @@ fn packet<'a>(bytes: &mut &'a [u8]) -> Result<Option<&'a [u8]>, RefsError> {
     if !header.iter().all(u8::is_ascii_hexdigit) {
         return Err(RefsError::Unavailable);
     }
-    let len = usize::from_str_radix(std::str::from_utf8(header).map_err(|_| RefsError::Unavailable)?, 16)
-        .map_err(|_| RefsError::Unavailable)?;
+    let len = usize::from_str_radix(
+        std::str::from_utf8(header).map_err(|_| RefsError::Unavailable)?,
+        16,
+    )
+    .map_err(|_| RefsError::Unavailable)?;
     if len == 0 {
         *bytes = &bytes[4..];
         return Ok(None);
@@ -176,11 +196,16 @@ fn parse(mut bytes: &[u8]) -> Result<Inventory, RefsError> {
     if !bytes.is_empty() {
         return Err(RefsError::Unavailable);
     }
-    inventory.branches.sort_unstable_by(|a, b| a.name.cmp(&b.name));
-    inventory.tags = tags.into_iter().map(|(name, oid)| Tag {
-        name: name.to_owned(),
-        oid: oid.to_owned(),
-        peeled: peeled.remove(name).map(str::to_owned),
-    }).collect();
+    inventory
+        .branches
+        .sort_unstable_by(|a, b| a.name.cmp(&b.name));
+    inventory.tags = tags
+        .into_iter()
+        .map(|(name, oid)| Tag {
+            name: name.to_owned(),
+            oid: oid.to_owned(),
+            peeled: peeled.remove(name).map(str::to_owned),
+        })
+        .collect();
     Ok(inventory)
 }

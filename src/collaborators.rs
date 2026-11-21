@@ -3,7 +3,7 @@ use crate::db;
 use crate::handlers::common::{can_admin, forbidden, not_found, page_title, visible_repo};
 use crate::i18n::{CollaboratorText, CommonText};
 use crate::models::Repo;
-use crate::templates::{Chrome, render};
+use crate::templates::{render, Chrome};
 use crate::util;
 use askama::Template;
 use worker::*;
@@ -46,7 +46,11 @@ pub async fn revoke(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
     manage(req, ctx, Operation::Revoke).await
 }
 
-async fn manage(req: Request, ctx: RouteContext<AppState>, operation: Operation) -> Result<Response> {
+async fn manage(
+    req: Request,
+    ctx: RouteContext<AppState>,
+    operation: Operation,
+) -> Result<Response> {
     let state = &ctx.data;
     let owner = ctx.param("owner").map_or("", String::as_str);
     let name = ctx.param("repo").map_or("", String::as_str);
@@ -116,16 +120,23 @@ async fn manage(req: Request, ctx: RouteContext<AppState>, operation: Operation)
         .and_then(|meta| meta.changes)
         .ok_or_else(|| Error::RustError("D1 did not report collaborator changes".into()))?;
     if changes == 0 {
-        let allowed = database.prepare(
-            "SELECT r.id FROM repos r JOIN users actor ON actor.id = ?2
+        let allowed = database
+            .prepare(
+                "SELECT r.id FROM repos r JOIN users actor ON actor.id = ?2
               WHERE r.id = ?1 AND (actor.id = r.owner_id OR actor.is_admin = 1)",
-        ).bind(&[util::js_int(repo.id), util::js_int(user_id)])?.first::<i64>(Some("id")).await?;
+            )
+            .bind(&[util::js_int(repo.id), util::js_int(user_id)])?
+            .first::<i64>(Some("id"))
+            .await?;
         if allowed.is_none() {
             return forbidden(state, state.locale.t(CollaboratorText::ManageForbidden));
         }
         return render_page(state, repo, None, Some(missing)).await;
     }
-    util::redirect(&format!("/{}/settings/collaborators?result={success}", repo.full_name()))
+    util::redirect(&format!(
+        "/{}/settings/collaborators?result={success}",
+        repo.full_name()
+    ))
 }
 
 async fn render_page(
@@ -141,12 +152,18 @@ async fn render_page(
          JOIN users actor ON actor.id = ?2
          WHERE c.repo_id = ?1 AND (actor.id = r.owner_id OR actor.is_admin = 1)
          ORDER BY u.username COLLATE NOCASE, u.id",
-        &[util::js_int(repo.id), state.user_id().map_or_else(util::js_null, util::js_int)],
+        &[
+            util::js_int(repo.id),
+            state.user_id().map_or_else(util::js_null, util::js_int),
+        ],
     )
     .await?;
     let page = CollaboratorsPage {
         chrome: Chrome::new(state),
-        title: page_title(&[&repo.full_name(), state.locale.t(CollaboratorText::Collaborators)]),
+        title: page_title(&[
+            &repo.full_name(),
+            state.locale.t(CollaboratorText::Collaborators),
+        ]),
         repo,
         tab: "settings",
         is_owner: true,

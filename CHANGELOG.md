@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.5.1
+
+### Security & Access Control
+
+- **GPG signature verification (`src/gpg.rs`, `templates/commit.html`)**: Enforce canonical `tree`-first and unique `tree`/`author`/`committer` commit headers, strictly parse `committer` identity/timestamp lines, and display the verified `@signer` account alongside the signature badge and fingerprint.
+- **Organization member departure (`src/organizations.rs`, `migrations/0034_audit_hardening.sql`)**: Revoke all `organization_repositories` links (including `accepted = 1`) when the owning member leaves or is removed, backed by an `AFTER DELETE ON organization_members` trigger and an active-membership check on team grants.
+- **Auth, CSRF & caching (`src/lib.rs`, `src/avatar.rs`, `src/auth.rs`, `src/security.rs`, `src/recovery.rs`, `src/util.rs`)**: Bound all non-machine POST form bodies, key login throttling on canonical account identity, throttle `current_password` re-authentication, restrict `Cache-Control: private, no-cache` (bfcache) to anonymous public views, protect unexpired password-reset links from overwrite/send-failure invalidation, reject non-`same-origin`/`none` `Sec-Fetch-Site` values, preserve multi-value `Set-Cookie` headers with `headers.append`, and disallow `.` / `..` / `.git` endings in `valid_slug`.
+
+### Git & Storage Engines
+
+- **R2 Git pack & Durable Object hardening (`worker/git-r2-pack.mjs`, `worker/git-r2-packstore.mjs`, `worker/git-r2-receive.mjs`, `worker/git-r2-repository.mjs`, `worker/git-r2-archive.mjs`)**:
+  - Enforce canonical Git tree modes, forbid `.git`/`git~1` entries, and require canonical tree sort order and strict commit headers in `#directReceive`.
+  - Pass the initial 128 KiB header read tail into `inflateAt` to eliminate redundant R2 range `GET`s, bound `#indexes` to 16 MiB and `#packStores` to the latest revision with 4 MiB chunk caches, and cap `buildSourceTar` at 400 object reads.
+  - Handle Git Protocol v2 `command=ls-refs` directly from `repository.refs` in `#directUploadPack` and fall back to the container before streaming oversized or unresolved objects.
+  - Resolve `OFS_DELTA` entries chained onto `REF_DELTA` objects across passes in thin packs, wrap `#publish` in `#lock`, release rejected/conflicted non-multipart `work` rows, apply ref deletions before D/F checks, and sort `repository.refs`.
+- **Native Git, LFS & ref consistency (`scripts/git-origin.mjs`, `src/handlers/git.rs`, `src/handlers/repos.rs`, `src/lfs_remote.rs`, `src/lfs.rs`, `src/repo_lifecycle.rs`)**: Return `404` instead of `413`/`500` when reading directory paths in Native Git `readTree`, validate `?branch=` browse refs, unify `-`/255-byte ref validation across wire and web handlers, protect active LFS multipart sessions from size-mismatch aborts, and clean up `lfs-incoming/` on expiry and repository deletion.
+
+### Forge Workflows & UI
+
+- **Merge queue & webhooks (`src/branch_rules.rs`, `src/webhooks.rs`, `src/pull_review.rs`, `src/handlers/issues.rs`, `migrations/0034_audit_hardening.sql`)**: Preserve `MergeQueueCoordinator` exponential backoff across minute-cron ticks via `/recover` vs `/wake`, prune legacy `webhook_deliveries` rows, add foreign-key indexes on `webhook_deliveries(repo_id)` and `merge_queue(repo_id)`, allow private same-repo PR comparison refreshes when `author_id` is `NULL`, and emit notifications/webhooks for reviews on public-fork PRs.
+- **Templates, formatting & timestamps (`src/models.rs`, `templates/repo_transfers.html`, `templates/repo_code.html`, `static/css/shard.css`)**: Guard `Ts::fmt` against out-of-range JS `Date` exceptions and future `Ts::relative` values, include `account_nav.html` on `/user/settings/transfers`, mark the final directory breadcrumb with `aria-current="page"`, and add `user-select: none` to `.diff-table__number`.
+
+### Upgrade
+
+- Apply D1 migration `0034_audit_hardening.sql` before deploying `v0.5.1`.
+
 ## 0.5.0
 
 ### Added

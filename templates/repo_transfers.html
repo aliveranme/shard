@@ -3,9 +3,8 @@
 <div class="page">
   <div class="page-head"><h1 class="page-title">{{ chrome.locale.t(crate::i18n::LifecycleText::Transfers) }}</h1></div>
   <div class="settings-layout">
-    <nav class="settings-nav" aria-label="{{ chrome.locale.t(crate::i18n::CommonText::AccountSettings) }}">
-      <a href="/user/settings">{{ chrome.locale.t(crate::i18n::LifecycleText::BackToAccountSettings) }}</a>
-    </nav>
+    {% let settings_section = "transfers" %}
+    {% include "account_nav.html" %}
     <div class="settings-main">
       {% if declined %}<div class="alert alert--success" role="status">{{ chrome.locale.t(crate::i18n::LifecycleText::Declined) }}</div>{% endif %}
       {% if let Some(message) = error %}<div class="alert alert--error" role="alert">{{ message }}</div>{% endif %}

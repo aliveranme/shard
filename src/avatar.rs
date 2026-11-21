@@ -22,59 +22,106 @@ pub(crate) enum FormError {
 }
 
 pub(crate) async fn read_form(req: &mut Request) -> std::result::Result<FormData, FormError> {
+    read_form_bounded(req, FORM_LIMIT, true).await
+}
+
+pub(crate) async fn read_form_bounded(
+    req: &mut Request,
+    limit: u32,
+    multipart_only: bool,
+) -> std::result::Result<FormData, FormError> {
     let capacity = match util::header(req, "Content-Length") {
         Some(length) => {
             let length = length.parse::<u64>().map_err(|_| FormError::Invalid)?;
-            if length > u64::from(FORM_LIMIT) {
+            if length > u64::from(limit) {
                 return Err(FormError::TooLarge);
             }
             length as u32
         }
-        None => FORM_LIMIT,
+        None => limit,
     };
     let content_type = util::header(req, "Content-Type").ok_or(FormError::Invalid)?;
-    if !content_type
-        .split(';')
-        .next()
-        .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("multipart/form-data"))
-    {
+    let mime = content_type.split(';').next().map_or("", str::trim);
+    let valid_mime = if multipart_only {
+        mime.eq_ignore_ascii_case("multipart/form-data")
+    } else {
+        mime.eq_ignore_ascii_case("application/x-www-form-urlencoded")
+            || mime.eq_ignore_ascii_case("multipart/form-data")
+    };
+    if !valid_mime {
         return Err(FormError::Invalid);
     }
 
-    let stream = req.inner().body().ok_or(FormError::Invalid)?;
+    let Some(stream) = req.inner().body() else {
+        let headers = Headers::new();
+        headers
+            .set("Content-Type", &content_type)
+            .map_err(|_| FormError::Invalid)?;
+        let mut init = RequestInit::new();
+        init.with_method(Method::Post)
+            .with_headers(headers)
+            .with_body(Some(Uint8Array::new_with_length(0).into()));
+        let url = req.url().map_err(|_| FormError::Invalid)?;
+        let mut bounded =
+            Request::new_with_init(url.as_str(), &init).map_err(|_| FormError::Invalid)?;
+        return bounded.form_data().await.map_err(|_| FormError::Invalid);
+    };
     let reader: ReadableStreamDefaultReader = stream.get_reader().unchecked_into();
-    // Keep the capped buffer in JavaScript for the Workers multipart parser.
-    let buffered = Uint8Array::new_with_length(capacity);
     let done = JsValue::from_str("done");
     let value = JsValue::from_str("value");
-    let mut len = 0;
+    let mut chunks: Vec<Uint8Array> = Vec::new();
+    let mut len: u32 = 0;
     loop {
-        let result = JsFuture::from(reader.read()).await.map_err(|_| FormError::Invalid)?;
-        if Reflect::get(&result, &done).ok().and_then(|value| value.as_bool()) == Some(true) {
+        let result = match JsFuture::from(reader.read()).await {
+            Ok(result) => result,
+            Err(_) => {
+                reader.release_lock();
+                return Err(FormError::Invalid);
+            }
+        };
+        if Reflect::get(&result, &done)
+            .ok()
+            .and_then(|value| value.as_bool())
+            == Some(true)
+        {
             reader.release_lock();
             break;
         }
-        let chunk = Reflect::get(&result, &value)
+        let Some(chunk) = Reflect::get(&result, &value)
             .ok()
             .and_then(|value| value.dyn_into::<Uint8Array>().ok())
-            .ok_or(FormError::Invalid)?;
+        else {
+            reader.release_lock();
+            return Err(FormError::Invalid);
+        };
         let chunk_len = chunk.length();
         if chunk_len > capacity - len {
             let _ = JsFuture::from(reader.cancel()).await;
+            reader.release_lock();
             return Err(FormError::TooLarge);
         }
-        buffered.set(&chunk, len);
         len += chunk_len;
+        chunks.push(chunk);
+    }
+
+    let buffered = Uint8Array::new_with_length(len);
+    let mut offset = 0;
+    for chunk in &chunks {
+        buffered.set(chunk, offset);
+        offset += chunk.length();
     }
 
     let headers = Headers::new();
-    headers.set("Content-Type", &content_type).map_err(|_| FormError::Invalid)?;
+    headers
+        .set("Content-Type", &content_type)
+        .map_err(|_| FormError::Invalid)?;
     let mut init = RequestInit::new();
     init.with_method(Method::Post)
         .with_headers(headers)
-        .with_body(Some(buffered.subarray(0, len).into()));
+        .with_body(Some(buffered.into()));
     let url = req.url().map_err(|_| FormError::Invalid)?;
-    let mut bounded = Request::new_with_init(url.as_str(), &init).map_err(|_| FormError::Invalid)?;
+    let mut bounded =
+        Request::new_with_init(url.as_str(), &init).map_err(|_| FormError::Invalid)?;
     bounded.form_data().await.map_err(|_| FormError::Invalid)
 }
 
@@ -101,7 +148,10 @@ impl AvatarImage {
         }
         let bytes = file.bytes().await.map_err(|_| UploadError::Invalid)?;
         let format = image::guess_format(&bytes).map_err(|_| UploadError::Invalid)?;
-        if !matches!(format, ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP) {
+        if !matches!(
+            format,
+            ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP
+        ) {
             return Err(UploadError::Invalid);
         }
         if format == ImageFormat::WebP {
@@ -170,7 +220,9 @@ fn check_webp_chunks(mut bytes: &[u8], allow_frames: bool) -> std::result::Resul
         };
         let [a, b, c, d, len0, len1, len2, len3] = *header;
         let length = u32::from_le_bytes([len0, len1, len2, len3]) as usize;
-        let (data, rest) = remainder.split_at_checked(length).ok_or(UploadError::Invalid)?;
+        let (data, rest) = remainder
+            .split_at_checked(length)
+            .ok_or(UploadError::Invalid)?;
         match [a, b, c, d] {
             [b'V', b'P', b'8', b' '] => {
                 let [_, _, _, _, _, _, w0, w1, h0, h1, ..] = data else {
@@ -204,19 +256,26 @@ pub(crate) async fn git_author_ids<'a>(
         id: i64,
     }
 
-    let emails: Vec<_> = emails.filter(|email| !email.is_empty() && email.len() <= 254).collect();
+    let emails: Vec<_> = emails
+        .filter(|email| util::valid_email(email))
+        .take(64)
+        .collect();
     if emails.is_empty() {
         return Ok(HashMap::new());
     }
-    let emails = serde_json::to_string(&emails)
-        .map_err(|error| Error::RustError(error.to_string()))?;
+    let emails =
+        serde_json::to_string(&emails).map_err(|error| Error::RustError(error.to_string()))?;
     let authors = db::all::<AuthorAvatar>(
         &state.db()?,
         "SELECT DISTINCT e.value AS email, a.user_id AS id FROM json_each(?1) e
          JOIN users u ON u.email = e.value COLLATE NOCASE JOIN user_avatars a ON a.user_id = u.id",
         &[util::js_text(&emails)],
-    ).await?;
-    Ok(authors.into_iter().map(|author| (author.email, author.id)).collect())
+    )
+    .await?;
+    Ok(authors
+        .into_iter()
+        .map(|author| (author.email, author.id))
+        .collect())
 }
 
 fn avatar_etag(bytes: &[u8]) -> String {
@@ -240,7 +299,8 @@ pub(crate) async fn show(req: Request, ctx: RouteContext<AppState>) -> Result<Re
     struct AvatarRow {
         data: Vec<u8>,
     }
-    let Some(id) = ctx.param("id")
+    let Some(id) = ctx
+        .param("id")
         .and_then(|value| value.parse::<i64>().ok())
         .filter(|id| *id > 0)
     else {

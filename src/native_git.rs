@@ -1,9 +1,15 @@
-use crate::git_storage::{is_object_id, BlobRead, Commit, CopyError, CreatedRepo, GitFile, RepoHandle, TreeEntry, MAX_COMMIT_BYTES};
+use crate::git_storage::{
+    is_object_id, BlobRead, Commit, CopyError, CreatedRepo, GitFile, RepoHandle, TreeEntry,
+    MAX_COMMIT_BYTES,
+};
 use js_sys::Reflect;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsValue;
 use worker::durable::{ObjectNamespace, Stub};
-use worker::{Env, Error, Fetch, Method, Request, RequestInit, RequestRedirect, Response, ResponseBody, Result, Url};
+use worker::{
+    Env, Error, Fetch, Method, Request, RequestInit, RequestRedirect, Response, ResponseBody,
+    Result, Url,
+};
 
 const MAX_COMPARISON_BYTES: u64 = 4 * 1024 * 1024;
 const ARTIFACTS_MERGE_BINDING: &str = "ARTIFACTS_MERGE_CONTAINER";
@@ -15,7 +21,10 @@ pub(crate) enum ArtifactsMergeTransport {
 }
 
 pub(crate) enum GitService {
-    Native { origin: String, authorization: String },
+    Native {
+        origin: String,
+        authorization: String,
+    },
     Durable(ObjectNamespace),
     R2(ObjectNamespace),
 }
@@ -43,8 +52,13 @@ struct Creation<'a> {
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub(crate) enum ImportCredential<'a> {
-    Basic { username: &'a str, password: &'a str },
-    Bearer { token: &'a str },
+    Basic {
+        username: &'a str,
+        password: &'a str,
+    },
+    Bearer {
+        token: &'a str,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -133,12 +147,17 @@ impl ArtifactsMergeTransport {
         let binding = Reflect::get(env.as_ref(), &JsValue::from_str(ARTIFACTS_MERGE_BINDING))
             .map_err(|_| WriteError::Unavailable)?;
         if binding.is_undefined() {
-            return GitService::from_env(env).map(Self::Native).map_err(|_| WriteError::Unsupported);
+            return GitService::from_env(env)
+                .map(Self::Native)
+                .map_err(|_| WriteError::Unsupported);
         }
-        let container = env.durable_object(ARTIFACTS_MERGE_BINDING)
+        let container = env
+            .durable_object(ARTIFACTS_MERGE_BINDING)
             .and_then(|namespace| namespace.get_by_name("artifacts-merge"))
             .map_err(|_| WriteError::Unavailable)?;
-        let mut response = container.fetch_with_str("https://internal/healthz").await
+        let mut response = container
+            .fetch_with_str("https://internal/healthz")
+            .await
             .map_err(|_| WriteError::Unavailable)?;
         if response.status_code() != 200 {
             discard(response);
@@ -155,9 +174,22 @@ impl ArtifactsMergeTransport {
     }
 
     pub(crate) async fn merge_remote(
-        &self, reference: &str, base_oid: &str, head_oid: &str, target: &RemoteRepo<'_>, source: Option<&RemoteRepo<'_>>,
+        &self,
+        reference: &str,
+        base_oid: &str,
+        head_oid: &str,
+        target: &RemoteRepo<'_>,
+        source: Option<&RemoteRepo<'_>>,
     ) -> std::result::Result<String, WriteError> {
-        let payload = RemoteMerge { inputs: MergeInputs { reference, base_oid, head_oid }, target, source };
+        let payload = RemoteMerge {
+            inputs: MergeInputs {
+                reference,
+                base_oid,
+                head_oid,
+            },
+            target,
+            source,
+        };
         let response = match self {
             Self::Native(native) => native.write(None, ARTIFACTS_MERGE_PATH, &payload).await?,
             Self::Container(container) => {
@@ -165,7 +197,10 @@ impl ArtifactsMergeTransport {
                 init.redirect = RequestRedirect::Manual;
                 let request = Request::new_with_init("https://internal/v1/artifacts/merge", &init)
                     .map_err(|_| WriteError::Unavailable)?;
-                container.fetch_with_request(request).await.map_err(|_| WriteError::Unavailable)?
+                container
+                    .fetch_with_request(request)
+                    .await
+                    .map_err(|_| WriteError::Unavailable)?
             }
         };
         merge_result(response).await
@@ -178,9 +213,14 @@ impl GitService {
         let origin = git_origin(&raw).ok_or_else(invalid_origin)?;
         let token = env.secret("NATIVE_GIT_TOKEN")?.to_string();
         if token.is_empty() || !token.bytes().all(|byte| (b'!'..=b'~').contains(&byte)) {
-            return Err(Error::RustError("NATIVE_GIT_TOKEN must be a nonempty token".into()));
+            return Err(Error::RustError(
+                "NATIVE_GIT_TOKEN must be a nonempty token".into(),
+            ));
         }
-        Ok(Self::Native { origin, authorization: format!("Bearer {token}") })
+        Ok(Self::Native {
+            origin,
+            authorization: format!("Bearer {token}"),
+        })
     }
 
     pub(crate) fn durable(env: &Env) -> Result<Self> {
@@ -202,7 +242,10 @@ impl GitService {
         if !valid_id(id) {
             return Err(Error::RustError("Invalid Git storage ID".into()));
         }
-        Ok(GitServiceRepo { client: self, id: id.to_owned() })
+        Ok(GitServiceRepo {
+            client: self,
+            id: id.to_owned(),
+        })
     }
 
     async fn send(&self, id: Option<&str>, url: &str, mut init: RequestInit) -> Result<Response> {
@@ -210,7 +253,9 @@ impl GitService {
         match self {
             Self::Native { authorization, .. } => {
                 init.headers.set("Authorization", authorization)?;
-                Fetch::Request(Request::new_with_init(url, &init)?).send().await
+                Fetch::Request(Request::new_with_init(url, &init)?)
+                    .send()
+                    .await
             }
             Self::Durable(namespace) | Self::R2(namespace) => {
                 let id = id.ok_or_else(|| Error::RustError("Missing Git storage ID".into()))?;
@@ -220,24 +265,50 @@ impl GitService {
         }
     }
 
-    async fn control(&self, id: &str, method: Method, creation: Option<Creation<'_>>) -> Result<Response> {
+    async fn control(
+        &self,
+        id: &str,
+        method: Method,
+        creation: Option<Creation<'_>>,
+    ) -> Result<Response> {
         if !valid_id(id) {
             return Err(Error::RustError("Invalid Git storage ID".into()));
         }
         let init = match creation {
             Some(creation) => json_post(&creation)?,
-            None => RequestInit { method, ..Default::default() },
+            None => RequestInit {
+                method,
+                ..Default::default()
+            },
         };
-        self.send(Some(id), &format!("{}/v1/repos/{id}", self.origin()), init).await
+        self.send(Some(id), &format!("{}/v1/repos/{id}", self.origin()), init)
+            .await
     }
 
-    async fn write(&self, id: Option<&str>, path: &str, payload: &impl Serialize) -> std::result::Result<Response, WriteError> {
+    async fn write(
+        &self,
+        id: Option<&str>,
+        path: &str,
+        payload: &impl Serialize,
+    ) -> std::result::Result<Response, WriteError> {
         let init = json_post(payload).map_err(|_| WriteError::Unavailable)?;
-        self.send(id, &format!("{}{path}", self.origin()), init).await.map_err(|_| WriteError::Unavailable)
+        self.send(id, &format!("{}{path}", self.origin()), init)
+            .await
+            .map_err(|_| WriteError::Unavailable)
     }
 
     pub(crate) async fn create(&self, id: &str) -> Result<CreatedRepo> {
-        let response = self.control(id, Method::Post, Some(Creation { kind: "create", source: None, credential: None })).await?;
+        let response = self
+            .control(
+                id,
+                Method::Post,
+                Some(Creation {
+                    kind: "create",
+                    source: None,
+                    credential: None,
+                }),
+            )
+            .await?;
         if response.status_code() != 201 {
             return Err(unexpected(response));
         }
@@ -245,28 +316,51 @@ impl GitService {
     }
 
     pub(crate) async fn delete(&self, id: &str) -> std::result::Result<(), CopyError> {
-        let response = self.control(id, Method::Delete, None).await.map_err(|_| CopyError::Unknown)?;
+        let response = self
+            .control(id, Method::Delete, None)
+            .await
+            .map_err(|_| CopyError::Unknown)?;
         match response.status_code() {
             204 => Ok(()),
             _ => Err(copy_error(response)),
         }
     }
 
-    pub(crate) async fn start_copy(&self, id: &str, source: Option<&str>, url: &str) -> std::result::Result<(), CopyError> {
+    pub(crate) async fn start_copy(
+        &self,
+        id: &str,
+        source: Option<&str>,
+        url: &str,
+    ) -> std::result::Result<(), CopyError> {
         self.start_copy_with_credential(id, source, url, None).await
     }
 
     pub(crate) async fn start_copy_with_credential(
-        &self, id: &str, source: Option<&str>, url: &str, credential: Option<&ImportCredential<'_>>,
+        &self,
+        id: &str,
+        source: Option<&str>,
+        url: &str,
+        credential: Option<&ImportCredential<'_>>,
     ) -> std::result::Result<(), CopyError> {
         if credential.is_some() && matches!(self, Self::Durable(_)) {
             return Err(CopyError::Rejected);
         }
         let creation = match source {
-            Some(source) => Creation { kind: "fork", source: Some(source), credential },
-            None => Creation { kind: "import", source: Some(url), credential },
+            Some(source) => Creation {
+                kind: "fork",
+                source: Some(source),
+                credential,
+            },
+            None => Creation {
+                kind: "import",
+                source: Some(url),
+                credential,
+            },
         };
-        let response = self.control(id, Method::Post, Some(creation)).await.map_err(|_| CopyError::Unknown)?;
+        let response = self
+            .control(id, Method::Post, Some(creation))
+            .await
+            .map_err(|_| CopyError::Unknown)?;
         match response.status_code() {
             201 | 202 => {
                 discard(response);
@@ -277,7 +371,10 @@ impl GitService {
     }
 
     pub(crate) async fn copy_info(&self, id: &str) -> std::result::Result<CreatedRepo, CopyError> {
-        let response = self.control(id, Method::Get, None).await.map_err(|_| CopyError::Unknown)?;
+        let response = self
+            .control(id, Method::Get, None)
+            .await
+            .map_err(|_| CopyError::Unknown)?;
         if response.status_code() != 200 {
             return Err(copy_error(response));
         }
@@ -306,7 +403,9 @@ impl GitServiceRepo {
         if !matches!(self.client, GitService::R2(_)) {
             return Ok(ArchiveResponse::NotApplicable);
         }
-        let response = self.read("archive", &[("oid", commit), ("name", name)]).await?;
+        let response = self
+            .read("archive", &[("oid", commit), ("name", name)])
+            .await?;
         match response.status_code() {
             200 => Ok(ArchiveResponse::Ready(response)),
             413 => {
@@ -327,27 +426,44 @@ impl GitServiceRepo {
 
     pub(crate) fn shares_comparison_backend(&self, source: &Self) -> bool {
         match (&self.client, &source.client) {
-            (GitService::Native { origin: left, .. }, GitService::Native { origin: right, .. }) => left == right,
+            (GitService::Native { origin: left, .. }, GitService::Native { origin: right, .. }) => {
+                left == right
+            }
             (GitService::R2(_), GitService::R2(_)) => true,
             _ => false,
         }
     }
 
-    pub(crate) async fn r2_control(&self, endpoint: &str, payload: &impl Serialize) -> Result<Response> {
+    pub(crate) async fn r2_control(
+        &self,
+        endpoint: &str,
+        payload: &impl Serialize,
+    ) -> Result<Response> {
         if !matches!(self.client, GitService::R2(_)) {
             return Err(Error::RustError("Invalid R2 Git backend".into()));
         }
         let url = format!("{}/v1/r2/{}/{endpoint}", self.client.origin(), self.id);
-        self.client.send(Some(&self.id), &url, json_post(payload)?).await
+        self.client
+            .send(Some(&self.id), &url, json_post(payload)?)
+            .await
     }
 
     async fn read(&self, endpoint: &str, params: &[(&str, &str)]) -> Result<Response> {
-        let mut url = Url::parse(&format!("{}/v1/repos/{}/{endpoint}", self.client.origin(), self.id))?;
+        let mut url = Url::parse(&format!(
+            "{}/v1/repos/{}/{endpoint}",
+            self.client.origin(),
+            self.id
+        ))?;
         url.query_pairs_mut().extend_pairs(params.iter().copied());
-        self.client.send(Some(&self.id), url.as_str(), RequestInit::default()).await
+        self.client
+            .send(Some(&self.id), url.as_str(), RequestInit::default())
+            .await
     }
 
-    pub(crate) fn comparison_pair<'a>(target: &'a RepoHandle, source: &'a RepoHandle) -> Option<(&'a Self, &'a Self)> {
+    pub(crate) fn comparison_pair<'a>(
+        target: &'a RepoHandle,
+        source: &'a RepoHandle,
+    ) -> Option<(&'a Self, &'a Self)> {
         match (target, source) {
             (RepoHandle::Service(target), RepoHandle::Service(source))
                 if target.shares_comparison_backend(source) =>
@@ -359,7 +475,9 @@ impl GitServiceRepo {
     }
 
     async fn snapshot_read<T: serde::de::DeserializeOwned>(
-        &self, endpoint: &str, params: &[(&str, &str)],
+        &self,
+        endpoint: &str,
+        params: &[(&str, &str)],
     ) -> Result<SnapshotRead<T>> {
         let response = self.read(endpoint, params).await?;
         match response.status_code() {
@@ -385,28 +503,76 @@ impl GitServiceRepo {
         }
     }
 
-    pub(crate) async fn merge_bases(&self, source: &Self, base: &str, head: &str) -> Result<SnapshotRead<Vec<String>>> {
-        self.snapshot_read("merge-base", &[("source", &source.id), ("base", base), ("head", head)]).await
+    pub(crate) async fn merge_bases(
+        &self,
+        source: &Self,
+        base: &str,
+        head: &str,
+    ) -> Result<SnapshotRead<Vec<String>>> {
+        self.snapshot_read(
+            "merge-base",
+            &[("source", &source.id), ("base", base), ("head", head)],
+        )
+        .await
     }
 
     pub(crate) async fn file_changes<T: serde::de::DeserializeOwned>(
-        &self, source: &Self, base: &str, head: &str,
+        &self,
+        source: &Self,
+        base: &str,
+        head: &str,
     ) -> Result<SnapshotRead<T>> {
-        self.snapshot_read("compare", &[("source", &source.id), ("base", base), ("head", head)]).await
+        self.snapshot_read(
+            "compare",
+            &[("source", &source.id), ("base", base), ("head", head)],
+        )
+        .await
     }
 
-    pub(crate) async fn integrated(&self, tip: &str, base: &str, head: &str) -> Result<SnapshotRead<bool>> {
-        self.snapshot_read("integrated", &[("tip", tip), ("base", base), ("head", head)]).await
+    pub(crate) async fn integrated(
+        &self,
+        tip: &str,
+        base: &str,
+        head: &str,
+    ) -> Result<SnapshotRead<bool>> {
+        self.snapshot_read(
+            "integrated",
+            &[("tip", tip), ("base", base), ("head", head)],
+        )
+        .await
     }
 
-    async fn write(&self, endpoint: &str, payload: &impl Serialize) -> std::result::Result<Response, WriteError> {
-        self.client.write(Some(&self.id), &format!("/v1/repos/{}/{endpoint}", self.id), payload).await
+    async fn write(
+        &self,
+        endpoint: &str,
+        payload: &impl Serialize,
+    ) -> std::result::Result<Response, WriteError> {
+        self.client
+            .write(
+                Some(&self.id),
+                &format!("/v1/repos/{}/{endpoint}", self.id),
+                payload,
+            )
+            .await
     }
 
     pub(crate) async fn write_ref(
-        &self, reference: &str, new_oid: &str, old_oid: &str,
+        &self,
+        reference: &str,
+        new_oid: &str,
+        old_oid: &str,
     ) -> std::result::Result<(), WriteError> {
-        write_status(self.write("ref", &RefWrite { reference, new_oid, old_oid }).await?)
+        write_status(
+            self.write(
+                "ref",
+                &RefWrite {
+                    reference,
+                    new_oid,
+                    old_oid,
+                },
+            )
+            .await?,
+        )
     }
 
     pub(crate) async fn set_head(&self, reference: &str) -> std::result::Result<(), WriteError> {
@@ -414,14 +580,27 @@ impl GitServiceRepo {
     }
 
     pub(crate) async fn merge(
-        &self, reference: &str, base_oid: &str, head_oid: &str, source_id: Option<&str>,
+        &self,
+        reference: &str,
+        base_oid: &str,
+        head_oid: &str,
+        source_id: Option<&str>,
     ) -> std::result::Result<String, WriteError> {
-        let payload = MergeWrite { inputs: MergeInputs { reference, base_oid, head_oid }, source: source_id };
+        let payload = MergeWrite {
+            inputs: MergeInputs {
+                reference,
+                base_oid,
+                head_oid,
+            },
+            source: source_id,
+        };
         merge_result(self.write("merge", &payload).await?).await
     }
 
     pub(crate) async fn log(&self, reference: &str, limit: u32) -> Result<Vec<Commit>> {
-        let response = self.read("log", &[("ref", reference), ("limit", &limit.to_string())]).await?;
+        let response = self
+            .read("log", &[("ref", reference), ("limit", &limit.to_string())])
+            .await?;
         json(response).await
     }
 
@@ -433,7 +612,9 @@ impl GitServiceRepo {
         }
         let data: CommitData = json(response).await?;
         if data.commit.hash != hash || data.parents.iter().any(|hash| !is_object_id(hash)) {
-            return Err(Error::RustError("Git service returned invalid commit metadata".into()));
+            return Err(Error::RustError(
+                "Git service returned invalid commit metadata".into(),
+            ));
         }
         Ok(Some(data))
     }
@@ -465,8 +646,14 @@ impl GitServiceRepo {
         }
     }
 
-    pub(crate) async fn read_tree_bounded(&self, hash: &str, limit: u32) -> Result<Option<Vec<TreeEntry>>> {
-        let response = self.read("tree", &[("oid", hash), ("limit", &limit.to_string())]).await?;
+    pub(crate) async fn read_tree_bounded(
+        &self,
+        hash: &str,
+        limit: u32,
+    ) -> Result<Option<Vec<TreeEntry>>> {
+        let response = self
+            .read("tree", &[("oid", hash), ("limit", &limit.to_string())])
+            .await?;
         if response.status_code() == 413 {
             discard(response);
             return Ok(None);
@@ -475,12 +662,17 @@ impl GitServiceRepo {
         if entries.len() > limit as usize {
             return Ok(None);
         }
-        entries.into_iter().map(|entry| TreeEntry::new(entry.name, &entry.mode, entry.hash, entry.size))
-            .collect::<Result<_>>().map(Some)
+        entries
+            .into_iter()
+            .map(|entry| TreeEntry::new(entry.name, &entry.mode, entry.hash, entry.size))
+            .collect::<Result<_>>()
+            .map(Some)
     }
 
     pub(crate) async fn read_blob_bounded(&self, hash: &str, limit: usize) -> Result<BlobRead> {
-        let response = self.read("blob", &[("oid", hash), ("limit", &limit.to_string())]).await?;
+        let response = self
+            .read("blob", &[("oid", hash), ("limit", &limit.to_string())])
+            .await?;
         match response.status_code() {
             413 => {
                 discard(response);
@@ -498,7 +690,12 @@ impl GitServiceRepo {
         }
     }
 
-    pub(crate) async fn read_file(&self, reference: &str, path: &str, limit: Option<usize>) -> Result<Option<GitFile>> {
+    pub(crate) async fn read_file(
+        &self,
+        reference: &str,
+        path: &str,
+        limit: Option<usize>,
+    ) -> Result<Option<GitFile>> {
         let mut params = [("ref", reference), ("path", path), ("limit", "")];
         let bound;
         let params = match limit {
@@ -523,7 +720,12 @@ impl GitServiceRepo {
         }
     }
 
-    pub(crate) async fn git_request(&self, endpoint: &str, query: &str, init: RequestInit) -> Result<Response> {
+    pub(crate) async fn git_request(
+        &self,
+        endpoint: &str,
+        query: &str,
+        init: RequestInit,
+    ) -> Result<Response> {
         let mut url = format!("{}/v1/git/{}.git/{endpoint}", self.client.origin(), self.id);
         if !query.is_empty() {
             url.push('?');
@@ -578,9 +780,14 @@ async fn merge_result(mut response: Response) -> std::result::Result<String, Wri
 pub(crate) fn git_origin(raw: &str) -> Option<String> {
     let url = Url::parse(raw).ok()?;
     let loopback = matches!(url.host_str(), Some("127.0.0.1" | "[::1]"));
-    (url.host_str().is_some() && (url.scheme() == "https" || url.scheme() == "http" && loopback)
-        && url.username().is_empty() && url.password().is_none() && url.path() == "/"
-        && url.query().is_none() && url.fragment().is_none()).then(|| url.origin().ascii_serialization())
+    (url.host_str().is_some()
+        && (url.scheme() == "https" || url.scheme() == "http" && loopback)
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.path() == "/"
+        && url.query().is_none()
+        && url.fragment().is_none())
+    .then(|| url.origin().ascii_serialization())
 }
 
 fn invalid_origin() -> Error {
@@ -588,8 +795,11 @@ fn invalid_origin() -> Error {
 }
 
 fn valid_id(id: &str) -> bool {
-    id.starts_with("shard-") && id.len() <= 128
-        && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    id.starts_with("shard-")
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
 pub(crate) fn discard(response: Response) {
@@ -619,7 +829,9 @@ fn copy_error(response: Response) -> CopyError {
 async fn metadata(mut response: Response, id: &str) -> Result<CreatedRepo> {
     let metadata: CreatedRepo = response.json().await?;
     if metadata.name != id || !crate::git_wire::valid_ref(&metadata.default_branch) {
-        return Err(Error::RustError("Git service returned invalid repository metadata".into()));
+        return Err(Error::RustError(
+            "Git service returned invalid repository metadata".into(),
+        ));
     }
     Ok(metadata)
 }
@@ -632,18 +844,25 @@ async fn json<T: serde::de::DeserializeOwned>(mut response: Response) -> Result<
 }
 
 fn response_length(response: &Response, header: &str) -> Result<u64> {
-    response.headers().get(header)?.and_then(|length| length.parse().ok())
+    response
+        .headers()
+        .get(header)?
+        .and_then(|length| length.parse().ok())
         .ok_or_else(|| Error::RustError("Git service omitted its file size".into()))
 }
 
 pub(crate) async fn file_bytes(mut response: Response, length: u64) -> Result<Vec<u8>> {
     if response_length(&response, "Content-Length")? != length {
         discard(response);
-        return Err(Error::RustError("Git service returned an unexpected file size".into()));
+        return Err(Error::RustError(
+            "Git service returned an unexpected file size".into(),
+        ));
     }
     let bytes = response.bytes().await?;
     if bytes.len() as u64 != length {
-        return Err(Error::RustError("Git service returned incomplete file bytes".into()));
+        return Err(Error::RustError(
+            "Git service returned incomplete file bytes".into(),
+        ));
     }
     Ok(bytes)
 }

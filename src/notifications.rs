@@ -1,10 +1,10 @@
 use crate::ctx::AppState;
 use crate::db;
-use crate::handlers::common::{VISIBLE_REPO_SQL, not_found, page_title, viewer_params};
+use crate::handlers::common::{not_found, page_title, viewer_params, VISIBLE_REPO_SQL};
 use crate::i18n::{CommonText, Locale, NotificationAction, NotificationText};
 use crate::models::Ts;
-use crate::pagination::{PAGE_SIZE, PageRequest, Pagination};
-use crate::templates::{Chrome, render};
+use crate::pagination::{PageRequest, Pagination, PAGE_SIZE};
+use crate::templates::{render, Chrome};
 use crate::util::{js_int, now, redirect};
 use askama::Template;
 use std::fmt;
@@ -70,7 +70,12 @@ pub async fn inbox(req: Request, ctx: RouteContext<AppState>) -> Result<Response
              WHERE n.recipient_id = ?1 AND {VISIBLE_REPO_SQL}
              ORDER BY n.event_id DESC LIMIT ?3 OFFSET ?4"
         ),
-        &[recipient, admin, js_int((PAGE_SIZE + 1) as i64), js_int(page.offset())],
+        &[
+            recipient,
+            admin,
+            js_int((PAGE_SIZE + 1) as i64),
+            js_int(page.offset()),
+        ],
     )
     .await?;
     let pagination = page.finish(&req, &mut notifications, None)?;
@@ -121,21 +126,27 @@ pub async fn read_one(req: Request, ctx: RouteContext<AppState>) -> Result<Respo
         return redirect(LOGIN_PATH);
     }
     let missing = || not_found(state, state.locale.t(NotificationText::NotFound));
-    let Some(id) = ctx.param("id").and_then(|id| id.parse::<i64>().ok()).filter(|&id| id > 0) else {
+    let Some(id) = ctx
+        .param("id")
+        .and_then(|id| id.parse::<i64>().ok())
+        .filter(|&id| id > 0)
+    else {
         return missing();
     };
     let [recipient, admin] = viewer_params(state);
     // Recheck current grants in the mutation, including repeated reads.
-    let marked = state.db()?.prepare(format!(
-        "UPDATE notifications SET read_at = COALESCE(read_at, ?3)
+    let marked = state
+        .db()?
+        .prepare(format!(
+            "UPDATE notifications SET read_at = COALESCE(read_at, ?3)
          WHERE recipient_id = ?1 AND event_id = ?4 AND EXISTS (
              SELECT 1 FROM notification_events e {THREAD_JOINS}
              WHERE e.id = notifications.event_id AND {VISIBLE_REPO_SQL}
          ) RETURNING event_id"
-    ))
-    .bind(&[recipient, admin, js_int(now()), js_int(id)])?
-    .first::<i64>(Some("event_id"))
-    .await?;
+        ))
+        .bind(&[recipient, admin, js_int(now()), js_int(id)])?
+        .first::<i64>(Some("event_id"))
+        .await?;
     if marked.is_none() {
         return missing();
     }

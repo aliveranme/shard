@@ -1,4 +1,4 @@
-use super::common::{REPO_COLUMNS, VISIBLE_REPO_SQL, page_title, viewer_params};
+use super::common::{page_title, viewer_params, REPO_COLUMNS, VISIBLE_REPO_SQL};
 use crate::ctx::AppState;
 use crate::db;
 use crate::i18n::{CommonText, WebText};
@@ -60,10 +60,14 @@ pub async fn explore(req: Request, ctx: RouteContext<AppState>) -> Result<Respon
              ORDER BY r.updated_at DESC, r.id DESC LIMIT ? OFFSET ?"
         ),
         &[
-            viewer_id, viewer_admin,
-            util::js_text(trimmed), util::js_text(trimmed),
-            util::js_text(trimmed), util::js_text(trimmed),
-            util::js_int((PAGE_SIZE + 1) as i64), util::js_int(request_page.offset()),
+            viewer_id,
+            viewer_admin,
+            util::js_text(trimmed),
+            util::js_text(trimmed),
+            util::js_text(trimmed),
+            util::js_text(trimmed),
+            util::js_int((PAGE_SIZE + 1) as i64),
+            util::js_int(request_page.offset()),
         ],
     )
     .await?;
@@ -153,14 +157,14 @@ pub async fn global_pulls(req: Request, ctx: RouteContext<AppState>) -> Result<R
     global_list(req, ctx, "pull").await
 }
 
-async fn global_list(
-    req: Request,
-    ctx: RouteContext<AppState>,
-    kind: &str,
-) -> Result<Response> {
+async fn global_list(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result<Response> {
     let state = ctx.data.clone();
     if state.user.is_none() {
-        return util::redirect(if kind == "pull" { "/user/login?next=/pulls" } else { "/user/login?next=/issues" });
+        return util::redirect(if kind == "pull" {
+            "/user/login?next=/pulls"
+        } else {
+            "/user/login?next=/issues"
+        });
     }
     let [viewer_id, viewer_admin] = viewer_params(&state);
     let state_filter = match util::query_param(&req, "state").as_deref() {
@@ -182,10 +186,7 @@ async fn global_list(
           WHERE {VISIBLE_REPO_SQL}
             AND i.kind = ?"
     );
-    let mut args = vec![
-        viewer_id, viewer_admin,
-        util::js_text(kind),
-    ];
+    let mut args = vec![viewer_id, viewer_admin, util::js_text(kind)];
     if state_filter != "all" {
         sql.push_str(" AND i.state = ?");
         args.push(util::js_text(state_filter));
@@ -193,7 +194,8 @@ async fn global_list(
     filters.append(&mut sql, &mut args, &query);
     sql.push_str(" ORDER BY i.updated_at DESC, i.id DESC LIMIT ? OFFSET ?");
     args.extend([
-        util::js_int((PAGE_SIZE + 1) as i64), util::js_int(request_page.offset()),
+        util::js_int((PAGE_SIZE + 1) as i64),
+        util::js_int(request_page.offset()),
     ]);
     let mut rows: Vec<GlobalRow> = db::all(&database, &sql, &args).await?;
     let pagination = request_page.finish(&req, &mut rows, None)?;
@@ -214,8 +216,16 @@ async fn global_list(
     let is_pull = kind == "pull";
     let page = GlobalIssuesPage {
         chrome: Chrome::new(&state),
-        title: page_title(&[state.locale.t(if is_pull { CommonText::PullRequests } else { CommonText::Issues })]),
-        heading: state.locale.t(if is_pull { WebText::GlobalPulls } else { WebText::GlobalIssues }),
+        title: page_title(&[state.locale.t(if is_pull {
+            CommonText::PullRequests
+        } else {
+            CommonText::Issues
+        })]),
+        heading: state.locale.t(if is_pull {
+            WebText::GlobalPulls
+        } else {
+            WebText::GlobalIssues
+        }),
         issues,
         state: state_filter.into(),
         query,
@@ -227,4 +237,3 @@ async fn global_list(
     };
     render(&page)
 }
-

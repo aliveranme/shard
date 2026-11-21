@@ -15,13 +15,13 @@ macro_rules! catalog {
 }
 
 mod account;
-mod checks;
 mod branches;
+mod checks;
 mod collaborators;
 mod common;
 mod discussion;
-mod issue_metadata;
 mod gpg;
+mod issue_metadata;
 mod lifecycle;
 mod notifications;
 mod organizations;
@@ -81,7 +81,9 @@ impl Locale {
     }
 
     fn from_code(code: &str) -> Option<Self> {
-        Self::SUPPORTED.into_iter().find(|locale| locale.code() == code)
+        Self::SUPPORTED
+            .into_iter()
+            .find(|locale| locale.code() == code)
     }
 
     pub fn t(self, key: impl Message) -> &'static str {
@@ -93,10 +95,14 @@ impl Locale {
         let primary = parts.next().unwrap_or_default();
         match self {
             Self::En => primary.eq_ignore_ascii_case("en"),
-            Self::ZhHans => primary.eq_ignore_ascii_case("zh")
-                && parts.next().is_none_or(|part| {
-                    ["Hans", "CN", "SG", "MY"].iter().any(|alias| part.eq_ignore_ascii_case(alias))
-                }),
+            Self::ZhHans => {
+                primary.eq_ignore_ascii_case("zh")
+                    && parts.next().is_none_or(|part| {
+                        ["Hans", "CN", "SG", "MY"]
+                            .iter()
+                            .any(|alias| part.eq_ignore_ascii_case(alias))
+                    })
+            }
         }
     }
 
@@ -108,7 +114,9 @@ impl Locale {
         for (position, range) in header.split(',').enumerate() {
             let (tag, quality) = match range.split_once(';') {
                 Some((tag, field)) => {
-                    let Some(q) = field.trim().strip_prefix("q=").and_then(quality) else { continue };
+                    let Some(q) = field.trim().strip_prefix("q=").and_then(quality) else {
+                        continue;
+                    };
                     (tag.trim(), q)
                 }
                 None => (range.trim(), 1000),
@@ -116,14 +124,21 @@ impl Locale {
             let rank = (quality, std::cmp::Reverse(position));
             if tag == "*" {
                 wildcard = wildcard.max(Some(rank));
-            } else if let Some(index) = Self::SUPPORTED.iter().position(|locale| locale.accepts(tag)) {
+            } else if let Some(index) = Self::SUPPORTED
+                .iter()
+                .position(|locale| locale.accepts(tag))
+            {
                 explicit[index] = explicit[index].max(Some(rank));
             }
         }
         Self::SUPPORTED
             .into_iter()
             .zip(explicit)
-            .filter_map(|(locale, rank)| rank.or(wildcard).filter(|(q, _)| *q > 0).map(|rank| (locale, rank)))
+            .filter_map(|(locale, rank)| {
+                rank.or(wildcard)
+                    .filter(|(q, _)| *q > 0)
+                    .map(|rank| (locale, rank))
+            })
             .enumerate()
             .max_by_key(|(index, (_, rank))| (*rank, std::cmp::Reverse(*index)))
             .map(|(_, (locale, _))| locale)
@@ -138,9 +153,13 @@ fn quality(value: &str) -> Option<u16> {
     }
     match whole {
         "1" if fraction.bytes().all(|digit| digit == b'0') => Some(1000),
-        "0" => Some(fraction.bytes().zip([100, 10, 1]).map(|(digit, place)| {
-            u16::from(digit - b'0') * place
-        }).sum()),
+        "0" => Some(
+            fraction
+                .bytes()
+                .zip([100, 10, 1])
+                .map(|(digit, place)| u16::from(digit - b'0') * place)
+                .sum(),
+        ),
         _ => None,
     }
 }
@@ -153,7 +172,11 @@ pub enum LanguagePreference {
 
 impl LanguagePreference {
     pub fn parse(value: &str) -> Option<Self> {
-        if value == "auto" { Some(Self::Browser) } else { Locale::from_code(value).map(Self::Explicit) }
+        if value == "auto" {
+            Some(Self::Browser)
+        } else {
+            Locale::from_code(value).map(Self::Explicit)
+        }
     }
 
     pub fn code(self) -> &'static str {
@@ -170,4 +193,3 @@ impl LanguagePreference {
         }
     }
 }
-

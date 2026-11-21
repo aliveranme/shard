@@ -76,7 +76,7 @@ export class R2PackStore {
     const object = await this.bucket.get(`${pack}.pack`, { range: { offset: seq * CHUNK, length: CHUNK } });
     if (!object) throw new Error("Missing Git pack range");
     const data = new Uint8Array(await object.arrayBuffer());
-    if (this.cache.size > 16) this.cache.clear();
+    if (this.cache.size >= 4) this.cache.clear();
     this.cache.set(key, data);
     return data;
   }
@@ -117,7 +117,7 @@ class PackHeaders {
     const object = await this.bucket.get(`${this.key}.pack`, { range: { offset: seq * CHUNK, length: CHUNK } });
     if (!object || !object.size) throw new Error("Missing Git pack chunk");
     const data = new Uint8Array(await object.arrayBuffer());
-    if (this.chunks.size > 8) this.chunks.clear();
+    if (this.chunks.size >= 4) this.chunks.clear();
     this.chunks.set(seq, data);
     return data;
   }

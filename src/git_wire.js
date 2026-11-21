@@ -136,6 +136,14 @@ export async function shard_receive_request(body, encoding) {
       const match = /^([a-f0-9]{40}) ([a-f0-9]{40}) (refs\/[^\x00-\x20\x7f]+)$/.exec(command);
       if (!match || seen.has(match[3])) throw new Error("Invalid Git receive command");
       const [, before, after, name] = match;
+      const short = name.startsWith("refs/heads/")
+        ? name.slice("refs/heads/".length)
+        : name.startsWith("refs/tags/")
+          ? name.slice("refs/tags/".length)
+          : null;
+      if (short !== null && (!short || short.startsWith("-") || encoder.encode(short).length > 255)) {
+        throw new Error("Invalid Git receive command");
+      }
       seen.add(name);
       updates.push({ name, before, after });
     }

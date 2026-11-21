@@ -38,6 +38,14 @@ export function parseReceiveBytes(bytes) {
     }
     const match = /^([a-f0-9]{40}) ([a-f0-9]{40}) (refs\/[^\x00-\x20\x7f]+)$/.exec(command);
     if (!match || seen.has(match[3])) throw new Error("Invalid Git receive command");
+    const short = match[3].startsWith("refs/heads/")
+      ? match[3].slice("refs/heads/".length)
+      : match[3].startsWith("refs/tags/")
+        ? match[3].slice("refs/tags/".length)
+        : null;
+    if (short !== null && (!short || short.startsWith("-") || new TextEncoder().encode(short).length > 255)) {
+      throw new Error("Invalid Git receive command");
+    }
     seen.add(match[3]);
     updates.push({ name: match[3], before: match[1], after: match[2] });
   }
@@ -259,16 +267,19 @@ export async function parseReceivedPack(pack, maxObjects = 20_000, readBase = nu
     let baseOid = parsed.baseOid ?? null;
     if (type === 6) {
       const base = byOffset.get(parsed.baseOffset);
-      if (!base) throw new ThinPackError("Git pack references a missing offset base");
-      type = base.type;
-      baseOid = base.oid;
-      const resolved = applyDelta(base.data, data, remainingBudget);
-      consumeBudget(resolved.length);
-      const oid = await objectOid(TYPES[type], resolved);
-      registerEntry({
-        oid, type, data: resolved, offset, start: parsed.start, end: inflated.end,
-        entrySize: parsed.size, crc: crc32(pack.subarray(offset, inflated.end)), oidBytes: hexBytes(oid),
-      });
+      if (!base) {
+        pending.push({ offset, parsed, data, inflated, baseOffset: parsed.baseOffset });
+      } else {
+        type = base.type;
+        baseOid = base.oid;
+        const resolved = applyDelta(base.data, data, remainingBudget);
+        consumeBudget(resolved.length);
+        const oid = await objectOid(TYPES[type], resolved);
+        registerEntry({
+          oid, type, data: resolved, offset, start: parsed.start, end: inflated.end,
+          entrySize: parsed.size, crc: crc32(pack.subarray(offset, inflated.end)), oidBytes: hexBytes(oid),
+        });
+      }
     } else if (type === 7) {
       const base = byOid.get(baseOid);
       if (!base) {
@@ -293,12 +304,14 @@ export async function parseReceivedPack(pack, maxObjects = 20_000, readBase = nu
     }
     offset = inflated.end;
   }
-  // Ref-delta bases can appear after their dependants in a legal pack.
+  // Ref-delta bases (and ofs-deltas chained onto them) can resolve across passes.
   for (let pass = 0; pending.length && pass < 64; pass++) {
     const next = [];
     for (const item of pending) {
-      let base = byOid.get(item.baseOid);
-      if (!base && typeof readBase === "function" && !missingBases.has(item.baseOid)) {
+      let base = item.baseOffset !== undefined
+        ? byOffset.get(item.baseOffset)
+        : byOid.get(item.baseOid);
+      if (!base && item.baseOid && typeof readBase === "function" && !missingBases.has(item.baseOid)) {
         const external = await readBase(item.baseOid);
         if (external) {
           const type = typeof external.type === "number" ? external.type : TYPES.indexOf(external.type);

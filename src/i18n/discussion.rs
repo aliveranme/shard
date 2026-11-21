@@ -129,7 +129,12 @@ impl Locale {
         })
     }
 
-    pub fn opened_discussion<'a>(self, is_pull: bool, date: &'a Ts, author: &'a str) -> impl Display + 'a {
+    pub fn opened_discussion<'a>(
+        self,
+        is_pull: bool,
+        date: &'a Ts,
+        author: &'a str,
+    ) -> impl Display + 'a {
         let noun = self.discussion_noun(is_pull);
         fmt::from_fn(move |f| match self {
             Self::En => write!(f, "{author} opened this {noun} {}", date.relative(&self)),
@@ -180,11 +185,19 @@ impl Locale {
     }
 
     fn discussion_noun(self, is_pull: bool) -> &'static str {
-        self.t(if is_pull { DiscussionText::PullRequest } else { DiscussionText::Issue })
+        self.t(if is_pull {
+            DiscussionText::PullRequest
+        } else {
+            DiscussionText::Issue
+        })
     }
 
     pub fn discussion_state(self, state: &str) -> &'static str {
-        self.t(if state == "open" { CommonText::Open } else { CommonText::Closed })
+        self.t(if state == "open" {
+            CommonText::Open
+        } else {
+            CommonText::Closed
+        })
     }
 
     pub fn review_decision(self, value: &str) -> &'static str {

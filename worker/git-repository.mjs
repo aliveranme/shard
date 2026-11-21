@@ -69,10 +69,21 @@ function validId(name) {
 }
 
 function validRef(reference) {
-  return typeof reference === "string" && reference.isWellFormed() && reference.startsWith("refs/") &&
-    te.encode(reference).length <= MAX_QUERY && !/[\x00-\x20\x7f~^:?*\[\\]/.test(reference) &&
-    !reference.includes("..") && !reference.includes("@{") && !reference.endsWith(".") &&
-    reference.split("/").every(part => part && !part.startsWith(".") && !part.endsWith(".lock"));
+  if (typeof reference !== "string" || !reference.isWellFormed() || !reference.startsWith("refs/") ||
+      te.encode(reference).length > MAX_QUERY || /[\x00-\x20\x7f~^:?*\[\\]/.test(reference) ||
+      reference.includes("..") || reference.includes("@{") || reference.endsWith(".") ||
+      !reference.split("/").every(part => part && !part.startsWith(".") && !part.endsWith(".lock"))) {
+    return false;
+  }
+  const short = reference.startsWith("refs/heads/")
+    ? reference.slice("refs/heads/".length)
+    : reference.startsWith("refs/tags/")
+      ? reference.slice("refs/tags/".length)
+      : null;
+  if (short !== null && (!short || short.startsWith("-") || te.encode(short).length > MAX_QUERY)) {
+    return false;
+  }
+  return true;
 }
 
 function queryValue(query, name) {

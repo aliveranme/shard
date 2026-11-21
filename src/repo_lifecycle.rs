@@ -1,9 +1,9 @@
 use crate::ctx::AppState;
-use crate::handlers::common::{not_found, page_title, visible_repo};
 use crate::git_storage::{CopyError, GitBackend, GitStorage};
+use crate::handlers::common::{not_found, page_title, visible_repo};
 use crate::i18n::{CommonText, LifecycleText as Text, RepoText};
-use crate::limits::ScheduledLimits;
 use crate::lfs::{self, Namespace};
+use crate::limits::ScheduledLimits;
 use crate::models::Repo;
 use crate::native_git::ImportCredential;
 use crate::pagination::{PageRequest, Pagination, PAGE_SIZE};
@@ -12,9 +12,12 @@ use crate::util::{form_bool, form_value, js_int, js_text, now, redirect, valid_s
 use crate::{crypto, db};
 use askama::Template;
 use serde::Deserialize;
-use worker::d1::D1Database;
-use wasm_bindgen::{prelude::{wasm_bindgen, JsError}, JsValue};
+use wasm_bindgen::{
+    prelude::{wasm_bindgen, JsError},
+    JsValue,
+};
 use wasm_bindgen_futures::{future_to_promise, JsFuture};
+use worker::d1::D1Database;
 use worker::*;
 
 const TRANSFERS: &str = "/user/settings/transfers";
@@ -51,7 +54,9 @@ export async function shard_copy_workflow_active(env, id, createIfMissing) {
 extern "C" {
     #[wasm_bindgen(catch)]
     async fn shard_copy_workflow_active(
-        env: &Env, id: i64, create_if_missing: bool,
+        env: &Env,
+        id: i64,
+        create_if_missing: bool,
     ) -> std::result::Result<bool, JsValue>;
 }
 
@@ -117,9 +122,9 @@ pub(crate) fn repository_not_found(state: &AppState) -> Result<Response> {
 
 pub(crate) async fn owned_repo(ctx: &RouteContext<AppState>) -> Result<Option<Repo>> {
     let (owner, name) = repo_path(ctx);
-    Ok(visible_repo(&ctx.data, owner, name).await?.filter(|repo| {
-        ctx.data.user_id() == Some(repo.owner_id)
-    }))
+    Ok(visible_repo(&ctx.data, owner, name)
+        .await?
+        .filter(|repo| ctx.data.user_id() == Some(repo.owner_id)))
 }
 
 fn settings_path(repo: &Repo) -> String {
@@ -176,7 +181,13 @@ pub async fn update(_req: Request, ctx: RouteContext<AppState>) -> Result<Respon
             let submitted = form_value(form, "name").unwrap_or_default();
             let name = submitted.trim();
             if !valid_slug(name) {
-                return render_settings(state, repo, Some(state.locale.t(RepoText::InvalidName)), 400).await;
+                return render_settings(
+                    state,
+                    repo,
+                    Some(state.locale.t(RepoText::InvalidName)),
+                    400,
+                )
+                .await;
             }
             let renamed = db::first::<Identity>(
                 &database,
@@ -186,7 +197,13 @@ pub async fn update(_req: Request, ctx: RouteContext<AppState>) -> Result<Respon
                    AND NOT EXISTS (SELECT 1 FROM repo_paths WHERE owner_id = ?4 AND name = ?1
                        AND repo_id IS NOT ?3)
                  RETURNING id",
-                &[js_text(name), js_int(now()), js_int(repo.id), js_int(repo.owner_id), js_text(&repo.name)],
+                &[
+                    js_text(name),
+                    js_int(now()),
+                    js_int(repo.id),
+                    js_int(repo.owner_id),
+                    js_text(&repo.name),
+                ],
             )
             .await?;
             if renamed.is_some() {
@@ -213,7 +230,13 @@ pub async fn update(_req: Request, ctx: RouteContext<AppState>) -> Result<Respon
             )
             .await?;
             let Some(recipient) = recipient else {
-                return render_settings(state, repo, Some(state.locale.t(Text::UnknownRecipient)), 400).await;
+                return render_settings(
+                    state,
+                    repo,
+                    Some(state.locale.t(Text::UnknownRecipient)),
+                    400,
+                )
+                .await;
             };
             let requested = db::first::<Identity>(
                 &database,
@@ -223,7 +246,13 @@ pub async fn update(_req: Request, ctx: RouteContext<AppState>) -> Result<Respon
                    AND EXISTS (SELECT 1 FROM users WHERE id = ?1)
                    AND NOT EXISTS (SELECT 1 FROM repo_transfers WHERE repo_id = ?3)
                  RETURNING id",
-                &[js_int(recipient.id), js_int(now()), js_int(repo.id), js_int(repo.owner_id), js_text(&repo.name)],
+                &[
+                    js_int(recipient.id),
+                    js_int(now()),
+                    js_int(repo.id),
+                    js_int(repo.owner_id),
+                    js_text(&repo.name),
+                ],
             )
             .await?;
             if requested.is_some() {
@@ -286,7 +315,11 @@ async fn render_transfers(
          FROM repo_transfers t JOIN repos r ON r.id = t.repo_id AND r.owner_id = t.sender_id
          JOIN users s ON s.id = t.sender_id JOIN users u ON u.id = t.recipient_id
          WHERE t.recipient_id = ? ORDER BY t.id DESC LIMIT ? OFFSET ?",
-        &[js_int(user_id), js_int(PAGE_SIZE as i64 + 1), js_int(page.offset())],
+        &[
+            js_int(user_id),
+            js_int(PAGE_SIZE as i64 + 1),
+            js_int(page.offset()),
+        ],
     )
     .await?;
     let pagination = page.finish(req, &mut incoming, None)?;
@@ -295,7 +328,8 @@ async fn render_transfers(
         title: page_title(&[state.locale.t(Text::Transfers)]),
         incoming,
         pagination,
-        declined: error.is_none() && crate::util::query_param(req, "declined").as_deref() == Some("1"),
+        declined: error.is_none()
+            && crate::util::query_param(req, "declined").as_deref() == Some("1"),
         error: error.map(|key| state.locale.t(key)),
     })?
     .with_status(if error.is_some() { 409 } else { 200 }))
@@ -378,7 +412,8 @@ struct CopyJob {
     repo_id: Option<i64>,
 }
 
-const COPY_COLUMNS: &str = "id, name, artifacts_repo AS storage_id, git_backend, kind, state, created_at, repo_id";
+const COPY_COLUMNS: &str =
+    "id, name, artifacts_repo AS storage_id, git_backend, kind, state, created_at, repo_id";
 
 impl CopyJob {
     fn is_active(&self) -> bool {
@@ -421,7 +456,9 @@ impl RepositoryCopyStep {
             &database,
             &format!("SELECT {COPY_COLUMNS} FROM repo_copies WHERE id = ?"),
             &[js_int(id)],
-        ).await? else {
+        )
+        .await?
+        else {
             return Ok(JsValue::from_str("done"));
         };
         let lfs_limit = ScheduledLimits::read(&env)?.lfs_copy_objects;
@@ -430,7 +467,9 @@ impl RepositoryCopyStep {
             CopyProgress::Done => "done",
             CopyProgress::Advanced => "advanced",
             CopyProgress::Waiting => "waiting",
-            CopyProgress::Unknown => return Err(JsError::new("Repository copy storage unavailable")),
+            CopyProgress::Unknown => {
+                return Err(JsError::new("Repository copy storage unavailable"))
+            }
         }))
     }
 }
@@ -461,7 +500,10 @@ struct Destination {
 impl Destination {
     fn from_form(form: &FormData) -> Self {
         Self {
-            name: form_value(form, "name").unwrap_or_default().trim().to_owned(),
+            name: form_value(form, "name")
+                .unwrap_or_default()
+                .trim()
+                .to_owned(),
             description: form_value(form, "description").unwrap_or_default(),
             private: form_bool(form, "private"),
         }
@@ -495,8 +537,18 @@ fn render_copy_form(
     error: Option<(Text, u16)>,
 ) -> Result<Response> {
     let (heading, help, action, cancel) = match source {
-        Some(repo) => (Text::Fork, Text::ForkHelp, format!("/{}/fork", repo.full_name()), format!("/{}", repo.full_name())),
-        None => (Text::Import, Text::ImportHelp, IMPORT.to_owned(), "/new".to_owned()),
+        Some(repo) => (
+            Text::Fork,
+            Text::ForkHelp,
+            format!("/{}/fork", repo.full_name()),
+            format!("/{}", repo.full_name()),
+        ),
+        None => (
+            Text::Import,
+            Text::ImportHelp,
+            IMPORT.to_owned(),
+            "/new".to_owned(),
+        ),
     };
     let heading = state.locale.t(heading);
     Ok(render(&CopyForm {
@@ -531,11 +583,25 @@ pub async fn import(_req: Request, ctx: RouteContext<AppState>) -> Result<Respon
     let destination = Destination::from_form(form);
     let source_url = form_value(form, "source_url").unwrap_or_default();
     let Some(source_url) = public_https(source_url.trim()) else {
-        return render_copy_form(state, None, destination, "", Some((Text::InvalidSource, 400)));
+        return render_copy_form(
+            state,
+            None,
+            destination,
+            "",
+            Some((Text::InvalidSource, 400)),
+        );
     };
     let credential = match Credentials::from_form(form) {
         Ok(credential) if credential.is_none() || source_url.port().is_none() => credential,
-        _ => return render_copy_form(state, None, destination, "", Some((Text::InvalidImportCredential, 400))),
+        _ => {
+            return render_copy_form(
+                state,
+                None,
+                destination,
+                "",
+                Some((Text::InvalidImportCredential, 400)),
+            )
+        }
     };
     start_copy(state, None, destination, source_url.as_str(), credential).await
 }
@@ -547,7 +613,9 @@ pub(crate) fn public_https(raw: &str) -> Option<Url> {
         || !scheme.eq_ignore_ascii_case("https")
         || authority.is_empty()
         || authority.contains('@')
-        || raw.chars().any(|ch| ch.is_control() || ch.is_whitespace() || ch == '\\')
+        || raw
+            .chars()
+            .any(|ch| ch.is_control() || ch.is_whitespace() || ch == '\\')
     {
         return None;
     }
@@ -561,10 +629,15 @@ pub(crate) fn public_https(raw: &str) -> Option<Url> {
             (1..=63).contains(&label.len())
                 && label.as_bytes()[0].is_ascii_alphanumeric()
                 && label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
-                && label.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
         })
         || url.as_str().len() > 2048
-        || matches!(suffix, "localhost" | "local" | "localdomain" | "internal" | "lan" | "onion" | "home" | "arpa")
+        || matches!(
+            suffix,
+            "localhost" | "local" | "localdomain" | "internal" | "lan" | "onion" | "home" | "arpa"
+        )
         || !suffix.bytes().any(|byte| byte.is_ascii_alphabetic())
         || !url.username().is_empty()
         || url.password().is_some()
@@ -590,14 +663,17 @@ impl Credentials {
         match (username, password, token) {
             (None, None, None) => Ok(None),
             (Some(username), Some(password), None)
-                if username.len() <= 128 && !username.contains(':')
+                if username.len() <= 128
+                    && !username.contains(':')
                     && !username.chars().any(char::is_control)
-                    && password.len() <= 1024 && !password.chars().any(char::is_control) =>
+                    && password.len() <= 1024
+                    && !password.chars().any(char::is_control) =>
             {
                 Ok(Some(Self::Basic { username, password }))
             }
             (None, None, Some(token))
-                if token.len() <= 1024 && token.bytes().all(|byte| (b'!'..=b'~').contains(&byte)) =>
+                if token.len() <= 1024
+                    && token.bytes().all(|byte| (b'!'..=b'~').contains(&byte)) =>
             {
                 Ok(Some(Self::Bearer(token)))
             }
@@ -639,7 +715,14 @@ pub async fn fork(_req: Request, ctx: RouteContext<AppState>) -> Result<Response
     let Some(repo) = visible_repo(state, owner, name).await? else {
         return repository_not_found(state);
     };
-    start_copy(state, Some(&repo), Destination::from_form(state.form()?), "", None).await
+    start_copy(
+        state,
+        Some(&repo),
+        Destination::from_form(state.form()?),
+        "",
+        None,
+    )
+    .await
 }
 
 async fn start_copy(
@@ -658,20 +741,36 @@ async fn start_copy(
         destination.private = true;
     }
     if !valid_slug(&destination.name) {
-        return render_copy_form(state, source, destination, form_url, Some((Text::InvalidName, 400)));
+        return render_copy_form(
+            state,
+            source,
+            destination,
+            form_url,
+            Some((Text::InvalidName, 400)),
+        );
     }
     let backend = if authenticated_import {
-        Ok(if matches!(GitBackend::selected(&state.env), Ok(GitBackend::R2)) {
-            GitBackend::R2
-        } else {
-            GitBackend::Native
-        })
+        Ok(
+            if matches!(GitBackend::selected(&state.env), Ok(GitBackend::R2)) {
+                GitBackend::R2
+            } else {
+                GitBackend::Native
+            },
+        )
     } else {
-        source.map_or_else(|| GitBackend::selected(&state.env), |repo| Ok(repo.git_backend))
+        source.map_or_else(
+            || GitBackend::selected(&state.env),
+            |repo| Ok(repo.git_backend),
+        )
     };
-    let storage = backend.and_then(|backend| Ok((backend, GitStorage::from_env(&state.env, backend)?)));
+    let storage =
+        backend.and_then(|backend| Ok((backend, GitStorage::from_env(&state.env, backend)?)));
     let Ok((backend, storage)) = storage else {
-        let error = if authenticated_import { Text::ImportNativeRequired } else { Text::CopyUnknown };
+        let error = if authenticated_import {
+            Text::ImportNativeRequired
+        } else {
+            Text::CopyUnknown
+        };
         return render_copy_form(state, source, destination, form_url, Some((error, 503)));
     };
     let storage_id = format!("shard-copy-{}", &crypto::random_token()?[..32]);
@@ -708,11 +807,20 @@ async fn start_copy(
     .await?;
     let Some(inserted) = inserted else {
         if let Some(source) = source {
-            if visible_repo(state, &source.owner_name, &source.name).await?.is_none() {
+            if visible_repo(state, &source.owner_name, &source.name)
+                .await?
+                .is_none()
+            {
                 return repository_not_found(state);
             }
         }
-        return render_copy_form(state, source, destination, form_url, Some((Text::NameTaken, 409)));
+        return render_copy_form(
+            state,
+            source,
+            destination,
+            form_url,
+            Some((Text::NameTaken, 409)),
+        );
     };
     let id = inserted.id;
     let status_path = format!("{COPIES}/{id}");
@@ -722,9 +830,25 @@ async fn start_copy(
     let submission = future_to_promise(async move {
         let result = match (credential, &storage) {
             (Some(credential), GitStorage::Service(origin)) => {
-                origin.start_copy_with_credential(&storage_id, None, &source_url, Some(&credential.for_origin())).await
+                origin
+                    .start_copy_with_credential(
+                        &storage_id,
+                        None,
+                        &source_url,
+                        Some(&credential.for_origin()),
+                    )
+                    .await
             }
-            (None, _) => storage.start_copy(&storage_id, &destination.description, source_repo.as_deref(), &source_url).await,
+            (None, _) => {
+                storage
+                    .start_copy(
+                        &storage_id,
+                        &destination.description,
+                        source_repo.as_deref(),
+                        &source_url,
+                    )
+                    .await
+            }
             (Some(_), _) => Err(CopyError::Rejected),
         };
         let next = match result {
@@ -896,7 +1020,11 @@ pub(crate) async fn reconcile_pending(env: &Env, limits: &ScheduledLimits) -> Re
                  ORDER BY COALESCE(last_checked_at, created_at), id LIMIT ?3
              ) RETURNING {COPY_COLUMNS}"
         ),
-        &[js_int(checked_at), js_int(checked_at - COPY_CHECK_INTERVAL), js_int(limits.repo_copies)],
+        &[
+            js_int(checked_at),
+            js_int(checked_at - COPY_CHECK_INTERVAL),
+            js_int(limits.repo_copies),
+        ],
     )
     .await?;
     let mut failed = false;
@@ -917,12 +1045,19 @@ pub(crate) async fn reconcile_pending(env: &Env, limits: &ScheduledLimits) -> Re
         console_error!("Repository storage cleanup: {error}");
     }
     if failed {
-        return Err(Error::RustError("Repository lifecycle reconciliation failed".into()));
+        return Err(Error::RustError(
+            "Repository lifecycle reconciliation failed".into(),
+        ));
     }
     Ok(())
 }
 
-async fn reconcile_copy(env: &Env, database: &D1Database, job: &CopyJob, lfs_limit: u32) -> Result<CopyProgress> {
+async fn reconcile_copy(
+    env: &Env,
+    database: &D1Database,
+    job: &CopyJob,
+    lfs_limit: u32,
+) -> Result<CopyProgress> {
     if !job.is_active() {
         return Ok(CopyProgress::Done);
     }
@@ -944,23 +1079,38 @@ async fn reconcile_copy(env: &Env, database: &D1Database, job: &CopyJob, lfs_lim
                 "UPDATE repo_copies SET state = 'discard'
                  WHERE id = ? AND state = ? AND lfs_lease_until <= ? RETURNING id",
                 &[js_int(job.id), js_text(&job.state), js_int(now())],
-            ).await?;
-            return Ok(if discarded.is_some() { CopyProgress::Done } else { CopyProgress::Waiting });
+            )
+            .await?;
+            return Ok(if discarded.is_some() {
+                CopyProgress::Done
+            } else {
+                CopyProgress::Waiting
+            });
         }
         Err(CopyError::Missing | CopyError::Pending) => return Ok(CopyProgress::Waiting),
         Err(error) => {
             console_error!("Unable to inspect Git copy {}: {error:?}", job.id);
             return Ok(CopyProgress::Unknown);
         }
-        Ok(info) if info.name != job.storage_id || !crate::git_wire::valid_ref(&info.default_branch) => {
-            console_error!("Git storage returned a mismatched identity or invalid default branch for copy {}", job.id);
+        Ok(info)
+            if info.name != job.storage_id || !crate::git_wire::valid_ref(&info.default_branch) =>
+        {
+            console_error!(
+                "Git storage returned a mismatched identity or invalid default branch for copy {}",
+                job.id
+            );
             return Ok(CopyProgress::Unknown);
         }
         Ok(info) => info,
     };
 
     if job.state == "starting" {
-        db::run(database, "UPDATE repo_copies SET state = 'pending' WHERE id = ? AND state = 'starting'", &id).await?;
+        db::run(
+            database,
+            "UPDATE repo_copies SET state = 'pending' WHERE id = ? AND state = 'starting'",
+            &id,
+        )
+        .await?;
     }
     let copied_page = if job.kind == "fork" {
         match copy_lfs_page(env, database, job.id, lfs_limit).await {
@@ -1005,7 +1155,9 @@ async fn discard_revoked_copy(database: &D1Database, id: i64) -> Result<bool> {
            AND lfs_lease_until <= ? AND id IN (SELECT id FROM repo_copy_access WHERE allowed = 0)
          RETURNING id",
         &[js_int(id), js_int(now())],
-    ).await.map(|row| row.is_some())
+    )
+    .await
+    .map(|row| row.is_some())
 }
 
 #[derive(Deserialize)]
@@ -1037,20 +1189,29 @@ async fn copy_lfs_page(env: &Env, database: &D1Database, id: i64, limit: u32) ->
         page.lfs_cursor.as_deref(),
         expires,
         limit,
-    ).await;
+    )
+    .await;
     match result {
         Ok(cursor) => db::first::<Identity>(
             database,
             "UPDATE repo_copies SET lfs_lease_until = 0, lfs_cursor = ?3, lfs_complete = ?4
              WHERE id = ?1 AND state = 'pending' AND lfs_lease_until = ?2 RETURNING id",
-            &[js_int(id), js_int(expires), cursor.as_deref().map_or(JsValue::NULL, js_text), js_int(i64::from(cursor.is_none()))],
-        ).await.map(|row| row.is_some()),
+            &[
+                js_int(id),
+                js_int(expires),
+                cursor.as_deref().map_or(JsValue::NULL, js_text),
+                js_int(i64::from(cursor.is_none())),
+            ],
+        )
+        .await
+        .map(|row| row.is_some()),
         Err(error) => {
             db::run(
                 database,
                 "UPDATE repo_copies SET lfs_lease_until = 0 WHERE id = ? AND lfs_lease_until = ?",
                 &[js_int(id), js_int(expires)],
-            ).await?;
+            )
+            .await?;
             Err(error)
         }
     }
@@ -1067,20 +1228,50 @@ struct Cleanup {
     git_deleted: i64,
 }
 
-async fn reconcile_cleanup(env: &Env, database: &D1Database, checked_at: i64, limits: &ScheduledLimits) -> Result<()> {
+async fn reconcile_cleanup(
+    env: &Env,
+    database: &D1Database,
+    checked_at: i64,
+    limits: &ScheduledLimits,
+) -> Result<()> {
+    #[derive(Deserialize)]
+    struct ExpiredMultipart {
+        repo_id: i64,
+        oid: String,
+        attempt: String,
+        upload_id: String,
+    }
     let cutoff = [js_int(checked_at)];
-    database.batch(vec![
-        database.prepare(
-            "DELETE FROM repo_lfs_uploads WHERE id IN (
-                 SELECT id FROM repo_lfs_uploads WHERE expires_at <= ? ORDER BY expires_at LIMIT 256
-             )",
-        ).bind(&cutoff)?,
-        database.prepare(
-            "DELETE FROM repo_lfs_multipart WHERE attempt IN (
-                 SELECT attempt FROM repo_lfs_multipart WHERE expires_at <= ? ORDER BY expires_at LIMIT 32
-             )",
-        ).bind(&cutoff)?,
-    ]).await?;
+    db::run(
+        database,
+        "DELETE FROM repo_lfs_uploads WHERE id IN (
+             SELECT id FROM repo_lfs_uploads WHERE expires_at <= ? ORDER BY expires_at LIMIT 256
+         )",
+        &cutoff,
+    )
+    .await?;
+    let expired: Vec<ExpiredMultipart> = db::all(
+        database,
+        "DELETE FROM repo_lfs_multipart WHERE attempt IN (
+             SELECT attempt FROM repo_lfs_multipart WHERE expires_at <= ? ORDER BY expires_at LIMIT 32
+         ) RETURNING repo_id, oid, attempt, upload_id",
+        &cutoff,
+    )
+    .await?;
+    if !expired.is_empty() {
+        if let Ok(Some(bucket)) = lfs::storage_bucket(env) {
+            for item in expired {
+                let stage = format!(
+                    "lfs-incoming/{}/{}/{}",
+                    item.repo_id, item.oid, item.attempt
+                );
+                if let Ok(upload) = bucket.resume_multipart_upload(&stage, &item.upload_id) {
+                    let _ = upload.abort().await;
+                }
+                let _ = bucket.delete(&stage).await;
+            }
+        }
+    }
     let jobs: Vec<Cleanup> = db::all(
         database,
         "UPDATE repo_storage_cleanup SET due_at = ?2
@@ -1100,12 +1291,19 @@ async fn reconcile_cleanup(env: &Env, database: &D1Database, checked_at: i64, li
         }
     }
     if failed {
-        return Err(Error::RustError("One or more repository storage cleanup jobs failed".into()));
+        return Err(Error::RustError(
+            "One or more repository storage cleanup jobs failed".into(),
+        ));
     }
     Ok(())
 }
 
-async fn clean_storage(env: &Env, database: &D1Database, job: &Cleanup, lfs_limit: u32) -> Result<()> {
+async fn clean_storage(
+    env: &Env,
+    database: &D1Database,
+    job: &Cleanup,
+    lfs_limit: u32,
+) -> Result<()> {
     let id = [js_int(job.id)];
     if job.git_deleted == 0 {
         let live = db::first::<Identity>(
@@ -1114,30 +1312,50 @@ async fn clean_storage(env: &Env, database: &D1Database, job: &Cleanup, lfs_limi
              UNION ALL
              SELECT id FROM repo_copies WHERE artifacts_repo = ?1 AND git_backend = ?2
                AND state IN ('starting', 'pending') LIMIT 1",
-            &[js_text(&job.artifacts_repo), js_text(job.git_backend.name())],
-        ).await?;
+            &[
+                js_text(&job.artifacts_repo),
+                js_text(job.git_backend.name()),
+            ],
+        )
+        .await?;
         if live.is_some() {
             return Err(Error::RustError("Git storage is still referenced".into()));
         }
         GitStorage::from_env(env, job.git_backend)?
-            .delete(&job.artifacts_repo).await
+            .delete(&job.artifacts_repo)
+            .await
             .map_err(|error| Error::RustError(format!("Git deletion failed: {error:?}")))?;
-        db::run(database, "UPDATE repo_storage_cleanup SET git_deleted = 1 WHERE id = ?", &id).await?;
+        db::run(
+            database,
+            "UPDATE repo_storage_cleanup SET git_deleted = 1 WHERE id = ?",
+            &id,
+        )
+        .await?;
     }
 
-    let namespace = job.lfs_copy_id.map(Namespace::Fork).or_else(|| job.repo_id.map(Namespace::Repo));
+    let namespace = job
+        .lfs_copy_id
+        .map(Namespace::Fork)
+        .or_else(|| job.repo_id.map(Namespace::Repo));
     if let Some(namespace) = namespace {
         if !lfs::delete_page(env, namespace, lfs_limit).await? {
             return Ok(());
         }
     }
     if let Some(copy_id) = job.copy_id {
-        let mark_failed = database.prepare(
-            "UPDATE repo_copies SET state = 'failed' WHERE id = ? AND state = 'discard'",
-        ).bind(&[js_int(copy_id)])?;
-        let finish = database.prepare("DELETE FROM repo_storage_cleanup WHERE id = ?").bind(&id)?;
+        let mark_failed = database
+            .prepare("UPDATE repo_copies SET state = 'failed' WHERE id = ? AND state = 'discard'")
+            .bind(&[js_int(copy_id)])?;
+        let finish = database
+            .prepare("DELETE FROM repo_storage_cleanup WHERE id = ?")
+            .bind(&id)?;
         database.batch(vec![mark_failed, finish]).await?;
         return Ok(());
     }
-    db::run(database, "DELETE FROM repo_storage_cleanup WHERE id = ?", &id).await
+    db::run(
+        database,
+        "DELETE FROM repo_storage_cleanup WHERE id = ?",
+        &id,
+    )
+    .await
 }

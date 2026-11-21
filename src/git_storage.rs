@@ -2,12 +2,16 @@ use crate::artifacts::{self, Artifacts};
 use crate::git_wire;
 use crate::i18n::RepoText;
 use crate::models::Repo;
-use crate::native_git::{ArtifactsMergeTransport, GitService, GitServiceRepo, RemoteRepo, WriteError};
+use crate::native_git::{
+    ArtifactsMergeTransport, GitService, GitServiceRepo, RemoteRepo, WriteError,
+};
 use js_sys::Uint8Array;
 use serde::Deserialize;
 use wasm_bindgen_futures::JsFuture;
 use worker::web_sys::Blob;
-use worker::{Env, Error, Fetch, Request, RequestInit, RequestRedirect, Response, ResponseBody, Result};
+use worker::{
+    Env, Error, Fetch, Request, RequestInit, RequestRedirect, Response, ResponseBody, Result,
+};
 
 pub(crate) const MAX_COMMIT_BYTES: usize = 256 * 1024;
 
@@ -22,12 +26,19 @@ pub(crate) enum GitBackend {
 
 impl GitBackend {
     pub(crate) fn selected(env: &Env) -> Result<Self> {
-        match env.var("GIT_BACKEND").ok().map(|value| value.to_string()).as_deref() {
+        match env
+            .var("GIT_BACKEND")
+            .ok()
+            .map(|value| value.to_string())
+            .as_deref()
+        {
             None | Some("artifacts") => Ok(Self::Artifacts),
             Some("native") => Ok(Self::Native),
             Some("durable") => Ok(Self::Durable),
             Some("r2") => Ok(Self::R2),
-            Some(_) => Err(Error::RustError("GIT_BACKEND must be artifacts, native, durable or r2".into())),
+            Some(_) => Err(Error::RustError(
+                "GIT_BACKEND must be artifacts, native, durable or r2".into(),
+            )),
         }
     }
 
@@ -84,7 +95,10 @@ pub(crate) struct TreeEntry {
 }
 
 pub(crate) fn is_object_id(hash: &str) -> bool {
-    hash.len() == 40 && hash.bytes().all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    hash.len() == 40
+        && hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
 impl TreeEntry {
@@ -97,10 +111,20 @@ impl TreeEntry {
             "160000" => "160000",
             _ => return Err(Error::RustError("Invalid Git tree mode".into())),
         };
-        if name.is_empty() || name.contains('/') || matches!(name.as_str(), "." | "..") || !is_object_id(&hash) {
+        if name.is_empty()
+            || name.contains('/')
+            || matches!(name.as_str(), "." | "..")
+            || !is_object_id(&hash)
+        {
             return Err(Error::RustError("Invalid Git tree entry".into()));
         }
-        Ok(Self { name, is_dir: mode == "040000", hash, size, mode })
+        Ok(Self {
+            name,
+            is_dir: mode == "040000",
+            hash,
+            size,
+            mode,
+        })
     }
 }
 
@@ -126,11 +150,14 @@ impl GitFile {
         match self {
             Self::Artifacts(blob) => {
                 let blob = if blob.size() > limit as f64 {
-                    blob.slice_with_f64_and_f64(0.0, limit as f64).map_err(Error::from)?
+                    blob.slice_with_f64_and_f64(0.0, limit as f64)
+                        .map_err(Error::from)?
                 } else {
                     blob
                 };
-                let buffer = JsFuture::from(blob.array_buffer()).await.map_err(Error::from)?;
+                let buffer = JsFuture::from(blob.array_buffer())
+                    .await
+                    .map_err(Error::from)?;
                 Ok(Uint8Array::new(&buffer).to_vec())
             }
             Self::Stream { response, size } => {
@@ -198,7 +225,11 @@ impl GitStorage {
     }
 
     pub(crate) async fn start_copy(
-        &self, id: &str, description: &str, source: Option<&str>, url: &str,
+        &self,
+        id: &str,
+        description: &str,
+        source: Option<&str>,
+        url: &str,
     ) -> std::result::Result<(), CopyError> {
         match self {
             Self::Artifacts(storage) => storage.start_copy(id, description, source, url).await,
@@ -221,7 +252,9 @@ pub(crate) enum RepoHandle {
 
 impl RepoHandle {
     pub(crate) async fn open(env: &Env, repo: &Repo) -> Result<Self> {
-        GitStorage::from_env(env, repo.git_backend)?.get(&repo.storage_id).await
+        GitStorage::from_env(env, repo.git_backend)?
+            .get(&repo.storage_id)
+            .await
     }
 
     pub(crate) async fn log(&self, git_ref: &str, limit: u32) -> Result<Vec<Commit>> {
@@ -246,14 +279,24 @@ impl RepoHandle {
         }
     }
 
-    pub(crate) async fn read_commit_with_parents(&self, hash: &str) -> Result<Option<(Commit, Vec<String>)>> {
+    pub(crate) async fn read_commit_with_parents(
+        &self,
+        hash: &str,
+    ) -> Result<Option<(Commit, Vec<String>)>> {
         match self {
             Self::Artifacts(repo) => {
-                let Some(commit) = repo.read_commit(hash).await? else { return Ok(None) };
-                let Some(parents) = repo.commit_parents(&commit.hash).await? else { return Ok(None) };
+                let Some(commit) = repo.read_commit(hash).await? else {
+                    return Ok(None);
+                };
+                let Some(parents) = repo.commit_parents(&commit.hash).await? else {
+                    return Ok(None);
+                };
                 Ok(Some((commit, parents)))
             }
-            Self::Service(repo) => Ok(repo.read_commit(hash).await?.map(|value| (value.commit, value.parents))),
+            Self::Service(repo) => Ok(repo
+                .read_commit(hash)
+                .await?
+                .map(|value| (value.commit, value.parents))),
         }
     }
 
@@ -276,12 +319,16 @@ impl RepoHandle {
     }
 
     pub(crate) async fn read_tree(&self, hash: &str) -> Result<Vec<TreeEntry>> {
-        self.read_tree_bounded(hash, u32::MAX).await?.ok_or_else(|| {
-            Error::RustError("Git tree exceeds the entry limit".into())
-        })
+        self.read_tree_bounded(hash, u32::MAX)
+            .await?
+            .ok_or_else(|| Error::RustError("Git tree exceeds the entry limit".into()))
     }
 
-    pub(crate) async fn read_tree_bounded(&self, hash: &str, limit: u32) -> Result<Option<Vec<TreeEntry>>> {
+    pub(crate) async fn read_tree_bounded(
+        &self,
+        hash: &str,
+        limit: u32,
+    ) -> Result<Option<Vec<TreeEntry>>> {
         match self {
             Self::Artifacts(repo) => repo.read_tree_bounded(hash, limit).await,
             Self::Service(repo) => repo.read_tree_bounded(hash, limit).await,
@@ -295,39 +342,77 @@ impl RepoHandle {
         }
     }
 
-    pub(crate) async fn read_file(&self, git_ref: &str, path: &str, limit: Option<usize>) -> Result<Option<GitFile>> {
+    pub(crate) async fn read_file(
+        &self,
+        git_ref: &str,
+        path: &str,
+        limit: Option<usize>,
+    ) -> Result<Option<GitFile>> {
         match self {
-            Self::Artifacts(repo) => Ok(repo.read_file(git_ref, path).await?.map(GitFile::Artifacts)),
+            Self::Artifacts(repo) => {
+                Ok(repo.read_file(git_ref, path).await?.map(GitFile::Artifacts))
+            }
             Self::Service(repo) => repo.read_file(git_ref, path, limit).await,
         }
     }
 
     /// Build a bounded source archive inside the R2 store, avoiding one Worker
     /// subrequest per tree and blob. Other backends use the Worker builder.
-    pub(crate) async fn source_archive(&self, commit: &str, name: &str) -> Result<crate::native_git::ArchiveResponse> {
+    pub(crate) async fn source_archive(
+        &self,
+        commit: &str,
+        name: &str,
+    ) -> Result<crate::native_git::ArchiveResponse> {
         match self {
             Self::Artifacts(_) => Ok(crate::native_git::ArchiveResponse::NotApplicable),
             Self::Service(repo) => repo.source_archive(commit, name).await,
         }
     }
 
-    pub(crate) async fn write_ref(&self, reference: &str, before: &str, after: &str) -> std::result::Result<(), WriteError> {
+    pub(crate) async fn write_ref(
+        &self,
+        reference: &str,
+        before: &str,
+        after: &str,
+    ) -> std::result::Result<(), WriteError> {
         if let Self::Service(repo) = self {
             return repo.write_ref(reference, after, before).await;
         }
-        let body = git_wire::update_request(reference, before, after).await.map_err(|_| WriteError::Unavailable)?;
-        let init = RequestInit { method: worker::Method::Post, body: Some(body), ..Default::default() };
-        init.headers.set("Content-Type", "application/x-git-receive-pack-request").map_err(|_| WriteError::Unavailable)?;
-        let response = self.git_request("git-receive-pack", "", true, "", init).await.map_err(|_| WriteError::Unavailable)?;
+        let body = git_wire::update_request(reference, before, after)
+            .await
+            .map_err(|_| WriteError::Unavailable)?;
+        let init = RequestInit {
+            method: worker::Method::Post,
+            body: Some(body),
+            ..Default::default()
+        };
+        init.headers
+            .set("Content-Type", "application/x-git-receive-pack-request")
+            .map_err(|_| WriteError::Unavailable)?;
+        let response = self
+            .git_request("git-receive-pack", "", true, "", init)
+            .await
+            .map_err(|_| WriteError::Unavailable)?;
         if response.status_code() != 200 {
             return Err(WriteError::Unavailable);
         }
-        let ResponseBody::Stream(body) = response.body() else { return Err(WriteError::Unavailable) };
-        let applied = git_wire::receive_report(body, false).await.map_err(|_| WriteError::Unavailable)?;
-        if applied.iter().any(|name| name == reference) { Ok(()) } else { Err(WriteError::Stale) }
+        let ResponseBody::Stream(body) = response.body() else {
+            return Err(WriteError::Unavailable);
+        };
+        let applied = git_wire::receive_report(body, false)
+            .await
+            .map_err(|_| WriteError::Unavailable)?;
+        if applied.iter().any(|name| name == reference) {
+            Ok(())
+        } else {
+            Err(WriteError::Stale)
+        }
     }
 
-    pub(crate) async fn set_default_branch(&self, branch: &str) -> std::result::Result<bool, WriteError> {
+    pub(crate) async fn set_default_branch(
+        &self,
+        branch: &str,
+    ) -> std::result::Result<bool, WriteError> {
         match self {
             Self::Service(repo) => {
                 repo.set_head(&format!("refs/heads/{branch}")).await?;
@@ -338,12 +423,21 @@ impl RepoHandle {
     }
 
     pub(crate) async fn merge_saved(
-        &self, env: &Env, reference: &str, base: &str, head: &str, fast_forward: bool,
+        &self,
+        env: &Env,
+        reference: &str,
+        base: &str,
+        head: &str,
+        fast_forward: bool,
         source: Option<(&Self, &str)>,
     ) -> std::result::Result<String, WriteError> {
         match (self, source) {
-            (Self::Service(repo), None) if !repo.is_durable() => repo.merge(reference, base, head, None).await,
-            (Self::Service(repo), Some((Self::Service(source), id))) if repo.shares_comparison_backend(source) => {
+            (Self::Service(repo), None) if !repo.is_durable() => {
+                repo.merge(reference, base, head, None).await
+            }
+            (Self::Service(repo), Some((Self::Service(source), id)))
+                if repo.shares_comparison_backend(source) =>
+            {
                 repo.merge(reference, base, head, Some(id)).await
             }
             (_, None) if fast_forward => {
@@ -353,27 +447,49 @@ impl RepoHandle {
             (Self::Artifacts(repo), source @ (None | Some((Self::Artifacts(_), _)))) => {
                 let transport = ArtifactsMergeTransport::from_env(env).await?;
                 let remote = repo.remote().await.map_err(|_| WriteError::Unavailable)?;
-                let token = repo.create_token("write", 300).await.map_err(|_| WriteError::Unavailable)?;
-                let target = RemoteRepo { remote: &remote, token: &token };
+                let token = repo
+                    .create_token("write", 300)
+                    .await
+                    .map_err(|_| WriteError::Unavailable)?;
+                let target = RemoteRepo {
+                    remote: &remote,
+                    token: &token,
+                };
                 let source_credentials = if let Some((Self::Artifacts(source), _)) = source {
-                    Some((source.remote().await.map_err(|_| WriteError::Unavailable)?,
-                        source.create_token("read", 300).await.map_err(|_| WriteError::Unavailable)?))
+                    Some((
+                        source.remote().await.map_err(|_| WriteError::Unavailable)?,
+                        source
+                            .create_token("read", 300)
+                            .await
+                            .map_err(|_| WriteError::Unavailable)?,
+                    ))
                 } else {
                     None
                 };
-                let source = source_credentials.as_ref().map(|(remote, token)| RemoteRepo { remote, token });
-                transport.merge_remote(reference, base, head, &target, source.as_ref()).await
+                let source = source_credentials
+                    .as_ref()
+                    .map(|(remote, token)| RemoteRepo { remote, token });
+                transport
+                    .merge_remote(reference, base, head, &target, source.as_ref())
+                    .await
             }
             _ => Err(WriteError::Unsupported),
         }
     }
 
     pub(crate) async fn git_request(
-        &self, endpoint: &str, query: &str, write: bool, saved_remote: &str, mut init: RequestInit,
+        &self,
+        endpoint: &str,
+        query: &str,
+        write: bool,
+        saved_remote: &str,
+        mut init: RequestInit,
     ) -> Result<Response> {
         let (remote, authorization) = match self {
             Self::Artifacts(repo) => {
-                let token = repo.create_token(if write { "write" } else { "read" }, 3600).await?;
+                let token = repo
+                    .create_token(if write { "write" } else { "read" }, 3600)
+                    .await?;
                 let remote = match repo.remote().await {
                     Ok(remote) => remote,
                     Err(_) if !saved_remote.is_empty() => saved_remote.to_owned(),
@@ -390,6 +506,8 @@ impl RepoHandle {
         }
         init.headers.set("Authorization", &authorization)?;
         init.redirect = RequestRedirect::Manual;
-        Fetch::Request(Request::new_with_init(&url, &init)?).send().await
+        Fetch::Request(Request::new_with_init(&url, &init)?)
+            .send()
+            .await
     }
 }

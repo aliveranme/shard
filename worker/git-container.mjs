@@ -39,10 +39,12 @@ export class ArtifactsMergeContainer extends DurableObject {
   }
 
   async #prepare(container) {
+    this.#sessionToken ??= await this.ctx.storage.get("container-token");
     // A recreated Durable Object cannot authenticate to its predecessor's process.
     if (container.running && !this.#sessionToken) await container.destroy();
     if (!container.running) {
       const token = crypto.randomUUID();
+      await this.ctx.storage.put("container-token", token);
       container.start({
         image: container.images.bridge,
         instance: this.env.SHARD_GIT_MERGE_INSTANCE ?? "standard-1",

@@ -1,9 +1,11 @@
 use crate::ctx::AppState;
 use crate::db;
-use crate::handlers::common::{can_admin, can_write, forbidden, not_found, page_title, visible_repo};
+use crate::handlers::common::{
+    can_admin, can_write, forbidden, not_found, page_title, visible_repo,
+};
 use crate::i18n::{CommonText, DiscussionText, IssueMetadataText};
 use crate::models::{Issue, Repo};
-use crate::templates::{Chrome, render};
+use crate::templates::{render, Chrome};
 use crate::util::{js_int, js_null, js_text, now, query_param, redirect};
 use askama::Template;
 use serde::Deserialize;
@@ -45,15 +47,22 @@ struct Assignment {
     assignee_name: Option<String>,
 }
 
-async fn assigned(database: &D1Database, repo_id: i64, issue_id: i64) -> Result<(Vec<Named>, Assignment)> {
+async fn assigned(
+    database: &D1Database,
+    repo_id: i64,
+    issue_id: i64,
+) -> Result<(Vec<Named>, Assignment)> {
     let args = [js_int(repo_id), js_int(issue_id)];
-    let labels = database.prepare(
-        "SELECT l.id, l.name FROM issue_labels il
+    let labels = database
+        .prepare(
+            "SELECT l.id, l.name FROM issue_labels il
          JOIN repo_labels l ON l.repo_id = il.repo_id AND l.id = il.label_id
          WHERE il.repo_id = ? AND il.issue_id = ? ORDER BY l.name, l.id",
-    ).bind(&args)?;
-    let assignment = database.prepare(format!(
-        "SELECT m.id AS milestone_id, m.name AS milestone_name,
+        )
+        .bind(&args)?;
+    let assignment = database
+        .prepare(format!(
+            "SELECT m.id AS milestone_id, m.name AS milestone_name,
                 u.id AS assignee_id, u.username AS assignee_name
          FROM issues i
          JOIN repos r ON r.id = i.repo_id
@@ -61,9 +70,13 @@ async fn assigned(database: &D1Database, repo_id: i64, issue_id: i64) -> Result<
          LEFT JOIN repo_milestones m ON m.repo_id = im.repo_id AND m.id = im.milestone_id
          LEFT JOIN users u ON u.id = i.assignee_id AND {ELIGIBLE_ASSIGNEE}
          WHERE i.repo_id = ? AND i.id = ? AND i.kind = 'issue'",
-    )).bind(&args)?;
+        ))
+        .bind(&args)?;
     let results = database.batch(vec![labels, assignment]).await?;
-    Ok((results[0].results()?, results[1].results()?.pop().unwrap_or_default()))
+    Ok((
+        results[0].results()?,
+        results[1].results()?.pop().unwrap_or_default(),
+    ))
 }
 
 pub(crate) async fn load(state: &AppState, repo: &Repo, issue: &Issue) -> Result<IssueMetadata> {
@@ -168,7 +181,10 @@ async fn edit(ctx: &RouteContext<AppState>, submit: bool) -> Result<Response> {
         return not_found(state, locale.t(CommonText::NotFound));
     };
     let Some(actor_id) = state.user_id() else {
-        return redirect(&format!("/user/login?next={}/edit", issue_url(&repo, number)));
+        return redirect(&format!(
+            "/user/login?next={}/edit",
+            issue_url(&repo, number)
+        ));
     };
     let can_classify = can_write(state, &repo).await?;
     if !(is_author(state, issue.author_id) || can_classify) {
@@ -182,7 +198,8 @@ async fn edit(ctx: &RouteContext<AppState>, submit: bool) -> Result<Response> {
     if submit {
         let form = state.form()?;
         let has_classification = ["classify", "label_id", "milestone_id", "assignee_id"]
-            .iter().any(|field| form.has(field));
+            .iter()
+            .any(|field| form.has(field));
         if has_classification && !can_classify {
             return forbidden(state, locale.t(IssueMetadataText::ClassifyForbidden));
         }
@@ -209,15 +226,29 @@ async fn edit(ctx: &RouteContext<AppState>, submit: bool) -> Result<Response> {
             }
         }
         if let Some(value) = body.as_deref().filter(|value| *value != issue.body) {
-            if value.len() > 1_000_000 || value.chars().any(|ch| ch.is_control() && !matches!(ch, '\n' | '\r' | '\t')) {
+            if value.len() > 1_000_000
+                || value
+                    .chars()
+                    .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\r' | '\t'))
+            {
                 error = Some(locale.t(IssueMetadataText::InvalidBody));
             }
         }
         if error.is_none() {
-            let title_arg = title.as_deref().filter(|value| *value != issue.title).map_or_else(js_null, |value| js_text(value.trim()));
-            let body_arg = body.as_deref().filter(|value| *value != issue.body).map_or_else(js_null, js_text);
+            let title_arg = title
+                .as_deref()
+                .filter(|value| *value != issue.title)
+                .map_or_else(js_null, |value| js_text(value.trim()));
+            let body_arg = body
+                .as_deref()
+                .filter(|value| *value != issue.body)
+                .map_or_else(js_null, js_text);
             if let Some(selection) = &selection {
-                if save_classification(&database, repo.id, issue.id, actor_id, selection, title_arg, body_arg).await? {
+                if save_classification(
+                    &database, repo.id, issue.id, actor_id, selection, title_arg, body_arg,
+                )
+                .await?
+                {
                     return redirect(&issue_url(&repo, number));
                 }
                 error = Some(locale.t(IssueMetadataText::InvalidSelection));
@@ -262,7 +293,11 @@ async fn edit(ctx: &RouteContext<AppState>, submit: bool) -> Result<Response> {
                 let (labels, assignment) = assigned(&database, page.repo.id, issue.id).await?;
                 let mut labels: Vec<_> = labels.into_iter().map(|item| item.id).collect();
                 labels.sort_unstable();
-                Selection { labels, milestone: assignment.milestone_id, assignee: assignment.assignee_id }
+                Selection {
+                    labels,
+                    milestone: assignment.milestone_id,
+                    assignee: assignment.assignee_id,
+                }
             }
         };
         let [labels, milestones] = catalog_entries(&database, page.repo.id).await?;
@@ -274,19 +309,30 @@ async fn edit(ctx: &RouteContext<AppState>, submit: bool) -> Result<Response> {
              WHERE u.id IN (SELECT user_id FROM repo_assignee_access WHERE repo_id = ?1)
              ORDER BY u.username, u.id",
             &[js_int(page.repo.id)],
-        ).await?;
+        )
+        .await?;
     }
     let response = render(&page)?;
-    Ok(if page.error.is_some() { response.with_status(400) } else { response })
+    Ok(if page.error.is_some() {
+        response.with_status(400)
+    } else {
+        response
+    })
 }
 
 // Every statement uses the same guard over rows that the batch never changes. A stale,
 // foreign or unauthorized selection therefore writes nothing, including title and body.
 async fn save_classification(
-    database: &D1Database, repo_id: i64, issue_id: i64, actor_id: i64, selection: &Selection,
-    title: JsValue, body: JsValue,
+    database: &D1Database,
+    repo_id: i64,
+    issue_id: i64,
+    actor_id: i64,
+    selection: &Selection,
+    title: JsValue,
+    body: JsValue,
 ) -> Result<bool> {
-    let labels = serde_json::to_string(&selection.labels).map_err(|error| Error::RustError(error.to_string()))?;
+    let labels = serde_json::to_string(&selection.labels)
+        .map_err(|error| Error::RustError(error.to_string()))?;
     let guard = format!(
         "WITH chosen_labels AS (SELECT value AS id FROM json_each(?6)),
           allowed AS (
@@ -303,25 +349,36 @@ async fn save_classification(
           )",
     );
     let args = [
-        js_int(repo_id), js_int(issue_id), js_int(actor_id),
+        js_int(repo_id),
+        js_int(issue_id),
+        js_int(actor_id),
         selection.milestone.map_or_else(js_null, js_int),
-        selection.assignee.map_or_else(js_null, js_int), js_text(&labels),
-        title, body, js_int(now()),
+        selection.assignee.map_or_else(js_null, js_int),
+        js_text(&labels),
+        title,
+        body,
+        js_int(now()),
     ];
-    let update = database.prepare(format!(
-        "{guard} UPDATE issues SET title = COALESCE(?7, title), body = COALESCE(?8, body),
+    let update = database
+        .prepare(format!(
+            "{guard} UPDATE issues SET title = COALESCE(?7, title), body = COALESCE(?8, body),
                     assignee_id = ?5, updated_at = ?9
                  WHERE id IN (SELECT id FROM allowed) RETURNING id",
-    )).bind(&args)?;
-    let remove_labels = database.prepare(format!(
-        "{guard} DELETE FROM issue_labels WHERE issue_id IN (SELECT id FROM allowed)
+        ))
+        .bind(&args)?;
+    let remove_labels = database
+        .prepare(format!(
+            "{guard} DELETE FROM issue_labels WHERE issue_id IN (SELECT id FROM allowed)
                     AND label_id NOT IN (SELECT id FROM chosen_labels)",
-    )).bind(&args[..6])?;
-    let add_labels = database.prepare(format!(
-        "{guard} INSERT INTO issue_labels(issue_id, repo_id, label_id)
+        ))
+        .bind(&args[..6])?;
+    let add_labels = database
+        .prepare(format!(
+            "{guard} INSERT INTO issue_labels(issue_id, repo_id, label_id)
                  SELECT a.id, a.repo_id, c.id FROM allowed a CROSS JOIN chosen_labels c WHERE 1
                  ON CONFLICT(issue_id, label_id) DO NOTHING",
-    )).bind(&args[..6])?;
+        ))
+        .bind(&args[..6])?;
     let milestone_sql = if selection.milestone.is_some() {
         "INSERT INTO issue_milestones(issue_id, repo_id, milestone_id)
          SELECT id, repo_id, ?4 FROM allowed WHERE 1
@@ -329,8 +386,12 @@ async fn save_classification(
     } else {
         "DELETE FROM issue_milestones WHERE issue_id IN (SELECT id FROM allowed)"
     };
-    let milestone = database.prepare(format!("{guard} {milestone_sql}")).bind(&args[..6])?;
-    let results = database.batch(vec![update, remove_labels, add_labels, milestone]).await?;
+    let milestone = database
+        .prepare(format!("{guard} {milestone_sql}"))
+        .bind(&args[..6])?;
+    let results = database
+        .batch(vec![update, remove_labels, add_labels, milestone])
+        .await?;
     Ok(!results[0].results::<serde::de::IgnoredAny>()?.is_empty())
 }
 
@@ -355,7 +416,10 @@ fn parse_id(value: &str) -> Option<i64> {
     if !value.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
-    value.parse().ok().filter(|id| (1..=JS_MAX_SAFE_INTEGER).contains(id))
+    value
+        .parse()
+        .ok()
+        .filter(|id| (1..=JS_MAX_SAFE_INTEGER).contains(id))
 }
 
 fn read_selection(form: &FormData, valid_form: &mut bool) -> (Selection, bool) {
@@ -375,7 +439,10 @@ fn read_selection(form: &FormData, valid_form: &mut bool) -> (Selection, bool) {
         selection.labels.sort_unstable();
         selection.labels.dedup();
     }
-    for (name, slot) in [("milestone_id", &mut selection.milestone), ("assignee_id", &mut selection.assignee)] {
+    for (name, slot) in [
+        ("milestone_id", &mut selection.milestone),
+        ("assignee_id", &mut selection.assignee),
+    ] {
         if let Some(value) = field(form, name, valid_form).filter(|value| !value.is_empty()) {
             *slot = parse_id(&value);
             valid &= slot.is_some();
@@ -388,7 +455,9 @@ fn valid_name(value: &str, max_chars: usize) -> bool {
     let trimmed = value.trim();
     !trimmed.is_empty()
         && trimmed.chars().count() <= max_chars
-        && !value.chars().any(|ch| ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}'))
+        && !value
+            .chars()
+            .any(|ch| ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}'))
 }
 
 #[derive(Clone, Copy)]
@@ -399,20 +468,35 @@ enum CatalogKind {
 
 impl CatalogKind {
     fn table(self) -> &'static str {
-        match self { Self::Label => "repo_labels", Self::Milestone => "repo_milestones" }
+        match self {
+            Self::Label => "repo_labels",
+            Self::Milestone => "repo_milestones",
+        }
     }
 
     fn duplicate(self) -> IssueMetadataText {
-        match self { Self::Label => IssueMetadataText::LabelExists, Self::Milestone => IssueMetadataText::MilestoneExists }
+        match self {
+            Self::Label => IssueMetadataText::LabelExists,
+            Self::Milestone => IssueMetadataText::MilestoneExists,
+        }
     }
 }
 
 async fn catalog_entries(database: &D1Database, repo_id: i64) -> Result<[Vec<Named>; 2]> {
     let entries = |kind: CatalogKind| {
-        database.prepare(format!("SELECT id, name FROM {} WHERE repo_id = ? ORDER BY name, id", kind.table()))
+        database
+            .prepare(format!(
+                "SELECT id, name FROM {} WHERE repo_id = ? ORDER BY name, id",
+                kind.table()
+            ))
             .bind(&[js_int(repo_id)])
     };
-    let results = database.batch(vec![entries(CatalogKind::Label)?, entries(CatalogKind::Milestone)?]).await?;
+    let results = database
+        .batch(vec![
+            entries(CatalogKind::Label)?,
+            entries(CatalogKind::Milestone)?,
+        ])
+        .await?;
     Ok([results[0].results()?, results[1].results()?])
 }
 
@@ -489,7 +573,11 @@ impl CatalogAction {
             "SELECT EXISTS ({guard}) AS allowed,
                     EXISTS (SELECT 1 FROM {table} WHERE repo_id = ?1 AND id = ?3) AS found",
         ));
-        let scope = [js_int(repo_id), js_int(actor_id), id.map_or_else(js_null, js_int)];
+        let scope = [
+            js_int(repo_id),
+            js_int(actor_id),
+            id.map_or_else(js_null, js_int),
+        ];
         let mutation = match self {
             Self::Create(_) => database.prepare(format!(
                 "INSERT INTO {table}(repo_id, name) SELECT id, ?3 FROM ({guard}) WHERE 1
@@ -502,17 +590,16 @@ impl CatalogAction {
                 "DELETE FROM {table} WHERE id = ?3 AND repo_id IN ({guard}) RETURNING id",
             )).bind(&scope)?,
         };
-        let results = database.batch(vec![
-            status.bind(&scope)?,
-            mutation,
-        ]).await?;
+        let results = database.batch(vec![status.bind(&scope)?, mutation]).await?;
 
         #[derive(Deserialize)]
         struct Status {
             allowed: i64,
             found: i64,
         }
-        let status = results[0].results::<Status>()?.pop()
+        let status = results[0]
+            .results::<Status>()?
+            .pop()
             .ok_or_else(|| Error::RustError("missing catalog mutation status".into()))?;
         if status.allowed == 0 {
             return Ok(Some((403, CatalogForbidden)));
@@ -520,11 +607,18 @@ impl CatalogAction {
         if id.is_some() && status.found == 0 {
             return Ok(Some((404, CatalogEntryNotFound)));
         }
-        Ok(results[1].results::<serde::de::IgnoredAny>()?.is_empty().then(|| (409, kind.duplicate())))
+        Ok(results[1]
+            .results::<serde::de::IgnoredAny>()?
+            .is_empty()
+            .then(|| (409, kind.duplicate())))
     }
 }
 
-async fn catalog_request(req: &Request, ctx: &RouteContext<AppState>, submit: bool) -> Result<Response> {
+async fn catalog_request(
+    req: &Request,
+    ctx: &RouteContext<AppState>,
+    submit: bool,
+) -> Result<Response> {
     let state = &ctx.data;
     let locale = state.locale;
     let Some(repo) = route_repo(ctx).await? else {
@@ -564,7 +658,10 @@ async fn catalog_request(req: &Request, ctx: &RouteContext<AppState>, submit: bo
         Some(CatalogAction::Create(CatalogKind::Label)) => label_value = name,
         Some(CatalogAction::Create(CatalogKind::Milestone)) => milestone_value = name,
         Some(CatalogAction::Rename(kind, id)) => {
-            let entries = match kind { CatalogKind::Label => &mut labels, CatalogKind::Milestone => &mut milestones };
+            let entries = match kind {
+                CatalogKind::Label => &mut labels,
+                CatalogKind::Milestone => &mut milestones,
+            };
             if let Some(entry) = entries.iter_mut().find(|entry| entry.id == id) {
                 entry.name = name;
             }
@@ -586,5 +683,9 @@ async fn catalog_request(req: &Request, ctx: &RouteContext<AppState>, submit: bo
         error: error.map(|(_, key)| locale.t(key)),
     };
     let response = render(&page)?;
-    Ok(if let Some((status, _)) = error { response.with_status(status) } else { response })
+    Ok(if let Some((status, _)) = error {
+        response.with_status(status)
+    } else {
+        response
+    })
 }

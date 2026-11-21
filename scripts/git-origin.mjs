@@ -408,7 +408,15 @@ async function carriesComparison(tip, base, head, options) {
 }
 
 async function validateRef(reference, branchesOnly, options) {
+  const short = typeof reference === "string"
+    ? (reference.startsWith(BRANCH_PREFIX)
+        ? reference.slice(BRANCH_PREFIX.length)
+        : !branchesOnly && reference.startsWith(TAG_PREFIX)
+          ? reference.slice(TAG_PREFIX.length)
+          : "")
+    : "";
   if (typeof reference !== "string" || !reference.isWellFormed() || /[\x00-\x20\x7f]/.test(reference) ||
+      !short || short.startsWith("-") || Buffer.byteLength(short) > 255 ||
       Buffer.byteLength(reference) > MAX_QUERY_VALUE_BYTES ||
       !(reference.startsWith(BRANCH_PREFIX) && reference.length > BRANCH_PREFIX.length ||
         !branchesOnly && reference.startsWith(TAG_PREFIX) && reference.length > TAG_PREFIX.length) ||
@@ -442,7 +450,7 @@ async function updateRef(reference, newOid, oldOid, options) {
 
 async function workspaceHead(options) {
   const symbolic = await headRef(options);
-  if (symbolic) return symbolic;
+  if (symbolic && symbolic.startsWith(BRANCH_PREFIX) && symbolic.length > BRANCH_PREFIX.length) return symbolic;
   // A mirror can have a detached HEAD. Keep its tip without overwriting a branch.
   const oid = await resolveRevision("HEAD", options);
   let branch = "refs/heads/main";
@@ -575,7 +583,10 @@ async function readTree(hash, limit, options, path) {
       const bytes = remainder.length ? Buffer.concat([remainder, chunk]) : chunk;
       let start = 0;
       for (let end; (end = bytes.indexOf(0, start)) !== -1; start = end + 1) {
-        if (entries.length === limit) throw new HttpError(413);
+        if (entries.length === limit) {
+          if (path !== undefined) return entries;
+          throw new HttpError(413);
+        }
         const line = bytes.toString("utf8", start, end);
         const fields = TREE_ENTRY.exec(line);
         if (!fields) throw new Error("Invalid Git tree output");
@@ -645,11 +656,32 @@ async function streamBlob(res, hash, size, limit, file, options) {
   }
 }
 
+async function resolveBrowseCommit(ref, options) {
+  const peeled = ref.replace(/\^\{commit\}$/, "");
+  if (peeled === "HEAD" || OID.test(peeled)) {
+    return await resolveRevision(`${peeled}^{commit}`, options);
+  }
+  const candidates = peeled.startsWith(BRANCH_PREFIX) || peeled.startsWith(TAG_PREFIX)
+    ? [peeled]
+    : [`${BRANCH_PREFIX}${peeled}`, `${TAG_PREFIX}${peeled}`];
+  for (const candidate of candidates) {
+    if (/[\x00-\x20\x7f~^:?*\[\\]/.test(candidate) || candidate.includes("..") || candidate.includes("@{")) {
+      continue;
+    }
+    const tip = await refTip(candidate, options);
+    if (tip !== ZERO_OID) {
+      const commit = await resolveRevision(`${tip}^{commit}`, options);
+      if (commit) return commit;
+    }
+  }
+  return null;
+}
+
 async function readObject(res, action, query, options) {
   if (action === "log") {
     const ref = queryValue(query, "ref");
     const limit = queryLimit(query, { maximum: 0x7fffffff });
-    const hash = limit ? await resolveRevision(`${ref}^{commit}`, options) : null;
+    const hash = limit ? await resolveBrowseCommit(ref, options) : null;
     sendJson(res, 200, hash ? await readCommits(hash, limit, false, options) : []);
   } else if (action === "commit") {
     const hash = await exactObject(queryOid(query), "commit", options);
@@ -682,7 +714,7 @@ async function readObject(res, action, query, options) {
     const path = queryValue(query, "path");
     const limit = queryLimit(query, { optional: true });
     if (path.split("/").some((part) => !part || part === "." || part === "..")) throw new HttpError(422);
-    const commit = await resolveRevision(`${ref}^{commit}`, options);
+    const commit = await resolveBrowseCommit(ref, options);
     if (!commit) throw new HttpError(404);
     const [entry] = await readTree(commit, 1, options, path);
     if (entry?.name !== path || entry.size === undefined) throw new HttpError(404);
@@ -1070,7 +1102,7 @@ export async function createGitOrigin({
         }
         await appendFile(join(repo, "config"), workspaceOnly ? WORKSPACE_REPO_CONFIG : REPO_CONFIG);
         const repoOptions = { cwd, repo };
-        const result = metadata(id, await (workspaceOnly ? workspaceHead(repoOptions) : headRef(repoOptions)));
+        const result = metadata(id, await workspaceHead(repoOptions));
         await rename(repo, target);
         return result;
       });

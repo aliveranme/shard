@@ -81,3 +81,14 @@ test("enforces the entry limit", async () => {
     ArchiveLimitError,
   );
 });
+
+test("enforces the object read limit", async () => {
+  const root = oid("1");
+  const entries = Array.from({ length: 400 }, (_, index) => ["100644", `file-${String(index).padStart(4, "0")}`, oid("2")]);
+  await assert.rejects(
+    buildSourceTar({ hash: oid("a"), tree: root }, async (hash) => hash === root
+      ? { type: 2, data: tree(entries) }
+      : { type: 3, data: new Uint8Array([65]) }),
+    ArchiveLimitError,
+  );
+});

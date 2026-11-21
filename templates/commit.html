@@ -15,6 +15,7 @@
   </div>
   <div class="pull-banner" id="commit-signature">
     <span class="{{ signature.class() }}">{{ signature.label(chrome.locale) }}</span>
+    {% if let Some(signer) = signature.signer() %}<a href="/{{ signer }}">@{{ signer }}</a>{% endif %}
     {% if let Some(fingerprint) = signature.fingerprint() %}<code dir="ltr">{{ fingerprint }}</code>{% endif %}
     {% if signature.email_verified() %}<span>{{ chrome.locale.t(crate::i18n::GpgText::VerifiedEmail) }}</span>{% endif %}
   </div>

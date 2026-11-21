@@ -53,14 +53,15 @@ extern "C" {
     async fn sha256_hex_js(text: &str) -> Result<String, JsValue>;
 
     #[wasm_bindgen(js_name = shard_pbkdf2_hex, catch)]
-    async fn pbkdf2_hex_js(password: &str, salt_hex: &str, iterations: u32)
-        -> Result<String, JsValue>;
+    async fn pbkdf2_hex_js(
+        password: &str,
+        salt_hex: &str,
+        iterations: u32,
+    ) -> Result<String, JsValue>;
 }
 
 fn js_err(context: &str, err: JsValue) -> Error {
-    let detail = err
-        .as_string()
-        .unwrap_or_else(|| format!("{err:?}"));
+    let detail = err.as_string().unwrap_or_else(|| format!("{err:?}"));
     Error::RustError(format!("{context}: {detail}"))
 }
 

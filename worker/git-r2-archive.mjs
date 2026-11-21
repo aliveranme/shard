@@ -3,6 +3,7 @@ const BLOCK = 512;
 const END = 2 * BLOCK;
 const MAX_BYTES = 16 * 1024 * 1024;
 const MAX_ENTRIES = 2_000;
+const MAX_READS = 400;
 const MAX_COMPONENTS = 16;
 const PREFIX = 155;
 const NAME = 100;
@@ -88,8 +89,13 @@ export async function buildSourceTar(commit, readObject) {
   const root = `source-${commit.hash}`;
   const nodes = [{ path: root, mode: 0o755, kind: 53 }];
   let remaining = MAX_ENTRIES;
+  let reads = 0;
+  const boundedRead = async (hash) => {
+    if (++reads > MAX_READS) throw new ArchiveLimitError("Archive exceeds the object read limit");
+    return await readObject(hash);
+  };
   const walk = async (tree, path, depth) => {
-    const object = await readObject(tree);
+    const object = await boundedRead(tree);
     if (!object || object.type !== 2) throw new ArchiveUnsupportedError("Missing Git tree");
     const entries = object.data ? parseTreeEntries(object.data) : [];
     remaining -= entries.length;
@@ -121,7 +127,7 @@ export async function buildSourceTar(commit, readObject) {
     await Promise.all(files.slice(start, start + 2).map(async (node) => {
       let blob;
       try {
-        blob = await readObject(node.hash);
+        blob = await boundedRead(node.hash);
       } catch (error) {
         if (/exceeds the read limit|delta sizes/i.test(error?.message ?? "")) {
           throw new ArchiveLimitError("Archive is too large");

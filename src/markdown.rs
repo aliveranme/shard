@@ -47,13 +47,23 @@ impl<'a> Context<'a> {
         }
         let (target, fragment) = destination.split_once('#').unwrap_or((&destination, ""));
         let (path, query) = target.split_once('?').unwrap_or((target, ""));
-        if path.split('/').next().is_some_and(|first| first.contains(':')) {
-            return if absolute_url(&destination, image) { destination } else { blocked };
+        if path
+            .split('/')
+            .next()
+            .is_some_and(|first| first.contains(':'))
+        {
+            return if absolute_url(&destination, image) {
+                destination
+            } else {
+                blocked
+            };
         }
         if path.is_empty() {
             return if image { blocked } else { destination };
         }
-        let Some(path) = repo_path(self.directory, path) else { return blocked };
+        let Some(path) = repo_path(self.directory, path) else {
+            return blocked;
+        };
         let mut url = if image {
             if path.is_empty() {
                 return blocked;
@@ -96,13 +106,24 @@ fn render_markdown(text: &str, context: &Context<'_>, document: bool) -> String 
             return Some(event);
         }
         Some(match source.next()? {
-            Event::Start(Tag::Heading { level, classes, attrs, .. }) if document => {
+            Event::Start(Tag::Heading {
+                level,
+                classes,
+                attrs,
+                ..
+            }) if document => {
                 let id = heading_id(&mut source, &mut heading, &mut ids);
-                Event::Start(Tag::Heading { level, id, classes, attrs })
+                Event::Start(Tag::Heading {
+                    level,
+                    id,
+                    classes,
+                    attrs,
+                })
             }
             event => event,
         })
-    }).peekable();
+    })
+    .peekable();
     let mut pending = VecDeque::new();
     let mut skip_autolinks = false;
     let events = iter::from_fn(|| {
@@ -114,7 +135,9 @@ fn render_markdown(text: &str, context: &Context<'_>, document: bool) -> String 
                 // CommonMark can emit an HTML block one line at a time.
                 let raw = if matches!(input.peek(), Some(Event::Html(_))) {
                     let mut joined = String::from(raw.as_ref());
-                    while let Some(Event::Html(next)) = input.next_if(|event| matches!(event, Event::Html(_))) {
+                    while let Some(Event::Html(next)) =
+                        input.next_if(|event| matches!(event, Event::Html(_)))
+                    {
                         joined.push_str(&next);
                     }
                     CowStr::from(joined)
@@ -125,16 +148,31 @@ fn render_markdown(text: &str, context: &Context<'_>, document: bool) -> String 
             }
             Event::InlineHtml(raw) if starts_with_image(&raw) => html_image_event(raw, context),
             Event::Html(raw) | Event::InlineHtml(raw) => Event::Text(raw),
-            Event::Start(Tag::Link { link_type, dest_url, title, id }) => {
+            Event::Start(Tag::Link {
+                link_type,
+                dest_url,
+                title,
+                id,
+            }) => {
                 skip_autolinks = true;
                 let dest_url = if link_type == LinkType::Email {
                     dest_url
                 } else {
                     context.destination(dest_url, false)
                 };
-                Event::Start(Tag::Link { link_type, dest_url, title, id })
+                Event::Start(Tag::Link {
+                    link_type,
+                    dest_url,
+                    title,
+                    id,
+                })
             }
-            Event::Start(Tag::Image { link_type, dest_url, title, id }) => {
+            Event::Start(Tag::Image {
+                link_type,
+                dest_url,
+                title,
+                id,
+            }) => {
                 let start = Event::Start(Tag::Image {
                     link_type,
                     dest_url: context.destination(dest_url, true),
@@ -155,7 +193,9 @@ fn render_markdown(text: &str, context: &Context<'_>, document: bool) -> String 
                 // Entity references and punctuation can split plain text into adjacent events.
                 let text = if matches!(input.peek(), Some(Event::Text(_))) {
                     let mut joined = String::from(text.as_ref());
-                    while let Some(Event::Text(next)) = input.next_if(|event| matches!(event, Event::Text(_))) {
+                    while let Some(Event::Text(next)) =
+                        input.next_if(|event| matches!(event, Event::Text(_)))
+                    {
                         joined.push_str(&next);
                     }
                     CowStr::from(joined)
@@ -243,8 +283,12 @@ fn image_event<'a>(start: Event<'a>, input: &mut impl Iterator<Item = Event<'a>>
 
 fn starts_with_image(raw: &str) -> bool {
     let raw = raw.trim_start();
-    raw.get(..4).is_some_and(|name| name.eq_ignore_ascii_case("<img"))
-        && raw.as_bytes().get(4).is_some_and(|byte| byte.is_ascii_whitespace() || *byte == b'>' || *byte == b'/')
+    raw.get(..4)
+        .is_some_and(|name| name.eq_ignore_ascii_case("<img"))
+        && raw
+            .as_bytes()
+            .get(4)
+            .is_some_and(|byte| byte.is_ascii_whitespace() || *byte == b'>' || *byte == b'/')
 }
 
 fn html_image_event<'a>(raw: CowStr<'a>, context: &Context<'_>) -> Event<'a> {
@@ -259,9 +303,14 @@ fn html_image_event<'a>(raw: CowStr<'a>, context: &Context<'_>) -> Event<'a> {
             _ => return Event::Text(raw),
         };
         let attribute = |name: &[u8]| {
-            tag.attributes.get(name).and_then(|value| std::str::from_utf8(&value.value).ok())
+            tag.attributes
+                .get(name)
+                .and_then(|value| std::str::from_utf8(&value.value).ok())
         };
-        let Some(src) = attribute(b"src").map(str::trim).filter(|src| !src.is_empty()) else {
+        let Some(src) = attribute(b"src")
+            .map(str::trim)
+            .filter(|src| !src.is_empty())
+        else {
             return Event::Text(raw);
         };
         let dest_url = context.destination(CowStr::Borrowed(src), true);
@@ -300,7 +349,9 @@ fn append_image<'a>(
         return;
     }
     output.truncate(output.len() - " />".len());
-    output.push_str(r#" class="repo-image" loading="lazy" decoding="async" referrerpolicy="no-referrer""#);
+    output.push_str(
+        r#" class="repo-image" loading="lazy" decoding="async" referrerpolicy="no-referrer""#,
+    );
     if let Some(width) = width {
         let _ = write!(output, " width=\"{width}\"");
     }
@@ -320,7 +371,9 @@ fn repo_path(directory: &str, path: &str) -> Option<String> {
     for segment in base.split('/').chain(path.split('/')) {
         match segment {
             "" | "." => {}
-            ".." => { segments.pop()?; }
+            ".." => {
+                segments.pop()?;
+            }
             segment => segments.push(segment),
         }
     }
@@ -328,18 +381,32 @@ fn repo_path(directory: &str, path: &str) -> Option<String> {
 }
 
 fn absolute_url(destination: &str, image: bool) -> bool {
-    let Some((scheme, target)) = destination.split_once(':') else { return false };
-    if !image && ["mailto", "tel"].iter().any(|candidate| scheme.eq_ignore_ascii_case(candidate)) {
+    let Some((scheme, target)) = destination.split_once(':') else {
+        return false;
+    };
+    if !image
+        && ["mailto", "tel"]
+            .iter()
+            .any(|candidate| scheme.eq_ignore_ascii_case(candidate))
+    {
         return Url::parse(destination).is_ok();
     }
     let allowed = scheme.eq_ignore_ascii_case("https")
-        || (!image && ["http", "ftp"].iter().any(|candidate| scheme.eq_ignore_ascii_case(candidate)));
-    let has_authority = target.strip_prefix("//")
+        || (!image
+            && ["http", "ftp"]
+                .iter()
+                .any(|candidate| scheme.eq_ignore_ascii_case(candidate)));
+    let has_authority = target
+        .strip_prefix("//")
         .is_some_and(|authority| !authority.starts_with('/'));
     allowed && has_authority && Url::parse(destination).is_ok_and(|url| url.has_host())
 }
 
-fn autolinks<'a>(text: CowStr<'a>, context: &Context<'_>, pending: &mut VecDeque<Event<'a>>) -> Event<'a> {
+fn autolinks<'a>(
+    text: CowStr<'a>,
+    context: &Context<'_>,
+    pending: &mut VecDeque<Event<'a>>,
+) -> Event<'a> {
     let mut tail = text.as_ref();
     let mut plain_start = 0;
     let mut previous = None;
@@ -373,7 +440,9 @@ fn autolinks<'a>(text: CowStr<'a>, context: &Context<'_>, pending: &mut VecDeque
     if plain_start < text.len() {
         pending.push_back(Event::Text(text_slice(&text, plain_start, text.len())));
     }
-    pending.pop_front().expect("at least one autolink was queued")
+    pending
+        .pop_front()
+        .expect("at least one autolink was queued")
 }
 
 fn text_slice<'a>(text: &CowStr<'a>, start: usize, end: usize) -> CowStr<'a> {
@@ -385,7 +454,8 @@ fn text_slice<'a>(text: &CowStr<'a>, start: usize, end: usize) -> CowStr<'a> {
 
 fn autolink_at<'a>(text: &'a str, context: &Context<'_>) -> Option<(&'a str, String)> {
     if ["https://", "http://"].iter().any(|scheme| {
-        text.get(..scheme.len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case(scheme))
+        text.get(..scheme.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(scheme))
     }) {
         let url = plain_url(text);
         return absolute_url(url, false).then(|| (url, url.to_owned()));
@@ -395,22 +465,36 @@ fn autolink_at<'a>(text: &'a str, context: &Context<'_>) -> Option<(&'a str, Str
     } else {
         let digits = if let Some(digits) = text.strip_prefix('#') {
             digits
-        } else if text.get(..3).is_some_and(|prefix| prefix.eq_ignore_ascii_case("GH-")) {
+        } else if text
+            .get(..3)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("GH-"))
+        {
             &text[3..]
         } else {
             return None;
         };
-        (context.repo.owner_name.as_str(), context.repo.name.as_str(), digits)
+        (
+            context.repo.owner_name.as_str(),
+            context.repo.name.as_str(),
+            digits,
+        )
     };
-    let end = digits.find(|ch: char| !ch.is_ascii_digit()).unwrap_or(digits.len());
+    let end = digits
+        .find(|ch: char| !ch.is_ascii_digit())
+        .unwrap_or(digits.len());
     let (number, suffix) = digits.split_at(end);
     let invalid_suffix = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '/' | '#');
     if suffix.starts_with(invalid_suffix)
-        || suffix.strip_prefix('.').is_some_and(|rest| rest.starts_with(invalid_suffix))
+        || suffix
+            .strip_prefix('.')
+            .is_some_and(|rest| rest.starts_with(invalid_suffix))
     {
         return None;
     }
-    let number = number.parse::<u64>().ok().filter(|number| (1..=9_007_199_254_740_991).contains(number))?;
+    let number = number
+        .parse::<u64>()
+        .ok()
+        .filter(|number| (1..=9_007_199_254_740_991).contains(number))?;
     let label = &text[..text.len() - suffix.len()];
     Some((label, format!("/{owner}/{repo}/issues/{number}")))
 }
@@ -433,13 +517,28 @@ fn plain_url(text: &str) -> &str {
     let mut end = text.len();
     for (index, ch) in text.char_indices() {
         match ch {
-            ch if ch.is_whitespace() || ch.is_control() => { end = index; break; }
-            '<' | '>' | '"' | '\'' | '\\' | '\x60' => { end = index; break; }
-            '，' | '。' | '；' | '！' | '？' | '、' | '）' | '》' | '】' => { end = index; break; }
+            ch if ch.is_whitespace() || ch.is_control() => {
+                end = index;
+                break;
+            }
+            '<' | '>' | '"' | '\'' | '\\' | '\x60' => {
+                end = index;
+                break;
+            }
+            '，' | '。' | '；' | '！' | '？' | '、' | '）' | '》' | '】' => {
+                end = index;
+                break;
+            }
             '(' => parens += 1,
             '[' => brackets += 1,
-            ')' if parens == 0 => { end = index; break; }
-            ']' if brackets == 0 => { end = index; break; }
+            ')' if parens == 0 => {
+                end = index;
+                break;
+            }
+            ']' if brackets == 0 => {
+                end = index;
+                break;
+            }
             ')' => parens -= 1,
             ']' => brackets -= 1,
             _ => {}

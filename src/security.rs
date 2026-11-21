@@ -6,14 +6,17 @@ use worker::*;
 pub fn is_git_request(req: &Request) -> bool {
     let path = req.path();
     let mut parts = path.trim_start_matches('/').split('/');
-    let (Some(owner), Some(repo), Some(endpoint)) = (parts.next(), parts.next(), parts.next()) else {
+    let (Some(owner), Some(repo), Some(endpoint)) = (parts.next(), parts.next(), parts.next())
+    else {
         return false;
     };
     if owner.is_empty() || !repo.ends_with(".git") {
         return false;
     }
     match endpoint {
-        "git-upload-pack" | "git-receive-pack" | "shard-git-control" | "shard-upload" => parts.next().is_none(),
+        "git-upload-pack" | "git-receive-pack" | "shard-git-control" | "shard-upload" => {
+            parts.next().is_none()
+        }
         "info" => match parts.next() {
             Some("refs") => parts.next().is_none(),
             Some("lfs") => match (parts.next(), parts.next()) {
@@ -63,7 +66,10 @@ pub async fn csrf_token(req: &Request, signed_in: bool) -> Result<String> {
 }
 
 pub fn same_origin(req: &Request) -> bool {
-    if util::header(req, "sec-fetch-site").as_deref() == Some("cross-site") {
+    if util::header(req, "sec-fetch-site")
+        .as_deref()
+        .is_some_and(|site| !matches!(site, "same-origin" | "none"))
+    {
         return false;
     }
     match util::header(req, "origin") {
@@ -90,7 +96,9 @@ pub fn valid_form(form: &FormData, expected: &str) -> bool {
 }
 
 pub fn is_html(headers: &Headers) -> Result<bool> {
-    Ok(headers.get("Content-Type")?.is_some_and(|value| value.starts_with("text/html")))
+    Ok(headers
+        .get("Content-Type")?
+        .is_some_and(|value| value.starts_with("text/html")))
 }
 
 pub fn allows_bfcache(req: &Request) -> bool {
@@ -118,18 +126,36 @@ pub fn finish(
 ) -> Result<Response> {
     let status = response.status_code();
     let allow_bfcache = bfcache && status == 200;
-    if response.headers_mut().set("X-Content-Type-Options", "nosniff").is_ok() {
-        apply(response.headers_mut(), token, previous_token, secure, locale, allow_bfcache)?;
+    if response
+        .headers_mut()
+        .set("X-Content-Type-Options", "nosniff")
+        .is_ok()
+    {
+        apply(
+            response.headers_mut(),
+            token,
+            previous_token,
+            secure,
+            locale,
+            allow_bfcache,
+        )?;
         return Ok(response);
     }
     // A subrequest response can carry immutable headers. Copy them into a
     // fresh set before adding the security policy.
     let headers = Headers::new();
     for (name, value) in response.headers().entries() {
-        headers.set(&name, &value)?;
+        headers.append(&name, &value)?;
     }
     headers.set("X-Content-Type-Options", "nosniff")?;
-    apply(&headers, token, previous_token, secure, locale, allow_bfcache)?;
+    apply(
+        &headers,
+        token,
+        previous_token,
+        secure,
+        locale,
+        allow_bfcache,
+    )?;
     Ok(response.with_headers(headers))
 }
 
@@ -145,7 +171,10 @@ fn apply(
     if headers.get("Referrer-Policy")?.is_none() {
         headers.set("Referrer-Policy", "same-origin")?;
     }
-    headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")?;
+    headers.set(
+        "Permissions-Policy",
+        "camera=(), microphone=(), geolocation=()",
+    )?;
     if headers.get("Content-Security-Policy")?.is_none() {
         headers.set(
             "Content-Security-Policy",

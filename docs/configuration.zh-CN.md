@@ -1,6 +1,6 @@
 # Shard Cloudflare Dashboard 中文配置手册
 
-以 Shard 稳定版 `v0.5.0` 为例。项目架构、Git 数据路径、安全模型和容量边界见 [项目说明](overview.zh-CN.md)。新建个人实例可以从 [Free 一键部署](#free-一键部署与自动更新) 开始。已有线上数据时，从 [接入已有仓库或 Worker](#接入已有仓库或-worker) 开始。自定义域名、R2、邮件和运行时密钥的配置也在本手册。使用命令行的读者可跳到 [本地预检与手动部署](#本地预检与手动部署)。[稳定版下载](https://github.com/aliveranme/shard/releases/latest) · [Wrangler 配置模板](../wrangler.jsonc)
+以 Shard 稳定版 `v0.5.1` 为例。项目架构、Git 数据路径、安全模型和容量边界见 [项目说明](overview.zh-CN.md)。新建个人实例可以从 [Free 一键部署](#free-一键部署与自动更新) 开始。已有线上数据时，从 [接入已有仓库或 Worker](#接入已有仓库或-worker) 开始。自定义域名、R2、邮件和运行时密钥的配置也在本手册。使用命令行的读者可跳到 [本地预检与手动部署](#本地预检与手动部署)。[稳定版下载](https://github.com/aliveranme/shard/releases/latest) · [Wrangler 配置模板](../wrangler.jsonc)
 
 ## 选择部署方案
 
@@ -134,7 +134,7 @@ mise run setup
 mise run dev
 ```
 
-部署固定版本可下载 `shard-v0.5.0-worker.tar.gz` 和同名 `.sha256`。Linux 用 `sha256sum --check shard-v0.5.0-worker.tar.gz.sha256`，macOS 用 `shasum -a 256 -c shard-v0.5.0-worker.tar.gz.sha256`。Windows PowerShell 可执行 `Get-FileHash -Algorithm SHA256 .\shard-v0.5.0-worker.tar.gz`，与校验文件中的摘要比对。核对后运行 `tar -xzf shard-v0.5.0-worker.tar.gz`，进入 `shard-v0.5.0-worker` 目录，使用包内 `.node-version` 指定的 Node 版本执行 `npm ci`。预构建包包含 Worker Wasm 与静态资源，带 Containers 的环境仍需 Docker 引擎构建镜像。[Release 产物](https://github.com/aliveranme/shard/releases/tag/v0.5.0) · [打包内容](../README.md#project-releases)
+部署固定版本可下载 `shard-v0.5.1-worker.tar.gz` 和同名 `.sha256`。Linux 用 `sha256sum --check shard-v0.5.1-worker.tar.gz.sha256`，macOS 用 `shasum -a 256 -c shard-v0.5.1-worker.tar.gz.sha256`。Windows PowerShell 可执行 `Get-FileHash -Algorithm SHA256 .\shard-v0.5.1-worker.tar.gz`，与校验文件中的摘要比对。核对后运行 `tar -xzf shard-v0.5.1-worker.tar.gz`，进入 `shard-v0.5.1-worker` 目录，使用包内 `.node-version` 指定的 Node 版本执行 `npm ci`。预构建包包含 Worker Wasm 与静态资源，带 Containers 的环境仍需 Docker 引擎构建镜像。[Release 产物](https://github.com/aliveranme/shard/releases/tag/v0.5.1) · [打包内容](../README.md#project-releases)
 
 以下命令在项目或解包目录执行。源码目录用 `mise exec --` 运行命令以选用固定工具链。发布前用 `whoami` 核对账号。`--dry-run` 只预打包和验证绑定，正式部署才会执行线上 D1 迁移与发布。
 

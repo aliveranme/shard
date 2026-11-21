@@ -1,6 +1,6 @@
-use std::rc::Rc;
 use crate::i18n::{AccountText, LanguagePreference, Locale};
 use crate::models::User;
+use std::rc::Rc;
 use worker::*;
 
 pub const THEME_COOKIE: &str = "shard_theme";
@@ -75,5 +75,4 @@ impl AppState {
             .as_deref()
             .ok_or_else(|| Error::RustError("missing validated form data".into()))
     }
-
 }
