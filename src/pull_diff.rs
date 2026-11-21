@@ -245,7 +245,10 @@ impl Walk<'_> {
             if prefix_len != 0 {
                 self.path.push('/');
             }
-            self.path.push_str(&before.as_ref().or(after.as_ref()).unwrap().name);
+            let Some(entry) = before.as_ref().or(after.as_ref()) else {
+                continue;
+            };
+            self.path.push_str(&entry.name);
             if self.path.len() > MAX_PATH_BYTES {
                 return Ok(false);
             }

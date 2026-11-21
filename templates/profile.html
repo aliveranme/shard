@@ -2,7 +2,7 @@
 {% block content %}
 <div class="page">
   <div class="page-head">
-    <div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap">
+    <div class="profile-head">
       {% let avatar_class = "avatar--lg" %}
       {% include "avatar.html" %}
       <div>
@@ -13,7 +13,7 @@
     {% if is_self %}<a class="btn btn--primary" href="/new">{{ chrome.locale.t(crate::i18n::CommonText::NewRepository) }}</a>{% endif %}
   </div>
 
-  <section class="section" style="padding-top:8px">
+  <section class="section section--compact">
     <div class="section__head">
       <h2 class="section__title">{{ chrome.locale.t(crate::i18n::WebText::Repositories) }}</h2>
     </div>

@@ -1,10 +1,15 @@
-use crate::ctx::AppState;
+use crate::ctx::{AppState, ThemePreference};
 use crate::i18n::Locale;
 use crate::models::{Issue, Pull, PullSnapshot, Repo, Ts};
 use crate::pagination::Pagination;
 use crate::pull_diff::{ChangedFile, FileDiff};
 use askama::Template;
 use worker::*;
+
+pub const THEME_CSS_V: &str = env!("SHARD_THEME_CSS_V");
+pub const SHARD_CSS_V: &str = env!("SHARD_SHARD_CSS_V");
+pub const ICONS_SVG_V: &str = env!("SHARD_ICONS_SVG_V");
+pub const LOGO_SVG_V: &str = env!("SHARD_LOGO_SVG_V");
 
 #[derive(Clone, Default)]
 pub struct Avatar {
@@ -26,6 +31,7 @@ pub struct Chrome {
     pub avatar: Avatar,
     pub csrf_token: String,
     pub locale: Locale,
+    pub theme: ThemePreference,
     pub registration_open: bool,
 }
 
@@ -37,6 +43,7 @@ impl Default for Chrome {
             avatar: Avatar::default(),
             csrf_token: String::new(),
             locale: Locale::default(),
+            theme: ThemePreference::default(),
             registration_open: true,
         }
     }
@@ -51,11 +58,13 @@ impl Chrome {
                 avatar: Avatar::new(&u.username, u.avatar_id),
                 csrf_token: state.csrf_token.clone(),
                 locale: state.locale,
+                theme: state.theme_preference,
                 registration_open: state.registration_open,
             },
             None => Self {
                 csrf_token: state.csrf_token.clone(),
                 locale: state.locale,
+                theme: state.theme_preference,
                 registration_open: state.registration_open,
                 ..Self::default()
             },
@@ -294,8 +303,8 @@ pub struct FilePage {
     pub branch_url: String,
     pub path_url: String,
     pub crumbs: Vec<Crumb>,
-    pub content: String,
-    pub highlighted: Option<String>,
+    pub code_lines: Vec<String>,
+    pub is_highlighted: bool,
     pub markdown_html: Option<String>,
     pub image_url: Option<String>,
     pub is_binary: bool,

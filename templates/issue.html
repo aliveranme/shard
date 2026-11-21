@@ -140,7 +140,7 @@
       {% else if viewed_review.is_none() %}
         <div class="card card--warm empty">
           <p class="empty__title">{{ chrome.locale.t(crate::i18n::DiscussionText::JoinDiscussion) }}</p>
-          <p style="margin-bottom:16px">{% if issue.is_pull() %}{{ chrome.locale.t(crate::i18n::DiscussionText::SignInToCommentOnPull) }}{% else %}{{ chrome.locale.t(crate::i18n::DiscussionText::SignInToCommentOnIssue) }}{% endif %}</p>
+          <p class="mb-md">{% if issue.is_pull() %}{{ chrome.locale.t(crate::i18n::DiscussionText::SignInToCommentOnPull) }}{% else %}{{ chrome.locale.t(crate::i18n::DiscussionText::SignInToCommentOnIssue) }}{% endif %}</p>
           <a class="btn btn--primary" href="/user/login?next=/{{ repo.owner_name }}/{{ repo.name }}/{% if issue.is_pull() %}pulls{% else %}issues{% endif %}/{{ issue.number }}">{{ chrome.locale.t(crate::i18n::CommonText::SignIn) }}</a>
         </div>
       {% endif %}

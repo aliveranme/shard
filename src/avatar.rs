@@ -219,7 +219,23 @@ pub(crate) async fn git_author_ids<'a>(
     Ok(authors.into_iter().map(|author| (author.email, author.id)).collect())
 }
 
-pub(crate) async fn show(_req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
+fn avatar_etag(bytes: &[u8]) -> String {
+    let mut hash: u128 = 0x6c62272e07bb014262b821756295c58d;
+    for &byte in bytes {
+        hash ^= u128::from(byte);
+        hash = hash.wrapping_mul(0x0000000001000000000000000000013b);
+    }
+    format!("\"{:x}-{:032x}\"", bytes.len(), hash)
+}
+
+fn etag_matches(header: &str, etag: &str) -> bool {
+    header.split(',').any(|candidate| {
+        let trimmed = candidate.trim();
+        trimmed == "*" || trimmed == etag || trimmed.strip_prefix("W/") == Some(etag)
+    })
+}
+
+pub(crate) async fn show(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     #[derive(Deserialize)]
     struct AvatarRow {
         data: Vec<u8>,
@@ -239,7 +255,18 @@ pub(crate) async fn show(_req: Request, ctx: RouteContext<AppState>) -> Result<R
     let Some(avatar) = avatar else {
         return Ok(Response::builder().with_status(404).empty());
     };
+    let etag = avatar_etag(&avatar.data);
+    let cache = "public, max-age=300, stale-while-revalidate=86400";
+    if util::header(&req, "if-none-match").is_some_and(|header| etag_matches(&header, &etag)) {
+        return Ok(Response::builder()
+            .with_status(304)
+            .with_header("ETag", &etag)?
+            .with_header("Cache-Control", cache)?
+            .empty());
+    }
     Ok(Response::builder()
         .with_header("Content-Type", "image/png")?
+        .with_header("ETag", &etag)?
+        .with_header("Cache-Control", cache)?
         .fixed(avatar.data))
 }

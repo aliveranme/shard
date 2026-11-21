@@ -1,9 +1,9 @@
-<section class="side-card" aria-labelledby="issue-classification" style="overflow-wrap:anywhere">
+<section class="side-card wrap-anywhere" aria-labelledby="issue-classification">
   <h2 id="issue-classification" class="side-card__title">{{ chrome.locale.t(crate::i18n::IssueMetadataText::Classification) }}</h2>
   <div class="side-list">
     <div class="side-row">
       <span class="muted">{{ chrome.locale.t(crate::i18n::IssueMetadataText::Labels) }}</span>
-      <span>{% for label in details.labels %}<a class="badge badge--label" dir="auto" style="display:inline-block; white-space:normal; max-width:100%" href="/{{ repo.owner_name }}/{{ repo.name }}/issues?label={{ label.filter_query() }}">{{ label.name }}</a> {% else %}{{ chrome.locale.t(crate::i18n::IssueMetadataText::NoLabels) }}{% endfor %}</span>
+      <span>{% for label in details.labels %}<a class="badge badge--label badge--wrap" dir="auto" href="/{{ repo.owner_name }}/{{ repo.name }}/issues?label={{ label.filter_query() }}">{{ label.name }}</a> {% else %}{{ chrome.locale.t(crate::i18n::IssueMetadataText::NoLabels) }}{% endfor %}</span>
     </div>
     <div class="side-row">
       <span class="muted">{{ chrome.locale.t(crate::i18n::IssueMetadataText::Milestone) }}</span>

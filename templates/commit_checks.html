@@ -1,18 +1,18 @@
 <section class="code-panel" aria-labelledby="commit-checks">
   <h2 class="code-panel__bar" id="commit-checks">{% if checks_heading is defined %}{{ checks_heading }}{% else %}{{ chrome.locale.t(crate::i18n::CheckText::Title) }}{% endif %}</h2>
-  <div style="padding: 16px; overflow-wrap: anywhere">
+  <div class="code-panel__body">
     {% if checks.rows.is_empty() %}
       <p class="muted">{{ chrome.locale.t(crate::i18n::CheckText::Empty) }}</p>
     {% else %}
-      <ul class="side-list" role="list" style="list-style: none; margin: 0; padding: 0">
+      <ul class="side-list side-list--plain" role="list">
         {% for check in checks.rows %}
           <li>
-            <div class="side-row" style="flex-wrap: wrap">
+            <div class="side-row side-row--wrap">
               <code dir="auto">{{ check.context }}</code>
               <span class="badge">{{ check.label(chrome.locale) }}</span>
             </div>
             {% if let Some(summary) = check.summary %}
-              <p class="muted" dir="auto" style="white-space: pre-wrap">{{ summary }}</p>
+              <p class="muted pre-wrap" dir="auto">{{ summary }}</p>
             {% endif %}
           </li>
         {% endfor %}

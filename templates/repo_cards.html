@@ -2,7 +2,7 @@
   {% for repo in repos %}
     <a class="repo-card" href="/{{ repo.owner }}/{{ repo.name }}">
       <span class="repo-card__name">
-        <svg class="icon" aria-hidden="true"><use href="/img/icons.svg#repo"></use></svg>
+        <svg class="icon" aria-hidden="true"><use href="/img/icons.svg?v={{ crate::templates::ICONS_SVG_V }}#repo"></use></svg>
         <span><span class="repo-card__owner">{{ repo.owner }}/</span>{{ repo.name }}</span>
       </span>
       <span class="repo-card__desc">{% if repo.description.is_empty() %}{{ chrome.locale.t(crate::i18n::CommonText::NoDescription) }}{% else %}{{ repo.description }}{% endif %}</span>
@@ -12,7 +12,7 @@
           <span>{{ chrome.locale.open_pull_count(repo.open_pulls) }}</span>
         {% endif %}
         {% if show_updated %}<span>{{ chrome.locale.updated(repo.updated) }}</span>{% endif %}
-        {% if repo.private %}<span class="badge badge--private">{{ chrome.locale.t(crate::i18n::CommonText::Private) }}</span>{% endif %}
+        {% if repo.private %}<span class="badge badge--private"><svg class="icon" aria-hidden="true"><use href="/img/icons.svg?v={{ crate::templates::ICONS_SVG_V }}#lock"></use></svg>{{ chrome.locale.t(crate::i18n::CommonText::Private) }}</span>{% endif %}
       </span>
     </a>
   {% endfor %}

@@ -1,7 +1,7 @@
 <div class="page repo-head">
   <div class="repo-ident">
     <span class="repo-avatar" aria-hidden="true">
-      <svg class="icon"><use href="/img/icons.svg#repo"></use></svg>
+      <svg class="icon"><use href="/img/icons.svg?v={{ crate::templates::ICONS_SVG_V }}#repo"></use></svg>
     </span>
     <div class="repo-head__title">
       {% if repo_name_is_heading is defined && repo_name_is_heading %}<h1 class="breadcrumb">{% else %}<div class="breadcrumb">{% endif %}
@@ -14,7 +14,7 @@
       {% endif %}
       <div class="repo-head__meta">
         {% if repo.is_private() %}
-          <span class="badge badge--private">{{ chrome.locale.t(crate::i18n::CommonText::Private) }}</span>
+          <span class="badge badge--private"><svg class="icon" aria-hidden="true"><use href="/img/icons.svg?v={{ crate::templates::ICONS_SVG_V }}#lock"></use></svg>{{ chrome.locale.t(crate::i18n::CommonText::Private) }}</span>
         {% else %}
           <span class="badge">{{ chrome.locale.t(crate::i18n::CommonText::Public) }}</span>
         {% endif %}
@@ -37,32 +37,32 @@
 <div class="page">
   <nav class="tabs tabs--repo" aria-label="{{ chrome.locale.t(crate::i18n::RepoText::Repository) }}">
     <a class="tab" {% if tab == "code" %}aria-current="page"{% endif %} href="/{{ repo.owner_name }}/{{ repo.name }}{% if repo_nav_branch is defined %}?branch={{ repo_nav_branch }}{% endif %}">
-      <svg class="icon" aria-hidden="true"><use href="/img/icons.svg#code"></use></svg>
+      <svg class="icon" aria-hidden="true"><use href="/img/icons.svg?v={{ crate::templates::ICONS_SVG_V }}#code"></use></svg>
       {{ chrome.locale.t(crate::i18n::CommonText::Code) }}
     </a>
     <a class="tab" {% if tab == "commits" %}aria-current="page"{% endif %} href="/{{ repo.owner_name }}/{{ repo.name }}/commits{% if repo_nav_branch is defined %}?branch={{ repo_nav_branch }}{% endif %}">
-      <svg class="icon" aria-hidden="true"><use href="/img/icons.svg#commit"></use></svg>
+      <svg class="icon" aria-hidden="true"><use href="/img/icons.svg?v={{ crate::templates::ICONS_SVG_V }}#commit"></use></svg>
       {{ chrome.locale.t(crate::i18n::CommonText::Commits) }}
     </a>
     <a class="tab" {% if tab == "refs" %}aria-current="page"{% endif %} href="/{{ repo.owner_name }}/{{ repo.name }}/refs">
-      <svg class="icon" aria-hidden="true"><use href="/img/icons.svg#branch"></use></svg>
+      <svg class="icon" aria-hidden="true"><use href="/img/icons.svg?v={{ crate::templates::ICONS_SVG_V }}#branch"></use></svg>
       {{ chrome.locale.t(crate::i18n::RepoText::BranchesAndTags) }}
     </a>
     <a class="tab" {% if tab == "releases" %}aria-current="page"{% endif %} href="/{{ repo.owner_name }}/{{ repo.name }}/releases">
-      <svg class="icon" aria-hidden="true"><use href="/img/icons.svg#tag"></use></svg>
+      <svg class="icon" aria-hidden="true"><use href="/img/icons.svg?v={{ crate::templates::ICONS_SVG_V }}#tag"></use></svg>
       {{ chrome.locale.t(crate::i18n::RepoFeatureText::Releases) }}
     </a>
     <a class="tab" {% if tab == "issues" %}aria-current="page"{% endif %} href="/{{ repo.owner_name }}/{{ repo.name }}/issues">
-      <svg class="icon" aria-hidden="true"><use href="/img/icons.svg#issue"></use></svg>
+      <svg class="icon" aria-hidden="true"><use href="/img/icons.svg?v={{ crate::templates::ICONS_SVG_V }}#issue"></use></svg>
       {{ chrome.locale.t(crate::i18n::CommonText::Issues) }} <span class="badge badge--count">{{ repo.open_issues }}</span>
     </a>
     <a class="tab" {% if tab == "pulls" %}aria-current="page"{% endif %} href="/{{ repo.owner_name }}/{{ repo.name }}/pulls">
-      <svg class="icon" aria-hidden="true"><use href="/img/icons.svg#pull"></use></svg>
+      <svg class="icon" aria-hidden="true"><use href="/img/icons.svg?v={{ crate::templates::ICONS_SVG_V }}#pull"></use></svg>
       {{ chrome.locale.t(crate::i18n::CommonText::PullRequests) }} <span class="badge badge--count">{{ repo.open_pulls }}</span>
     </a>
     {% if is_owner %}
       <a class="tab" {% if tab == "settings" %}aria-current="page"{% endif %} href="/{{ repo.owner_name }}/{{ repo.name }}/settings">
-        <svg class="icon" aria-hidden="true"><use href="/img/icons.svg#settings"></use></svg>
+        <svg class="icon" aria-hidden="true"><use href="/img/icons.svg?v={{ crate::templates::ICONS_SVG_V }}#settings"></use></svg>
         {{ chrome.locale.t(crate::i18n::CommonText::Settings) }}
       </a>
     {% endif %}

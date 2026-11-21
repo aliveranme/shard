@@ -1,10 +1,10 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="page" style="padding:72px 0">
-  <div class="card card--warm" style="max-width:720px;margin:0 auto;text-align:center">
+<div class="page error-page">
+  <div class="card card--warm error-card">
     <p class="eyebrow">{{ chrome.locale.t(crate::i18n::CommonText::ErrorHeading) }}</p>
-    <h1 class="hero__title" style="font-size:clamp(3rem,10vw,6rem)">{{ status }}</h1>
-    <p class="muted" style="margin:16px auto 28px;max-width:32rem">{{ message }}</p>
+    <h1 class="hero__title error-card__code">{{ status }}</h1>
+    <p class="muted error-card__msg">{{ message }}</p>
     <a class="btn btn--primary" href="/">{{ chrome.locale.t(crate::i18n::CommonText::BackToDashboard) }}</a>
   </div>
 </div>

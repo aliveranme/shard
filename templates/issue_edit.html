@@ -23,7 +23,7 @@
     </div>
     {% if can_classify %}
       <input type="hidden" name="classify" value="1">
-      <fieldset class="field" style="min-inline-size:0; overflow-wrap:anywhere">
+      <fieldset class="field field--fieldset">
         <legend>{{ chrome.locale.t(crate::i18n::IssueMetadataText::Labels) }}</legend>
         {% for item in labels %}
           <label class="checkbox">

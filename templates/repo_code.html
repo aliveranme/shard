@@ -75,7 +75,7 @@ git push -u origin {{ repo.default_branch }}</code></pre>
           {% for file in files %}
             <a class="file-row" href="/{{ repo.owner_name }}/{{ repo.name }}/{% if file.is_dir %}src{% else %}blob{% endif %}/{{ file.url_path }}?branch={{ branch_url }}">
               <svg class="icon file-row__icon{% if file.is_dir %} file-row__icon--dir{% endif %}" aria-hidden="true">
-                <use href="/img/icons.svg#{% if file.is_dir %}folder{% else %}file{% endif %}"></use>
+                <use href="/img/icons.svg?v={{ crate::templates::ICONS_SVG_V }}#{% if file.is_dir %}folder{% else %}file{% endif %}"></use>
               </svg>
               <span class="file-row__name mono">{{ file.name }}{% if file.is_dir %}/{% endif %}</span>
               {% if show_sizes %}<span class="file-row__size">{{ file.size }}</span>{% endif %}
@@ -110,7 +110,7 @@ git push -u origin {{ repo.default_branch }}</code></pre>
       <div class="side-card">
         <h2 class="side-card__title">{{ chrome.locale.t(crate::i18n::RepoText::About) }}</h2>
         <p>{% if repo.description.is_empty() %}{{ chrome.locale.t(crate::i18n::CommonText::NoDescription) }}{% else %}{{ repo.description }}{% endif %}</p>
-        <div class="side-list" style="margin-top:12px">
+        <div class="side-list stack-sm">
           <div class="side-row"><span class="muted">{{ chrome.locale.t(crate::i18n::RepoText::DefaultBranch) }}</span><code>{{ repo.default_branch }}</code></div>
           <div class="side-row"><span class="muted">{{ chrome.locale.t(crate::i18n::RepoText::Visibility) }}</span><span>{% if repo.is_private() %}{{ chrome.locale.t(crate::i18n::CommonText::Private) }}{% else %}{{ chrome.locale.t(crate::i18n::CommonText::Public) }}{% endif %}</span></div>
           <div class="side-row"><span class="muted">{{ chrome.locale.t(crate::i18n::CommonText::Issues) }}</span><span>{{ chrome.locale.open_count(repo.open_issues) }}</span></div>
@@ -121,7 +121,7 @@ git push -u origin {{ repo.default_branch }}</code></pre>
       <div class="side-card">
         <h2 class="side-card__title">{{ chrome.locale.t(crate::i18n::RepoText::Clone) }}</h2>
         <code class="clone-url">{{ clone_url }}</code>
-        <p style="margin-top:12px">{{ chrome.locale.t(crate::i18n::RepoText::CloneHelp) }}</p>
+        <p class="stack-sm">{{ chrome.locale.t(crate::i18n::RepoText::CloneHelp) }}</p>
         <p><a href="/user/settings/tokens">{{ chrome.locale.t(crate::i18n::RepoText::ManageTokens) }}</a></p>
       </div>
     </aside>

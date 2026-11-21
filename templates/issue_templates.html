@@ -45,7 +45,7 @@
         {% if let Some(id) = values.id %}
           <details class="card card--danger">
             <summary>{{ chrome.locale.t(crate::i18n::RepoFeatureText::RemoveIssueTemplate) }}</summary>
-            <form class="form" method="post" action="{{ settings_url }}/issue-templates/{{ id }}/delete" style="margin-block-start: 12px">
+            <form class="form stack-sm" method="post" action="{{ settings_url }}/issue-templates/{{ id }}/delete">
               {% include "csrf.html" %}
               <input type="hidden" name="version" value="{{ values.version }}">
               <p>{{ chrome.locale.t(crate::i18n::RepoFeatureText::RemoveIssueTemplateHelp) }}</p>
@@ -60,7 +60,7 @@
           {% for choice in choices %}
             <li><a class="list__row" href="{{ settings_url }}/issue-templates?edit={{ choice.id }}">
               <span class="list__main"><span class="list__title"><bdi>{{ choice.name }}</bdi></span></span>
-              <svg class="icon" aria-hidden="true"><use href="/img/icons.svg#arrow-right"></use></svg>
+              <svg class="icon" aria-hidden="true"><use href="/img/icons.svg?v={{ crate::templates::ICONS_SVG_V }}#arrow-right"></use></svg>
             </a></li>
           {% endfor %}
         </ul>

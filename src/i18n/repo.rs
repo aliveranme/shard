@@ -30,6 +30,7 @@ catalog! {
         CloneHelp => "Use your access token as the Git password. Pushing requires repository write access and a write token.", "请使用访问令牌作为 Git 密码。推送需要仓库写入权限及写入令牌。";
         ManageTokens => "Manage access tokens", "管理访问令牌";
         File => "File", "文件";
+        LineNumber => "Line", "行";
         RawFile => "Raw file", "原始文件";
         BinaryFile => "Binary file", "二进制文件";
         NoPreview => "Preview is not available for this file.", "此文件无法预览。";

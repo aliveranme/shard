@@ -1,14 +1,14 @@
 use super::common::page_title;
 use crate::auth;
 use crate::avatar::{AvatarImage, UploadError};
-use crate::ctx::AppState;
+use crate::ctx::{AppState, ThemePreference, THEME_COOKIE};
 use crate::crypto;
 use crate::db;
 use crate::i18n::{AccountText, CommonText, LANGUAGE_COOKIE, LanguagePreference, Locale};
 use crate::models::AccessToken;
 use crate::pagination::{PageRequest, PAGE_SIZE};
 use crate::templates::{error_response, render, AuthPage, Chrome};
-use crate::account::{AccountPage, LanguagePage, TokensPage, TokenRow};
+use crate::account::{AccountPage, AppearancePage, LanguagePage, TokensPage, TokenRow};
 use crate::util;
 use worker::*;
 
@@ -115,7 +115,10 @@ pub async fn signup_submit(req: Request, ctx: RouteContext<AppState>) -> Result<
     if !util::valid_slug(&username) || username.len() < 2 || username.len() > 100 {
         return invalid(AccountText::InvalidUsername);
     }
-    if matches!(username.to_ascii_lowercase().as_str(), "user" | "explore" | "new" | "issues" | "pulls" | "static" | "api" | "favicon.ico" | "robots.txt") {
+    if matches!(
+        username.to_ascii_lowercase().as_str(),
+        "user" | "explore" | "new" | "issues" | "pulls" | "repo" | "static" | "assets" | "css" | "fonts" | "img" | "api" | "favicon.ico" | "robots.txt" | "_headers"
+    ) {
         return invalid(AccountText::ReservedUsername);
     }
     if email.len() > 254 || !util::valid_email(&email) {
@@ -458,5 +461,32 @@ pub async fn update_language(req: Request, ctx: RouteContext<AppState>) -> Resul
             &format!("{LANGUAGE_COOKIE}={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000{secure}", preference.code()),
         )?;
     }
+    Ok(response)
+}
+
+pub async fn appearance_page(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
+    let state = &ctx.data;
+    render(&AppearancePage {
+        chrome: Chrome::new(state),
+        title: page_title(&[state.locale.t(AccountText::Appearance)]),
+        preference: state.theme_preference.code(),
+        saved: util::query_param(&req, "updated").as_deref() == Some("1"),
+    })
+}
+
+pub async fn update_appearance(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
+    let state = &ctx.data;
+    let value = util::form_value(state.form()?, "theme");
+    let Some(preference) = value.as_deref().and_then(ThemePreference::parse) else {
+        return error_response(&Chrome::new(state), 400, state.locale.t(AccountText::InvalidTheme));
+    };
+    let mut response = util::redirect("/user/settings/appearance?updated=1")?;
+    let secure = if util::is_secure(&req) { "; Secure" } else { "" };
+    let max_age = if preference == ThemePreference::Auto { 0 } else { 31536000 };
+    let cookie_value = if preference == ThemePreference::Auto { "" } else { preference.code() };
+    response.headers_mut().append(
+        "Set-Cookie",
+        &format!("{THEME_COOKIE}={cookie_value}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}{secure}"),
+    )?;
     Ok(response)
 }

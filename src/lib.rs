@@ -45,7 +45,7 @@ mod security;
 mod util;
 mod webhooks;
 
-use ctx::AppState;
+use ctx::{AppState, ThemePreference, THEME_COOKIE};
 use i18n::{AccountText, CommonText, LANGUAGE_COOKIE, LanguagePreference, Locale};
 
 fn routes(router: Router<AppState>) -> Router<AppState> {
@@ -89,6 +89,8 @@ fn routes(router: Router<AppState>) -> Router<AppState> {
         .post_async("/user/settings/gpg", gpg::update)
         .get_async("/user/settings/language", handlers::auth_handlers::language_page)
         .post_async("/user/settings/language", handlers::auth_handlers::update_language)
+        .get_async("/user/settings/appearance", handlers::auth_handlers::appearance_page)
+        .post_async("/user/settings/appearance", handlers::auth_handlers::update_appearance)
         .get_async("/user/settings/transfers", repo_lifecycle::transfers)
         .post_async("/user/settings/transfers", repo_lifecycle::respond_transfer)
         .get_async("/user/settings/repository-import", repo_lifecycle::import_form)
@@ -246,6 +248,15 @@ async fn serve(mut req: Request, env: Env, worker_ctx: Context, request_id: &str
     } else {
         util::cookie(&req, LANGUAGE_COOKIE).as_deref().and_then(LanguagePreference::parse)
     };
+    let theme_preference = if machine {
+        ThemePreference::Auto
+    } else {
+        util::cookie(&req, THEME_COOKIE)
+            .as_deref()
+            .and_then(ThemePreference::parse)
+            .unwrap_or_default()
+    };
+    let bfcache = !machine && security::allows_bfcache(&req);
     let browser_locale = || {
         if machine {
             Locale::En
@@ -274,11 +285,11 @@ async fn serve(mut req: Request, env: Env, worker_ctx: Context, request_id: &str
             let token = security::csrf_token(&req, false).await?;
             let locale = guest_preference.and_then(LanguagePreference::locale).unwrap_or_else(browser_locale);
             let response = templates::error_response(
-                &templates::Chrome { locale, registration_open: auth::registration_open(&env), ..Default::default() },
+                &templates::Chrome { locale, theme: theme_preference, registration_open: auth::registration_open(&env), ..Default::default() },
                 503,
                 locale.t(CommonText::AccountUnavailable),
             )?;
-            return security::finish(response, &token, previous_csrf.as_deref(), secure, locale);
+            return security::finish(response, &token, previous_csrf.as_deref(), secure, locale, false);
         }
     };
     let language_preference = if machine {
@@ -296,6 +307,7 @@ async fn serve(mut req: Request, env: Env, worker_ctx: Context, request_id: &str
         user,
         locale,
         language_preference,
+        theme_preference,
         csrf_token,
         registration_open: auth::registration_open(&env),
         form: None,
@@ -335,7 +347,7 @@ async fn serve(mut req: Request, env: Env, worker_ctx: Context, request_id: &str
         };
         if let Some((status, message)) = rejected {
             let response = templates::error_response(&chrome, status, message)?;
-            return security::finish(response, &state.csrf_token, previous_csrf.as_deref(), secure, locale);
+            return security::finish(response, &state.csrf_token, previous_csrf.as_deref(), secure, locale, false);
         }
     }
 
@@ -364,7 +376,7 @@ async fn serve(mut req: Request, env: Env, worker_ctx: Context, request_id: &str
         let _ = response.headers_mut().set("X-Request-ID", request_id);
         Ok(response)
     } else {
-        security::finish(response, &chrome.csrf_token, previous_csrf.as_deref(), secure, locale)
+        security::finish(response, &chrome.csrf_token, previous_csrf.as_deref(), secure, locale, bfcache)
     }
 }
 
@@ -378,20 +390,20 @@ async fn scheduled(event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
                 return;
             }
         };
-        if repo_lifecycle::reconcile_pending(&env, &limits).await.is_err() {
-            console_log!("event=repository_copy_reconcile_failed");
+        if let Err(error) = repo_lifecycle::reconcile_pending(&env, &limits).await {
+            console_log!("event=repository_copy_reconcile_failed error={error}");
         }
-        if git_activity::reconcile(&env, limits.push_intents).await.is_err() {
-            console_log!("event=git_push_reconcile_failed");
+        if let Err(error) = git_activity::reconcile(&env, limits.push_intents).await {
+            console_log!("event=git_push_reconcile_failed error={error}");
         }
-        if pull_review::refresh_pending(&env, limits.pr_refreshes).await.is_err() {
-            console_log!("event=pull_comparison_refresh_failed");
+        if let Err(error) = pull_review::refresh_pending(&env, limits.pr_refreshes).await {
+            console_log!("event=pull_comparison_refresh_failed error={error}");
         }
-        if branch_rules::process_queue(&env, limits.merges).await.is_err() {
-            console_log!("event=merge_queue_failed");
+        if let Err(error) = branch_rules::process_queue(&env, limits.merges).await {
+            console_log!("event=merge_queue_failed error={error}");
         }
-        if webhooks::deliver_pending(&env, limits.webhook_subscriptions, limits.webhook_legacy).await.is_err() {
-            console_log!("event=webhook_delivery_failed");
+        if let Err(error) = webhooks::deliver_pending(&env, limits.webhook_subscriptions, limits.webhook_legacy).await {
+            console_log!("event=webhook_delivery_failed error={error}");
         }
         return;
     }

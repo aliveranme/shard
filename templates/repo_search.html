@@ -1,7 +1,7 @@
 <form class="search" method="get" action="/explore/repos" role="search">
-  <svg class="icon" aria-hidden="true"><use href="/img/icons.svg#search"></use></svg>
+  <svg class="icon" aria-hidden="true"><use href="/img/icons.svg?v={{ crate::templates::ICONS_SVG_V }}#search"></use></svg>
   <input type="search" name="q" value="{{ query }}" placeholder="{{ chrome.locale.t(crate::i18n::WebText::SearchRepositoryHint) }}" aria-label="{{ chrome.locale.t(crate::i18n::WebText::SearchRepositories) }}">
   <button type="submit" aria-label="{{ chrome.locale.t(crate::i18n::CommonText::Search) }}">
-    <svg class="icon" aria-hidden="true"><use href="/img/icons.svg#arrow-right"></use></svg>
+    <svg class="icon" aria-hidden="true"><use href="/img/icons.svg?v={{ crate::templates::ICONS_SVG_V }}#arrow-right"></use></svg>
   </button>
 </form>

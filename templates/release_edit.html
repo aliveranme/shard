@@ -64,7 +64,7 @@
   {% if let Some(release) = current %}
     <details class="card card--danger">
       <summary>{{ chrome.locale.t(crate::i18n::RepoFeatureText::RemoveRelease) }}</summary>
-      <form class="form" method="post" action="{{ release_url }}/{{ release.id }}/delete" style="margin-block-start: 12px">
+      <form class="form stack-sm" method="post" action="{{ release_url }}/{{ release.id }}/delete">
         {% include "csrf.html" %}
         <input type="hidden" name="version" value="{{ release.version }}">
         <p>{{ chrome.locale.t(crate::i18n::RepoFeatureText::RemoveReleaseHelp) }}</p>

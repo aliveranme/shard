@@ -1,6 +1,6 @@
 <span class="avatar {{ avatar_class }}" aria-hidden="true">
   {%- if let Some(id) = avatar.id -%}
-    <img class="avatar__image" src="/user/avatar/{{ id }}" alt="">
+    <img class="avatar__image" src="/user/avatar/{{ id }}" alt="" loading="lazy" decoding="async" width="{% if avatar_class == "avatar--sm" %}24{% else if avatar_class == "avatar--lg" %}72{% else %}32{% endif %}" height="{% if avatar_class == "avatar--sm" %}24{% else if avatar_class == "avatar--lg" %}72{% else %}32{% endif %}">
   {%- else -%}
     {{ avatar.initial }}
   {%- endif -%}

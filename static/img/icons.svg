@@ -48,4 +48,8 @@
     <path d="M2.5 4h2.25m2.5 0h6.25m-11 4h6.25m2.5 0h2.25m-11 4h2.25m2.5 0h6.25"/>
     <circle cx="6" cy="4" r="1.25"/><circle cx="10" cy="8" r="1.25"/><circle cx="6" cy="12" r="1.25"/>
   </symbol>
+  <symbol id="lock" viewBox="0 0 16 16">
+    <rect x="3.25" y="7" width="9.5" height="6.75" rx="1.5"/>
+    <path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/>
+  </symbol>
 </svg>

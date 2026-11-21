@@ -93,15 +93,33 @@ pub fn is_html(headers: &Headers) -> Result<bool> {
     Ok(headers.get("Content-Type")?.is_some_and(|value| value.starts_with("text/html")))
 }
 
+pub fn allows_bfcache(req: &Request) -> bool {
+    if req.method() != Method::Get {
+        return false;
+    }
+    let path = req.path();
+    let trimmed = path.trim_end_matches('/');
+    !(trimmed == "/new"
+        || trimmed.starts_with("/user/")
+        || trimmed == "/user"
+        || trimmed.contains("/settings")
+        || trimmed.ends_with("/new")
+        || trimmed.ends_with("/edit")
+        || trimmed.ends_with("/fork"))
+}
+
 pub fn finish(
     mut response: Response,
     token: &str,
     previous_token: Option<&str>,
     secure: bool,
     locale: Locale,
+    bfcache: bool,
 ) -> Result<Response> {
+    let status = response.status_code();
+    let allow_bfcache = bfcache && status == 200;
     if response.headers_mut().set("X-Content-Type-Options", "nosniff").is_ok() {
-        apply(response.headers_mut(), token, previous_token, secure, locale)?;
+        apply(response.headers_mut(), token, previous_token, secure, locale, allow_bfcache)?;
         return Ok(response);
     }
     // A subrequest response can carry immutable headers. Copy them into a
@@ -111,7 +129,7 @@ pub fn finish(
         headers.set(&name, &value)?;
     }
     headers.set("X-Content-Type-Options", "nosniff")?;
-    apply(&headers, token, previous_token, secure, locale)?;
+    apply(&headers, token, previous_token, secure, locale, allow_bfcache)?;
     Ok(response.with_headers(headers))
 }
 
@@ -121,6 +139,7 @@ fn apply(
     previous_token: Option<&str>,
     secure: bool,
     locale: Locale,
+    allow_bfcache: bool,
 ) -> Result<()> {
     headers.set("X-Frame-Options", "DENY")?;
     if headers.get("Referrer-Policy")?.is_none() {
@@ -130,16 +149,22 @@ fn apply(
     if headers.get("Content-Security-Policy")?.is_none() {
         headers.set(
             "Content-Security-Policy",
-            "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self'",
+            "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'none'; style-src 'self'; img-src 'self' data: https:; font-src 'self'; connect-src 'self'",
         )?;
     }
+    let html = is_html(headers)?;
     if headers.get("Cache-Control")?.is_none() {
-        headers.set("Cache-Control", "no-store")?;
+        let policy = if allow_bfcache && html {
+            "private, no-cache"
+        } else {
+            "no-store"
+        };
+        headers.set("Cache-Control", policy)?;
     }
     if secure {
         headers.set("Strict-Transport-Security", "max-age=31536000")?;
     }
-    if is_html(headers)? {
+    if html {
         headers.set("Content-Language", locale.code())?;
         if previous_token != Some(token) {
             headers.append(

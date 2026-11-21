@@ -60,3 +60,12 @@ pub struct LanguagePage {
     pub languages: &'static [Locale],
     pub saved: bool,
 }
+
+#[derive(Template)]
+#[template(path = "appearance.html")]
+pub struct AppearancePage {
+    pub chrome: Chrome,
+    pub title: String,
+    pub preference: &'static str,
+    pub saved: bool,
+}

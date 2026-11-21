@@ -80,7 +80,7 @@
       <div class="list">
         {% for token in tokens %}
           <div class="list__row">
-            <span class="list__icon" aria-hidden="true"><svg class="icon"><use href="/img/icons.svg#key"></use></svg></span>
+            <span class="list__icon" aria-hidden="true"><svg class="icon"><use href="/img/icons.svg?v={{ crate::templates::ICONS_SVG_V }}#key"></use></svg></span>
             <div class="list__main">
               <div class="list__title">{{ token.name }}</div>
               <div class="list__meta">

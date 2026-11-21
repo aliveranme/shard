@@ -49,7 +49,7 @@
     <div class="list">
       {% for issue in issues %}
         <a class="list__row" href="/{{ repo.owner_name }}/{{ repo.name }}/{% if issue.is_pull %}pulls{% else %}issues{% endif %}/{{ issue.number }}">
-          <span class="list__icon" aria-hidden="true"><svg class="icon"><use href="/img/icons.svg#{% if issue.is_pull %}pull{% else %}issue{% endif %}"></use></svg></span>
+          <span class="list__icon" aria-hidden="true"><svg class="icon"><use href="/img/icons.svg?v={{ crate::templates::ICONS_SVG_V }}#{% if issue.is_pull %}pull{% else %}issue{% endif %}"></use></svg></span>
           <div class="list__main">
             <div class="list__title">{{ issue.title }}</div>
             {% if !issue.labels.is_empty() %}

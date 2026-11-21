@@ -6,12 +6,12 @@
   <div class="page-head">
     <h1 class="page-title">{{ chrome.locale.t(crate::i18n::SearchText::RepositorySearch) }}</h1>
   </div>
-  <form method="get" action="/{{ repo.owner_name }}/{{ repo.name }}/search" role="search" class="list-toolbar" style="align-items:end">
-    <div class="field" style="flex:2 1 14rem">
+  <form method="get" action="/{{ repo.owner_name }}/{{ repo.name }}/search" role="search" class="list-toolbar list-toolbar--filters">
+    <div class="field field--grow-2">
       <label for="repo-search-query">{{ chrome.locale.t(crate::i18n::SearchText::Query) }}</label>
       <input class="input" id="repo-search-query" type="search" name="q" value="{{ query }}" maxlength="256" required>
     </div>
-    <div class="field" style="flex:1 1 10rem">
+    <div class="field field--grow-md">
       <label for="repo-search-type">{{ chrome.locale.t(crate::i18n::SearchText::SearchIn) }}</label>
       <select class="select" id="repo-search-type" name="type" aria-describedby="repo-search-coverage">
         <option value="path" {% if mode.as_str() == "path" %}selected{% endif %}>{{ chrome.locale.t(crate::i18n::SearchText::Paths) }}</option>
@@ -19,13 +19,13 @@
         <option value="commits" {% if mode.as_str() == "commits" %}selected{% endif %}>{{ chrome.locale.t(crate::i18n::SearchText::Commits) }}</option>
       </select>
     </div>
-    <div class="field" style="flex:1 1 12rem">
+    <div class="field field--grow-lg">
       <label for="repo-search-ref">{{ chrome.locale.t(crate::i18n::SearchText::Reference) }}</label>
       <input class="input mono" id="repo-search-ref" name="branch" value="{{ branch }}" maxlength="1024" required spellcheck="false" autocomplete="off">
     </div>
     <button class="btn btn--primary" type="submit">{{ chrome.locale.t(crate::i18n::CommonText::Search) }}</button>
   </form>
-  <p class="meta" id="repo-search-coverage" style="margin-block:12px">
+  <p class="meta my-sm" id="repo-search-coverage">
     {% if mode.as_str() == "code" %}
       {{ chrome.locale.t(crate::i18n::SearchText::CodeCoverage) }}
     {% else if mode.as_str() == "commits" %}
@@ -38,7 +38,7 @@
     <div class="alert alert--warn" role="alert">{{ message }}</div>
   {% endif %}
   {% if let Some(result) = results %}
-    <p class="meta" style="margin-block:12px; overflow-wrap:anywhere">
+    <p class="meta my-sm wrap-anywhere">
       {{ chrome.locale.t(crate::i18n::SearchText::SearchedCommit) }}
       <a href="/{{ repo.owner_name }}/{{ repo.name }}/commit/{{ result.snapshot }}?branch={{ result.snapshot }}"><code>{{ result.snapshot }}</code></a>
     </p>
@@ -62,12 +62,12 @@
       <div class="list">
         {% for hit in result.hits %}
           <a class="list__row" href="{{ hit.url }}">
-            <span class="list__icon" aria-hidden="true"><svg class="icon"><use href="/img/icons.svg#{% if mode.as_str() == "commits" %}commit{% else %}file{% endif %}"></use></svg></span>
+            <span class="list__icon" aria-hidden="true"><svg class="icon"><use href="/img/icons.svg?v={{ crate::templates::ICONS_SVG_V }}#{% if mode.as_str() == "commits" %}commit{% else %}file{% endif %}"></use></svg></span>
             <div class="list__main">
               <div class="list__title"><code><bdi>{{ hit.title }}</bdi></code></div>
               {% if let Some(detail) = hit.detail %}
                 <div class="list__meta">
-                  {% if let Some(line) = hit.line %}{{ chrome.locale.t(crate::i18n::SearchText::Line) }} {{ line }} · {% endif %}<code style="white-space:pre-wrap"><bdi>{{ detail }}</bdi></code>
+                  {% if let Some(line) = hit.line %}{{ chrome.locale.t(crate::i18n::SearchText::Line) }} {{ line }} · {% endif %}<code class="pre-wrap"><bdi>{{ detail }}</bdi></code>
                 </div>
               {% endif %}
             </div>

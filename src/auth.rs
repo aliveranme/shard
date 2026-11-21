@@ -9,6 +9,7 @@ use worker::*;
 
 const SESSION_TTL: i64 = 30 * 24 * 3600;
 const TOKEN_USAGE_INTERVAL: i64 = 60;
+const DUMMY_PASSWORD_HASH: &str = "pbkdf2_sha256$100000$00000000000000000000000000000000$0000000000000000000000000000000000000000000000000000000000000000";
 
 /// `SHARD_REGISTRATION=open|closed`; a missing or invalid value closes registration safely.
 pub fn registration_open(env: &Env) -> bool {
@@ -82,7 +83,11 @@ pub(crate) async fn login_session(env: &Env, login: &str, password: &str) -> Res
          WHERE username = ? COLLATE NOCASE OR email = ? COLLATE NOCASE LIMIT 1",
         &[util::js_text(login), util::js_text(login)],
     ).await?;
-    let Some(account) = found else { return Ok(None) };
+    let Some(account) = found else {
+        // Equalize login latency when the account does not exist.
+        let _ = crypto::verify_password(password, DUMMY_PASSWORD_HASH).await;
+        return Ok(None);
+    };
     if !crypto::verify_password(password, &account.password_hash).await? {
         return Ok(None);
     }

@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page">
+  <div class="page-head">
+    <div>
+      <h1 class="page-title">{{ chrome.locale.t(crate::i18n::AccountText::Appearance) }}</h1>
+      <p class="page-sub">{{ chrome.locale.t(crate::i18n::AccountText::AppearanceIntro) }}</p>
+    </div>
+  </div>
+  <div class="{% if chrome.signed_in %}settings-layout{% else %}settings-standalone{% endif %}">
+    {% if chrome.signed_in %}
+      {% let settings_section = "appearance" %}
+      {% include "account_nav.html" %}
+    {% endif %}
+    <div class="settings-main">
+      {% if saved %}
+        <p class="alert alert--success" role="status">{{ chrome.locale.t(crate::i18n::AccountText::ThemeSaved) }}</p>
+      {% endif %}
+      <form class="form card" method="post" action="/user/settings/appearance">
+        {% include "csrf.html" %}
+        <div class="field">
+          <label for="theme">{{ chrome.locale.t(crate::i18n::AccountText::Theme) }}</label>
+          <select class="select" id="theme" name="theme" aria-describedby="theme-help">
+            <option value="auto"{% if preference == "auto" %} selected{% endif %}>{{ chrome.locale.t(crate::i18n::AccountText::ThemeSystem) }}</option>
+            <option value="light"{% if preference == "light" %} selected{% endif %}>{{ chrome.locale.t(crate::i18n::AccountText::ThemeLight) }}</option>
+            <option value="dark"{% if preference == "dark" %} selected{% endif %}>{{ chrome.locale.t(crate::i18n::AccountText::ThemeDark) }}</option>
+          </select>
+          <p class="help" id="theme-help">{{ chrome.locale.t(crate::i18n::AccountText::ThemeStorageHelp) }}</p>
+        </div>
+        <button class="btn btn--primary" type="submit">{{ chrome.locale.t(crate::i18n::AccountText::SaveTheme) }}</button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

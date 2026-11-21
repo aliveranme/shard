@@ -325,7 +325,11 @@ pub async fn file(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
             (text.into_owned(), None)
         }
     };
-    let highlighted = (!content.is_empty()).then(|| crate::highlight::render(&path, &content)).flatten();
+    let (code_lines, is_highlighted) = if content.is_empty() {
+        (Vec::new(), false)
+    } else {
+        crate::highlight::render_lines(&path, &content)
+    };
     let page = FilePage {
         chrome: Chrome::new(&state),
         title: page_title(&[&repo.full_name(), &path]),
@@ -334,8 +338,8 @@ pub async fn file(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
         branch_url,
         path_url: util::url_path(&path),
         crumbs: crumbs(&path),
-        content,
-        highlighted,
+        code_lines,
+        is_highlighted,
         markdown_html,
         image_url,
         is_binary,

@@ -75,7 +75,7 @@
       <section id="danger">
         <div class="card card--danger">
           <h2 class="card__title">{{ chrome.locale.t(crate::i18n::RepoText::DeleteThisRepository) }}</h2>
-          <p class="card__sub" style="margin-bottom:16px">{{ chrome.locale.t(crate::i18n::RepoText::DeleteHelp) }}</p>
+          <p class="card__sub mb-md">{{ chrome.locale.t(crate::i18n::RepoText::DeleteHelp) }}</p>
           <form class="form" method="post" action="/{{ repo.owner_name }}/{{ repo.name }}/settings/delete">
             {% include "csrf.html" %}
             <div class="field">

@@ -19,6 +19,7 @@ catalog! {
         CreateAccount => "Create account", "创建账号";
         HostedOn => "Self-hosted on Cloudflare Workers", "自托管于 Cloudflare Workers";
         Language => "Language", "语言";
+        Appearance => "Appearance", "外观";
         Search => "Search", "搜索";
         SearchDiscussion => "Search discussions", "搜索讨论";
         Private => "Private", "私有";

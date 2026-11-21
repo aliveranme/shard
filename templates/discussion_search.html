@@ -1,18 +1,18 @@
-<form method="get" role="search" class="list-toolbar" style="align-items:end">
+<form method="get" role="search" class="list-toolbar list-toolbar--filters">
   <input type="hidden" name="state" value="{{ state }}">
-  <div class="field" style="flex:2 1 14rem">
+  <div class="field field--grow-2">
     <label for="discussion-query">{{ chrome.locale.t(crate::i18n::CommonText::SearchDiscussion) }}</label>
     <input class="input" type="search" id="discussion-query" name="q" value="{{ query }}">
   </div>
-  <div class="field" style="flex:1 1 9rem">
+  <div class="field field--grow-1">
     <label for="discussion-label">{{ chrome.locale.t(crate::i18n::IssueMetadataText::LabelName) }}</label>
     <input class="input" id="discussion-label" name="label" value="{{ filters.label }}" maxlength="160">
   </div>
-  <div class="field" style="flex:1 1 9rem">
+  <div class="field field--grow-1">
     <label for="discussion-assignee">{{ chrome.locale.t(crate::i18n::SearchText::AssigneeUsername) }}</label>
     <input class="input" id="discussion-assignee" name="assignee" value="{{ filters.assignee }}" autocomplete="off">
   </div>
-  <div class="field" style="flex:1 1 9rem">
+  <div class="field field--grow-1">
     <label for="discussion-milestone">{{ chrome.locale.t(crate::i18n::IssueMetadataText::MilestoneName) }}</label>
     <input class="input" id="discussion-milestone" name="milestone" value="{{ filters.milestone }}" maxlength="160">
   </div>

@@ -48,6 +48,51 @@
   --weight-offset: 0;
 }
 
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --canvas: #191917;
+  --surface: #1e1e1b;
+  --inset: #242420;
+  --hover: #2a2a26;
+  --selected: #30302b;
+  --ink: #f0eee7;
+  --secondary: #ccc9c0;
+  --muted: #aaa79d;
+  --border: rgb(242 237 220 / 10%);
+  --ring-inner: rgb(242 237 220 / 15%);
+  --ring-outer: rgb(242 237 220 / 5%);
+  --ring-active-inner: rgb(242 237 220 / 25%);
+  --ring-active-outer: rgb(242 237 220 / 10%);
+  --shadow-ink: rgb(0 0 0 / 38%);
+  --diff-gutter: rgb(0 0 0 / 10%);
+
+  --action: #89bdf4;
+  --primary-ink: #201b0e;
+  --accent-surface: #372f40;
+  --accent-ink: #e1cbea;
+  --highlight-surface: #392f19;
+  --highlight-ink: #eed494;
+  --code-keyword: #f0a6c0;
+  --code-string: #a8d6b6;
+  --code-number: #f0c27a;
+  --code-type: #c3b1ff;
+  --code-function: #89bdf4;
+  --code-comment: #8f8c84;
+  --code-key: #f0c27a;
+  --code-tag: #f0a6c0;
+  --code-attr: #c3b1ff;
+  --code-meta: #aaa79d;
+  --brand-front: #1a1a1a;
+  --brand-side: #5c1a1a;
+
+  --positive-ink: #a8d6b6;
+  --positive-surface: #26382b;
+  --negative-ink: #f1b9b3;
+  --negative-surface: #3a2827;
+  --negative-ring: rgb(241 185 179 / 25%);
+  --weight-offset: -40;
+}
+
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
     color-scheme: dark;

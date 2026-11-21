@@ -46,7 +46,7 @@
             {% for branch in inventory.branches %}
               <li>
                 <a class="refs-row refs-row--link" href="/{{ repo.owner_name }}/{{ repo.name }}?branch={{ crate::util::url_path(branch.name.as_str()) }}">
-                  <svg class="icon" aria-hidden="true"><use href="/img/icons.svg#branch"></use></svg>
+                  <svg class="icon" aria-hidden="true"><use href="/img/icons.svg?v={{ crate::templates::ICONS_SVG_V }}#branch"></use></svg>
                   <span class="refs-row__body">
                     <span class="refs-row__name">
                       <bdi class="mono">{{ branch.name }}</bdi>
@@ -54,7 +54,7 @@
                     </span>
                     <code class="refs-row__hash" dir="ltr">{{ branch.oid }}</code>
                   </span>
-                  <svg class="icon refs-row__arrow" aria-hidden="true"><use href="/img/icons.svg#arrow-right"></use></svg>
+                  <svg class="icon refs-row__arrow" aria-hidden="true"><use href="/img/icons.svg?v={{ crate::templates::ICONS_SVG_V }}#arrow-right"></use></svg>
                 </a>
                 {% if is_owner && branch.name != repo.default_branch %}
                   {% let ref_name = branch.name %}
@@ -76,7 +76,7 @@
             {% for tag in inventory.tags %}
               <li>
                 <div class="refs-row">
-                  <svg class="icon" aria-hidden="true"><use href="/img/icons.svg#tag"></use></svg>
+                  <svg class="icon" aria-hidden="true"><use href="/img/icons.svg?v={{ crate::templates::ICONS_SVG_V }}#tag"></use></svg>
                   <div class="refs-row__body">
                     <div class="refs-row__name"><bdi class="mono">{{ tag.name }}</bdi></div>
                     <dl class="refs-row__objects">

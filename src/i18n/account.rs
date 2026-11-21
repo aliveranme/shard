@@ -77,6 +77,16 @@ catalog! {
         SaveLanguage => "Save language", "保存语言";
         LanguageSaved => "Language preference saved.", "语言偏好已保存。";
         InvalidLanguage => "Choose a supported interface language.", "请选择受支持的界面语言。";
+        Appearance => "Appearance", "外观";
+        AppearanceIntro => "Choose a color theme for this browser.", "为此浏览器选择界面配色主题。";
+        Theme => "Theme", "主题";
+        ThemeSystem => "Follow system", "跟随系统";
+        ThemeLight => "Light", "浅色";
+        ThemeDark => "Dark", "深色";
+        ThemeStorageHelp => "Your preference is saved in this browser.", "主题偏好将保存在此浏览器中。";
+        SaveTheme => "Save appearance", "保存外观";
+        ThemeSaved => "Appearance preference saved.", "外观偏好已保存。";
+        InvalidTheme => "Choose a supported appearance theme.", "请选择受支持的外观主题。";
         TokensIntro => "Use a token as the password when Git asks for credentials.", "Git 请求凭据时，请将令牌作为密码。";
         TokenCreated => "New token created.", "令牌已创建。";
         TokenCopyNow => "Copy it now — it will not be shown again.", "请立即复制，之后无法再查看。";

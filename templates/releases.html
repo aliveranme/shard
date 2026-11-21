@@ -15,7 +15,7 @@
       {% for release in releases %}
       <li>
         <a class="list__row" href="/{{ repo.owner_name }}/{{ repo.name }}/releases/{{ release.id }}">
-          <svg class="icon" aria-hidden="true"><use href="/img/icons.svg#tag"></use></svg>
+          <svg class="icon" aria-hidden="true"><use href="/img/icons.svg?v={{ crate::templates::ICONS_SVG_V }}#tag"></use></svg>
           <div class="list__main">
             <div class="list__title"><bdi>{{ release.title }}</bdi></div>
             <div class="list__meta"><bdi class="mono">{{ release.tag_name }}</bdi></div>

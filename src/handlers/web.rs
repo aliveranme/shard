@@ -48,19 +48,21 @@ pub async fn explore(req: Request, ctx: RouteContext<AppState>) -> Result<Respon
     let query = util::query_param(&req, "q").unwrap_or_default();
     let request_page = PageRequest::new(&req, "page");
     let database = state.db()?;
-    let like = format!("%{}%", query.trim());
+    let trimmed = query.trim();
     let mut repos: Vec<Repo> = db::all(
         &database,
         &format!(
             "SELECT {REPO_COLUMNS} FROM repos r JOIN users u ON u.id = r.owner_id
              WHERE {VISIBLE_REPO_SQL}
-               AND (? = '' OR r.name LIKE ? OR r.description LIKE ? OR u.username LIKE ?)
+               AND (? = '' OR instr(lower(r.name), lower(?)) > 0
+                    OR instr(lower(r.description), lower(?)) > 0
+                    OR instr(lower(u.username), lower(?)) > 0)
              ORDER BY r.updated_at DESC, r.id DESC LIMIT ? OFFSET ?"
         ),
         &[
             viewer_id, viewer_admin,
-            util::js_text(query.trim()), util::js_text(&like),
-            util::js_text(&like), util::js_text(&like),
+            util::js_text(trimmed), util::js_text(trimmed),
+            util::js_text(trimmed), util::js_text(trimmed),
             util::js_int((PAGE_SIZE + 1) as i64), util::js_int(request_page.offset()),
         ],
     )

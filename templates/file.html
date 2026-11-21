@@ -32,15 +32,22 @@
         <a class="btn btn--primary" href="/{{ repo.owner_name }}/{{ repo.name }}/raw/{{ path_url }}?branch={{ branch_url }}">{{ chrome.locale.t(crate::i18n::RepoText::DownloadRaw) }}</a>
       </div>
     {% else %}
-      {% if truncated %}<div class="alert alert--warn" style="margin:0;border-radius:0">{{ chrome.locale.t(crate::i18n::RepoText::TruncatedPreview) }}</div>{% endif %}
+      {% if truncated %}<div class="alert alert--warn alert--flush">{{ chrome.locale.t(crate::i18n::RepoText::TruncatedPreview) }}</div>{% endif %}
       {% if let Some(markdown) = markdown_html %}
         <div class="markup">{{ markdown|safe }}</div>
       {% else %}
-        {% if let Some(highlighted) = highlighted %}
-          <pre tabindex="0"><code class="code--highlight">{{ highlighted|safe }}</code></pre>
-        {% else %}
-          <pre tabindex="0"><code>{{ content }}</code></pre>
-        {% endif %}
+        <div class="code-scroll" tabindex="0">
+          <table class="code-table" dir="ltr">
+            <tbody>
+            {% for line in code_lines %}
+              <tr id="L{{ loop.index }}">
+                <td class="code-table__number"><a href="#L{{ loop.index }}" aria-label="{{ chrome.locale.t(crate::i18n::RepoText::LineNumber) }} {{ loop.index }}">{{ loop.index }}</a></td>
+                <td class="code-table__code"><code{% if is_highlighted %} class="code--highlight"{% endif %}>{{ line|safe }}</code></td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
       {% endif %}
     {% endif %}
   </div>

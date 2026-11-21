@@ -213,8 +213,14 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
       const anonymous = new Client();
       const page = await anonymous.get("/user/login");
       assert.match(page.headers.get("content-security-policy"), /script-src 'none'/);
+      assert.match(page.headers.get("content-security-policy"), /style-src 'self';/);
+      assert.doesNotMatch(page.headers.get("content-security-policy"), /unsafe-inline/);
       assert.equal(page.headers.get("x-content-type-options"), "nosniff");
       assert.equal(page.headers.get("cache-control"), "no-store");
+      assert.match(page.body, /\/css\/theme\.css\?v=[0-9a-f]{16}/);
+      assert.match(page.body, /\/css\/shard\.css\?v=[0-9a-f]{16}/);
+      const home = await anonymous.get("/");
+      assert.equal(home.headers.get("cache-control"), "private, no-cache");
       assert.match(page.headers.get("set-cookie"), /HttpOnly; SameSite=Lax/);
       const fields = { login: "suiteowner", password };
       assert.equal((await anonymous.post("/user/login", fields, { csrf: false })).status, 403);
@@ -332,12 +338,18 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
       assert.equal(first.status, 200);
       assert.equal(first.headers.get("content-type"), "image/png");
       assert.equal(first.headers.get("x-content-type-options"), "nosniff");
+      assert.match(first.headers.get("cache-control") ?? "", /public, max-age=\d+/);
+      const firstEtag = first.headers.get("etag");
+      assert.ok(firstEtag, "avatar responses include an ETag");
+      const notModified = await fetch(new URL(image, base), { headers: { "If-None-Match": firstEtag } });
+      assert.equal(notModified.status, 304);
       const firstBytes = Buffer.from(await first.arrayBuffer());
       assert.deepEqual(firstBytes.subarray(0, 8), fixturePng.subarray(0, 8));
 
       redirected(await upload(replacementPng));
-      const second = await fetch(new URL(image, base));
+      const second = await fetch(new URL(image, base), { headers: { "If-None-Match": firstEtag } });
       assert.equal(second.status, 200);
+      assert.notEqual(second.headers.get("etag"), firstEtag);
       assert.notDeepEqual(Buffer.from(await second.arrayBuffer()), firstBytes);
       redirected(await member.post(`${uploadPath}/remove`, {}));
       assert.equal((await guest.get(image)).status, 404);
@@ -519,6 +531,9 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
       const history = "/suiteowner/history";
       const preview = await owner.get(`${history}/blob/LARGE.txt?branch=feature%2Freadme`);
       assert.match(preview.body, /Preview truncated to the first 256 KiB/);
+      assert.match(preview.body, /class="code-table"/);
+      assert.match(preview.body, /id="L1"/);
+      assert.match(preview.body, /href="#L1"/);
       assert.match(preview.body, /long fixture line/);
       assert.doesNotMatch(preview.body, /raw-download-tail/);
       const rawFile = await owner.get(`${history}/raw/LARGE.txt?branch=feature%2Freadme`);
@@ -1621,6 +1636,45 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
       const result = JSON.parse(output).flatMap((item) => item.results)[0];
       assert.equal(result.tokens, 0);
       assert.equal(result.sessions, 0);
+    });
+
+    await t.test("appearance preference, reserved usernames and literal explore search enforce boundaries", async () => {
+      const guest = new Client();
+      const appearance = "/user/settings/appearance";
+      const page = await guest.get(appearance);
+      assert.equal(page.status, 200);
+      assert.equal(page.headers.get("cache-control"), "no-store");
+      assert.doesNotMatch(page.body, /data-theme=/);
+      assert.equal((await guest.post(appearance, { theme: "dark" }, { csrf: false })).status, 403);
+      assert.equal((await guest.post(appearance, { theme: "neon" })).status, 400);
+
+      const dark = await guest.post(appearance, { theme: "dark" });
+      redirected(dark);
+      assert.match(dark.headers.get("set-cookie") ?? "", /shard_theme=dark; Path=\/; HttpOnly; SameSite=Lax/);
+      assert.match((await guest.get(dark.location)).body, /<html lang="en" data-theme="dark">/);
+
+      const light = await guest.post(appearance, { theme: "light" });
+      redirected(light);
+      assert.match((await guest.get("/")).body, /<html lang="en" data-theme="light">/);
+
+      const auto = await guest.post(appearance, { theme: "auto" });
+      redirected(auto);
+      assert.doesNotMatch((await guest.get("/")).body, /data-theme=/);
+
+      await guest.get("/user/sign_up");
+      for (const reserved of ["repo", "css", "fonts", "img"]) {
+        const res = await guest.post("/user/sign_up", {
+          username: reserved, email: `${reserved}@example.test`, password,
+        });
+        assert.equal(res.status, 200);
+        assert.match(res.body, /reserved/i);
+      }
+
+      const wildcardSearch = await guest.get("/explore/repos?q=___");
+      assert.equal(wildcardSearch.status, 200);
+      assert.doesNotMatch(wildcardSearch.body, /suiteowner\/project/);
+      const literalSearch = await guest.get("/explore/repos?q=project");
+      assert.match(literalSearch.body, /suiteowner\/project/);
     });
   } finally {
     await worker?.stop();

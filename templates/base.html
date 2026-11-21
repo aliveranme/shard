@@ -1,15 +1,15 @@
 <!DOCTYPE html>
-<html lang="{{ chrome.locale.code() }}">
+<html lang="{{ chrome.locale.code() }}"{% if let Some(theme) = chrome.theme.attr() %} data-theme="{{ theme }}"{% endif %}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <link rel="preload" href="/fonts/geist-latin.woff2" as="font" type="font/woff2" crossorigin>
   <title>{{ title }}</title>
-  <link rel="stylesheet" href="/css/theme.css">
-  <link rel="stylesheet" href="/css/shard.css">
+  <link rel="stylesheet" href="/css/theme.css?v={{ crate::templates::THEME_CSS_V }}">
+  <link rel="stylesheet" href="/css/shard.css?v={{ crate::templates::SHARD_CSS_V }}">
   <link rel="icon" href="/img/favicon.ico" sizes="16x16 32x32 48x48">
-  <link rel="icon" href="/img/logo.svg" type="image/svg+xml" sizes="any">
+  <link rel="icon" href="/img/logo.svg?v={{ crate::templates::LOGO_SVG_V }}" type="image/svg+xml" sizes="any">
   <link rel="apple-touch-icon" href="/img/apple-touch-icon.png" sizes="180x180">
 </head>
 <body>
@@ -23,15 +23,13 @@
     <nav class="nav__primary" aria-label="{{ chrome.locale.t(crate::i18n::CommonText::Primary) }}">
       {% include "nav_links.html" %}
     </nav>
-    <details class="nav__menu">
-      <summary class="btn btn--ghost btn--sm">
-        {{ chrome.locale.t(crate::i18n::CommonText::Menu) }}
-        <svg class="icon" aria-hidden="true"><use href="/img/icons.svg#chevron-down"></use></svg>
-      </summary>
-      <nav class="nav__menu-panel" aria-label="{{ chrome.locale.t(crate::i18n::CommonText::Primary) }}">
-        {% include "nav_links.html" %}
-      </nav>
-    </details>
+    <button class="btn btn--ghost btn--sm nav__menu" type="button" popovertarget="nav-menu">
+      {{ chrome.locale.t(crate::i18n::CommonText::Menu) }}
+      <svg class="icon" aria-hidden="true"><use href="/img/icons.svg?v={{ crate::templates::ICONS_SVG_V }}#chevron-down"></use></svg>
+    </button>
+    <nav id="nav-menu" class="nav__menu-panel" popover aria-label="{{ chrome.locale.t(crate::i18n::CommonText::Primary) }}">
+      {% include "nav_links.html" %}
+    </nav>
   </div>
 </header>
 
@@ -46,9 +44,14 @@
       <strong>shard</strong>
     </span>
     <span>{{ chrome.locale.t(crate::i18n::CommonText::HostedOn) }}</span>
-    <a class="footer__language" href="/user/settings/language">
-      {{ chrome.locale.t(crate::i18n::CommonText::Language) }} · <span lang="{{ chrome.locale.code() }}">{{ chrome.locale.label() }}</span>
-    </a>
+    <span class="footer__links">
+      <a href="/user/settings/appearance">
+        {{ chrome.locale.t(crate::i18n::CommonText::Appearance) }} · {{ chrome.locale.t(chrome.theme.label_key()) }}
+      </a>
+      <a class="footer__language" href="/user/settings/language">
+        {{ chrome.locale.t(crate::i18n::CommonText::Language) }} · <span lang="{{ chrome.locale.code() }}">{{ chrome.locale.label() }}</span>
+      </a>
+    </span>
   </div>
 </footer>
 </body>

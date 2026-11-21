@@ -22,6 +22,25 @@ enum Lang {
     Makefile,
 }
 
+pub(crate) fn render_lines(path: &str, source: &str) -> (Vec<String>, bool) {
+    let (rendered, highlighted) = match render(path, source) {
+        Some(html) => (html, true),
+        None => {
+            let mut escaped = String::with_capacity(source.len());
+            escape_into(&mut escaped, source);
+            (escaped, false)
+        }
+    };
+    let mut lines: Vec<String> = rendered
+        .split('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line).to_owned())
+        .collect();
+    if source.ends_with('\n') && lines.last().is_some_and(String::is_empty) {
+        lines.pop();
+    }
+    (lines, highlighted)
+}
+
 pub(crate) fn render(path: &str, source: &str) -> Option<String> {
     if source.len() > 256 * 1024 {
         return None;
@@ -449,11 +468,19 @@ fn html_tag(source: &str, start: usize, out: &mut String) -> usize {
 }
 
 fn span(out: &mut String, class: &str, text: &str) {
-    out.push_str("<span class=\"");
-    out.push_str(class);
-    out.push_str("\">");
-    escape_into(out, text);
-    out.push_str("</span>");
+    for (index, segment) in text.split('\n').enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        if segment.is_empty() {
+            continue;
+        }
+        out.push_str("<span class=\"");
+        out.push_str(class);
+        out.push_str("\">");
+        escape_into(out, segment);
+        out.push_str("</span>");
+    }
 }
 
 fn escape_into(out: &mut String, text: &str) {
