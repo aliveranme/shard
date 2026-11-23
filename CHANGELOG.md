@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.2
 
 ### Security & Reliability (second audit)
 
@@ -11,6 +11,10 @@
 - **LFS & lifecycle**: Purge `lfs-incoming/` for forks, keep multipart upload IDs for abort after repository deletion (migration 0035), atomic part reconciliation, staging cleanup on `already_stored`, webhook per-repo fairness, tick budget and cancel-on-disable.
 - **Merge queue**: Per-issue wake so unrelated activity cannot reset a blocked head's timeout, wake on cancel/close/refresh, show a "checks timed out" message.
 - **Tooling**: `npm run admin` resolves placeholder D1 IDs remotely and `grant --replace` is atomic; LFS multipart client blocks HTTPS-to-loopback downgrade and retries `finish`; partial-index-friendly cron queries.
+
+### Upgrade
+
+- Apply D1 migration `0035_audit_remediation.sql` before deploying `v0.5.2`. Instances still on `v0.5.0` must apply both `0034_audit_hardening.sql` and `0035_audit_remediation.sql`.
 
 ## 0.5.1
 

@@ -6,7 +6,7 @@ Tracked findings from the full-repository code reviews.
 
 All items are complete; see [CHANGELOG.md](CHANGELOG.md) for 0.5.1.
 
-## Second audit (Unreleased)
+## Second audit (v0.5.2)
 
 All 40 findings from the second review are implemented and covered by the regression suite where observable:
 
