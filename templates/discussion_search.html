@@ -4,6 +4,7 @@
     <label for="discussion-query">{{ chrome.locale.t(crate::i18n::CommonText::SearchDiscussion) }}</label>
     <input class="input" type="search" id="discussion-query" name="q" value="{{ query }}">
   </div>
+  {% if !is_pull %}
   <div class="field field--grow-1">
     <label for="discussion-label">{{ chrome.locale.t(crate::i18n::IssueMetadataText::LabelName) }}</label>
     <input class="input" id="discussion-label" name="label" value="{{ filters.label }}" maxlength="160">
@@ -16,5 +17,6 @@
     <label for="discussion-milestone">{{ chrome.locale.t(crate::i18n::IssueMetadataText::MilestoneName) }}</label>
     <input class="input" id="discussion-milestone" name="milestone" value="{{ filters.milestone }}" maxlength="160">
   </div>
+  {% endif %}
   <button class="btn btn--ghost" type="submit">{{ chrome.locale.t(crate::i18n::CommonText::Search) }}</button>
 </form>

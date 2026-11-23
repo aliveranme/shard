@@ -28,7 +28,7 @@ const request = (url, options) => fetch(url, {
 
 let clientNumber = 0;
 class Client {
-  source = `2001:db8::${(++clientNumber).toString(16)}`;
+  source = `2001:db8:0:${(++clientNumber).toString(16)}::1`;
   cookies = new Map();
   csrf = "";
 
@@ -577,7 +577,8 @@ test("forge native Git over loopback", { timeout: 240_000 }, async (t) => {
 
       redirected(await owner.post(`${project}/settings/delete`, { confirm: "project" }), "/");
       assert.equal((await guest.get(project)).status, 404);
-      assert.equal((await guest.get(infoRefs(project, "upload"))).status, 404);
+      assert.equal((await guest.get(infoRefs(project, "upload"))).status, 401);
+      assert.equal((await guest.get(infoRefs(project, "upload"), viewerToken)).status, 404);
       const forkClone = join(temporary, "fork-clone");
       await git(null, "clone", "--branch", branch, remoteUrl(base, fork), forkClone);
       assert.equal(await git(null, "-C", forkClone, "rev-parse", "HEAD"), forkTip);

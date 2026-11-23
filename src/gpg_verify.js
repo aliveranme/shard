@@ -13,7 +13,7 @@ async function verifyMatchingUserID(key, email, date) {
       // for both OpenPGP v4 and v6 keys (v6 getSigningKey skips getPrimaryUser).
       const primary = await key.getPrimaryUser(date, query);
       if (primary?.user?.userID?.email?.toLowerCase() !== normalized) continue;
-      if (await primary.user.isRevoked(key.keyPacket, null, date)) continue;
+      if (await primary.user.isRevoked(primary.selfCertification, key.keyPacket, date)) continue;
       return query;
     } catch {
       // Try remaining User ID packets with the same email (e.g. if an older UID was revoked).

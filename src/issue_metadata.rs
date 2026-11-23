@@ -226,7 +226,7 @@ async fn edit(ctx: &RouteContext<AppState>, submit: bool) -> Result<Response> {
             }
         }
         if let Some(value) = body.as_deref().filter(|value| *value != issue.body) {
-            if value.len() > 1_000_000
+            if value.len() > 256 * 1024
                 || value
                     .chars()
                     .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\r' | '\t'))

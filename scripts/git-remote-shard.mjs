@@ -209,13 +209,15 @@ async function exchange(url, { method, headers, body, signal, timeout, idle = SO
     incoming = response;
     return consume(response);
   });
-  const send = outgoing && Promise.resolve().then(() => {
+  const send = outgoing ? Promise.resolve().then(() => {
     if (body && !Buffer.isBuffer(body)) return pipeline(body, outgoing, { signal: active });
     outgoing.end(body);
-  });
+  }) : Promise.resolve();
   try {
-    const [result] = await Promise.all([receive, send]);
-    return result;
+    const [recv, sent] = await Promise.allSettled([receive, send]);
+    if (recv.status === "rejected") throw recv.reason;
+    if (sent.status === "rejected") throw sent.reason;
+    return recv.value;
   } catch (error) {
     incoming?.destroy();
     outgoing?.destroy();

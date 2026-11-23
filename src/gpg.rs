@@ -293,6 +293,14 @@ fn committer_email(line: &[u8]) -> Option<&str> {
     }
     let end = identity.len() - 1;
     let start = identity[..end].iter().rposition(|&byte| byte == b'<')?;
+    if start == 0
+        || identity[start - 1] != b' '
+        || identity[..start]
+            .iter()
+            .any(|&byte| matches!(byte, b'<' | b'>'))
+    {
+        return None;
+    }
     let email = std::str::from_utf8(&identity[start + 1..end]).ok()?;
     util::valid_email(email).then_some(email)
 }
@@ -373,7 +381,7 @@ fn signed_commit(bytes: &[u8]) -> std::result::Result<SignedCommit<'_>, CommitSi
     }
     Ok(SignedCommit {
         armor,
-        email: committer.flatten().ok_or(CommitSignature::MissingKey)?,
+        email: committer.flatten().ok_or(CommitSignature::Invalid)?,
         signature,
     })
 }

@@ -1,3 +1,5 @@
+import { isForbiddenDotGit } from "./git-r2-pack.mjs";
+
 const OID = /^[a-f0-9]{40}$/;
 const BLOCK = 512;
 const END = 2 * BLOCK;
@@ -39,7 +41,7 @@ function ustarPath(path) {
 }
 
 function safeComponent(name) {
-  if (!name || name.endsWith(".") || name.endsWith(" ") || name.toLowerCase() === ".git"
+  if (!name || name.endsWith(".") || name.endsWith(" ") || isForbiddenDotGit(name)
       || /[\u0000-\u001f\u007f-\u009f\ufffd]/.test(name)
       || /[\/\\:<>"|?*]/.test(name)) return false;
   const stem = (name.split(".")[0] ?? "").replace(/ +$/, "");
@@ -90,9 +92,9 @@ export async function buildSourceTar(commit, readObject) {
   const nodes = [{ path: root, mode: 0o755, kind: 53 }];
   let remaining = MAX_ENTRIES;
   let reads = 0;
-  const boundedRead = async (hash) => {
+  const boundedRead = async (hash, maxBytes) => {
     if (++reads > MAX_READS) throw new ArchiveLimitError("Archive exceeds the object read limit");
-    return await readObject(hash);
+    return await readObject(hash, maxBytes);
   };
   const walk = async (tree, path, depth) => {
     const object = await boundedRead(tree);
@@ -125,9 +127,10 @@ export async function buildSourceTar(commit, readObject) {
   // file while bounded buffering stays below the Durable Object memory limit.
   for (let start = 0; start < files.length; start += 2) {
     await Promise.all(files.slice(start, start + 2).map(async (node) => {
+      const budget = Math.max(0, MAX_BYTES - END - BLOCK - buffered);
       let blob;
       try {
-        blob = await boundedRead(node.hash);
+        blob = await boundedRead(node.hash, budget);
       } catch (error) {
         if (/exceeds the read limit|delta sizes/i.test(error?.message ?? "")) {
           throw new ArchiveLimitError("Archive is too large");

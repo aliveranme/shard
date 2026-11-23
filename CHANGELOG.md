@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Security & Reliability (second audit)
+
+- **Auth & abuse limits**: Restore the email-link resend cooldown (`src/recovery.rs`), key request limiting and login throttling on the IPv6 `/64` prefix with a per-address failure cap, stop canonicalizing emails into username throttle buckets, stop clearing `shard_csrf` on missing avatars, percent-encode non-ASCII `?next=` redirects, and accept 256 KiB edit bodies with a 413 for oversized forms.
+- **CPU DoS**: Linear-time Markdown autolinking and syntax-highlighter comment scanning; fix `/*/` block-comment parsing.
+- **Git engines**: Bounded delta resolution and caches, strict commit/tag/tree validation (HFS+/NTFS `.git`, header order, NUL, tag types), SHA-1DC in R2 direct receive, Durable Git fsck with ref rollback, D/F conflict fix, 32 MiB blob cap, `deepen-*` fallbacks, upload-pack leases, R2 `log` subject-only metadata with a 4 MiB cap, authenticated container health, workspace cleanup on slow DELETE.
+- **Access & privacy**: Missing Git/LFS repositories look like private ones to anonymous callers, proxied pushes abort before admission expiry, private media is never cached, Native branch protection is case-insensitive.
+- **LFS & lifecycle**: Purge `lfs-incoming/` for forks, keep multipart upload IDs for abort after repository deletion (migration 0035), atomic part reconciliation, staging cleanup on `already_stored`, webhook per-repo fairness, tick budget and cancel-on-disable.
+- **Merge queue**: Per-issue wake so unrelated activity cannot reset a blocked head's timeout, wake on cancel/close/refresh, show a "checks timed out" message.
+- **Tooling**: `npm run admin` resolves placeholder D1 IDs remotely and `grant --replace` is atomic; LFS multipart client blocks HTTPS-to-loopback downgrade and retries `finish`; partial-index-friendly cron queries.
+
 ## 0.5.1
 
 ### Security & Access Control

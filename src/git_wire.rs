@@ -12,6 +12,7 @@ extern "C" {
     async fn shard_receive_request(
         body: &ReadableStream,
         encoding: &str,
+        max_duration_ms: u32,
     ) -> std::result::Result<JsValue, JsValue>;
     #[wasm_bindgen(catch)]
     async fn shard_receive_report(
@@ -46,12 +47,16 @@ pub(crate) struct ReceiveRequest {
 }
 
 impl ReceiveRequest {
-    pub(crate) async fn inspect(req: &Request, encoding: &str) -> Result<Self> {
+    pub(crate) async fn inspect(
+        req: &Request,
+        encoding: &str,
+        max_duration_ms: u32,
+    ) -> Result<Self> {
         let body = req
             .inner()
             .body()
             .ok_or_else(|| Error::RustError("Missing Git request body".into()))?;
-        let parsed = shard_receive_request(&body, encoding)
+        let parsed = shard_receive_request(&body, encoding, max_duration_ms)
             .await
             .map_err(Error::from)?;
         let get = |name: &str| Reflect::get(&parsed, &JsValue::from_str(name)).map_err(Error::from);

@@ -467,7 +467,7 @@ async fn authorized(
         .and_then(|repo| repo.strip_suffix(".git"))
         .ok_or(HIDDEN)?;
     let database = ctx.data.db().map_err(|_| STORAGE)?;
-    let repo: Repository = db::first(
+    let repo: Option<Repository> = db::first(
         &database,
         "SELECT r.id, r.owner_id, r.visibility, r.lfs_copy_id, r.git_backend
            FROM repo_paths p JOIN users pu ON pu.id = p.owner_id JOIN repos r ON r.id = p.repo_id
@@ -475,8 +475,23 @@ async fn authorized(
         &[util::js_text(owner), util::js_text(name)],
     )
     .await
-    .map_err(|_| STORAGE)?
-    .ok_or(HIDDEN)?;
+    .map_err(|_| STORAGE)?;
+    let Some(repo) = repo else {
+        let identity =
+            auth::git_identity(&ctx.data.env, req)
+                .await
+                .map_err(|error| match error {
+                    Error::RustError(message) if message == "invalid basic credentials" => {
+                        CREDENTIALS
+                    }
+                    _ => STORAGE,
+                })?;
+        return Err(if identity.is_none() {
+            CREDENTIALS
+        } else {
+            HIDDEN
+        });
+    };
     if util::header(req, ORIGIN_TOKEN).is_some()
         && (!matches!(repo.git_backend, GitBackend::Native)
             || trusted_direct_origin(&ctx.data.env, req).is_none())
@@ -671,15 +686,22 @@ async fn delete_prefix_page(bucket: &Bucket, prefix: &str, limit: u32) -> Result
     Ok(!list.truncated())
 }
 
-pub(crate) async fn delete_page(env: &Env, namespace: Namespace, limit: u32) -> Result<bool> {
+pub(crate) async fn delete_page(
+    env: &Env,
+    namespace: Option<Namespace>,
+    repo_id: Option<i64>,
+    limit: u32,
+) -> Result<bool> {
     let Some(bucket) = storage_bucket(env)? else {
         return Ok(true);
     };
-    let prefix = namespace.prefix();
-    if !delete_prefix_page(&bucket, &prefix, limit).await? {
-        return Ok(false);
+    if let Some(namespace) = namespace {
+        let prefix = namespace.prefix();
+        if !delete_prefix_page(&bucket, &prefix, limit).await? {
+            return Ok(false);
+        }
     }
-    if let Namespace::Repo(repo_id) = namespace {
+    if let Some(repo_id) = repo_id {
         let incoming = format!("lfs-incoming/{repo_id}/");
         return delete_prefix_page(&bucket, &incoming, limit).await;
     }

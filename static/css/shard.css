@@ -614,7 +614,7 @@ details.card > form { margin-block-start: 16px; }
 .form { display: grid; gap: 16px; }
 .form > .btn:not(.btn--block) { justify-self: start; }
 .field { display: grid; min-width: 0; gap: 8px; }
-.field > label { font-size: var(--type-body); font-weight: var(--weight-label); color: var(--ink); }
+.field > label, .field > .label, label.field > span { font-size: var(--type-body); font-weight: var(--weight-label); color: var(--ink); }
 .field .help { color: var(--muted); font-size: var(--type-meta); }
 
 .input, .select, .textarea {

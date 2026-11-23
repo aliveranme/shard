@@ -230,7 +230,8 @@ async function repack(entries) {
   return { bytes, entries: rebuilt, packHash: [...trailer].map((byte) => byte.toString(16).padStart(2, "0")).join("") };
 }
 
-export async function parseReceivedPack(pack, maxObjects = 20_000, readBase = null) {
+export async function parseReceivedPack(pack, maxObjects = 20_000, readBase = null, { hashObject = null } = {}) {
+  const computeOid = typeof hashObject === "function" ? hashObject : objectOid;
   if (pack.length < 32 || pack.length > 32 * 1024 * 1024) throw new PackTooLargeError("Git pack exceeds the direct-push limit");
   const view = new DataView(pack.buffer, pack.byteOffset, pack.byteLength);
   if (String.fromCharCode(pack[0], pack[1], pack[2], pack[3]) !== "PACK" ||
@@ -270,13 +271,15 @@ export async function parseReceivedPack(pack, maxObjects = 20_000, readBase = nu
       if (!base) {
         pending.push({ offset, parsed, data, inflated, baseOffset: parsed.baseOffset });
       } else {
+        const depth = (base.depth ?? 0) + 1;
+        if (depth > 64) throw new PackTooLargeError("Git delta chain is too deep");
         type = base.type;
         baseOid = base.oid;
         const resolved = applyDelta(base.data, data, remainingBudget);
         consumeBudget(resolved.length);
-        const oid = await objectOid(TYPES[type], resolved);
+        const oid = await computeOid(TYPES[type], resolved);
         registerEntry({
-          oid, type, data: resolved, offset, start: parsed.start, end: inflated.end,
+          oid, type, data: resolved, depth, offset, start: parsed.start, end: inflated.end,
           entrySize: parsed.size, crc: crc32(pack.subarray(offset, inflated.end)), oidBytes: hexBytes(oid),
         });
       }
@@ -285,18 +288,20 @@ export async function parseReceivedPack(pack, maxObjects = 20_000, readBase = nu
       if (!base) {
         pending.push({ offset, parsed, data, inflated, baseOid });
       } else {
+        const depth = (base.depth ?? 0) + 1;
+        if (depth > 64) throw new PackTooLargeError("Git delta chain is too deep");
         const resolved = applyDelta(base.data, data, remainingBudget);
         consumeBudget(resolved.length);
-        const oid = await objectOid(TYPES[base.type], resolved);
+        const oid = await computeOid(TYPES[base.type], resolved);
         registerEntry({
-          oid, type: base.type, data: resolved, offset, start: parsed.start, end: inflated.end,
+          oid, type: base.type, data: resolved, depth, offset, start: parsed.start, end: inflated.end,
           entrySize: parsed.size, crc: crc32(pack.subarray(offset, inflated.end)), oidBytes: hexBytes(oid),
         });
       }
     } else if (type >= 1 && type <= 4) {
-      const oid = await objectOid(TYPES[type], data);
+      const oid = await computeOid(TYPES[type], data);
       registerEntry({
-        oid, type, data, offset, start: parsed.start, end: inflated.end,
+        oid, type, data, depth: 0, offset, start: parsed.start, end: inflated.end,
         entrySize: parsed.size, crc: crc32(pack.subarray(offset, inflated.end)), oidBytes: hexBytes(oid),
       });
     } else {
@@ -316,7 +321,7 @@ export async function parseReceivedPack(pack, maxObjects = 20_000, readBase = nu
         if (external) {
           const type = typeof external.type === "number" ? external.type : TYPES.indexOf(external.type);
           if (type >= 1 && type <= 4) {
-            base = { type, data: external.data };
+            base = { type, data: external.data, depth: 0 };
             thin = true;
           }
         } else {
@@ -327,11 +332,13 @@ export async function parseReceivedPack(pack, maxObjects = 20_000, readBase = nu
         next.push(item);
         continue;
       }
+      const depth = (base.depth ?? 0) + 1;
+      if (depth > 64) throw new PackTooLargeError("Git delta chain is too deep");
       const resolved = applyDelta(base.data, item.data, remainingBudget);
       consumeBudget(resolved.length);
-      const oid = await objectOid(TYPES[base.type], resolved);
+      const oid = await computeOid(TYPES[base.type], resolved);
       registerEntry({
-        oid, type: base.type, data: resolved, offset: item.offset, start: item.parsed.start,
+        oid, type: base.type, data: resolved, depth, offset: item.offset, start: item.parsed.start,
         end: item.inflated.end, entrySize: item.parsed.size, crc: crc32(pack.subarray(item.offset, item.inflated.end)),
         oidBytes: hexBytes(oid),
       });

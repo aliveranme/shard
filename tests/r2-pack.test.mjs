@@ -5,7 +5,7 @@ import { open } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { applyDelta, PackIndex, parseCommit, parseTagTarget, parseTree, readPackedObject } from "../worker/git-r2-pack.mjs";
+import { applyDelta, isForbiddenDotGit, PackIndex, parseCommit, parseTag, parseTagTarget, parseTree, readPackedObject } from "../worker/git-r2-pack.mjs";
 import { buildR2PackStore } from "../worker/git-r2-packstore.mjs";
 import { parseReceivedPack } from "../worker/git-r2-receive.mjs";
 import { createHash } from "node:crypto";
@@ -292,4 +292,29 @@ test("parseReceivedPack resolves REF_DELTA with exact Git OID and rejects trunca
   );
   assert.equal(chainedParsed.entries.length, 2);
   assert.equal(chainedParsed.entries[1].oid, secondExpectedOid);
+
+  // Hardened HFS+/NTFS .git detection, commit header order/NUL, and tag type validation.
+  for (const forbidden of [".g\u200bit", ".g\u00adit", ".git ", ".git::$DATA", "git~2"]) {
+    assert.equal(isForbiddenDotGit(forbidden), true, forbidden);
+    assert.throws(() => parseTree(new Uint8Array(rawTreeEntry("100644", forbidden, baseOid))), /Invalid Git tree name/);
+  }
+  assert.throws(() => parseCommit(baseOid, new TextEncoder().encode(
+    `tree ${baseOid}\ncommitter A <a@b.c> 100 +0000\nauthor A <a@b.c> 100 +0000\n\nout of order\n`,
+  )), /Invalid Git commit/);
+  assert.throws(() => parseCommit(baseOid, new TextEncoder().encode(
+    `tree ${baseOid}\nauthor A <a@b.c> <evil@x.y> 100 +0000\ncommitter A <a@b.c> 100 +0000\n\nangle\n`,
+  )), /Invalid Git commit/);
+  assert.throws(() => parseCommit(baseOid, new TextEncoder().encode(
+    `tree ${baseOid}\nauthor A <a@b.c> -1 +0000\ncommitter A <a@b.c> 100 +0000\n\nneg\n`,
+  )), /Invalid Git commit/);
+  assert.throws(() => parseCommit(baseOid, new TextEncoder().encode(
+    `tree ${baseOid}\nauthor A <a@b.c> 100 +0000\ncommitter A <a@b.c> 100 +0000\n\0\nmsg\n`,
+  )), /Invalid Git commit/);
+  const validTag = parseTag(new TextEncoder().encode(
+    `object ${baseOid}\ntype commit\ntag v1.0\ntagger A <a@b.c> 100 +0000\n\nrelease\n`,
+  ));
+  assert.equal(validTag.target, baseOid);
+  assert.equal(validTag.type, 1);
+  assert.throws(() => parseTag(new TextEncoder().encode(`object ${baseOid}\n\nmissing type and tag\n`)), /Invalid Git tag/);
+  assert.throws(() => parseTag(new TextEncoder().encode(`object ${baseOid}\ntype bogus\ntag v1\n\n`)), /Invalid Git tag/);
 });

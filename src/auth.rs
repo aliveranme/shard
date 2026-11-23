@@ -11,7 +11,7 @@ const SESSION_TTL: i64 = 30 * 24 * 3600;
 const TOKEN_USAGE_INTERVAL: i64 = 60;
 const DUMMY_PASSWORD_HASH: &str = "pbkdf2_sha256$100000$00000000000000000000000000000000$0000000000000000000000000000000000000000000000000000000000000000";
 
-/// `SHARD_REGISTRATION=open|closed`; a missing or invalid value closes registration safely.
+/// `SHARD_REGISTRATION=open|closed`; missing or `"open"` allows registration, while `"closed"` or any invalid value closes it.
 pub fn registration_open(env: &Env) -> bool {
     match env
         .var("SHARD_REGISTRATION")
@@ -267,27 +267,30 @@ pub async fn cleanup_expired(env: &Env) -> Result<()> {
     Ok(())
 }
 
-pub async fn login_key(env: &Env, req: &Request, login: &str) -> Result<String> {
-    #[derive(serde::Deserialize)]
-    struct Canonical {
-        username: String,
-    }
-    let source = util::header(req, "cf-connecting-ip").unwrap_or_else(|| "unknown".into());
-    let trimmed = login.trim();
-    let target = db::first::<Canonical>(
-        &env.d1("DB")?,
-        "SELECT username FROM users
-         WHERE username = ?1 COLLATE NOCASE OR email = ?1 COLLATE NOCASE LIMIT 1",
-        &[util::js_text(trimmed)],
-    )
-    .await
-    .ok()
-    .flatten()
-    .map_or_else(|| trimmed.to_lowercase(), |row| row.username.to_lowercase());
+pub async fn login_key(req: &Request, login: &str) -> Result<String> {
+    let source = util::header(req, "cf-connecting-ip")
+        .map(|raw| util::normalize_client_ip(&raw))
+        .unwrap_or_else(|| "unknown".into());
+    let target = login.trim().to_lowercase();
     crypto::sha256_hex(&format!("{}:{}:{}", source.len(), source, target)).await
 }
 
+pub async fn login_ip_key(req: &Request) -> Result<String> {
+    let source = util::header(req, "cf-connecting-ip")
+        .map(|raw| util::normalize_client_ip(&raw))
+        .unwrap_or_else(|| "unknown".into());
+    crypto::sha256_hex(&format!("ip:{}:{}", source.len(), source)).await
+}
+
 pub async fn login_retry_after(env: &Env, key: &str) -> Result<Option<i64>> {
+    login_retry_after_limit(env, key, 8).await
+}
+
+pub async fn login_retry_after_limit(
+    env: &Env,
+    key: &str,
+    max_failures: i64,
+) -> Result<Option<i64>> {
     #[derive(serde::Deserialize)]
     struct Window {
         failures: i64,
@@ -301,18 +304,32 @@ pub async fn login_retry_after(env: &Env, key: &str) -> Result<Option<i64>> {
     )
     .await?;
     Ok(row
-        .filter(|row| row.failures >= 8 && row.window_started + 900 > util::now())
+        .filter(|row| row.failures >= max_failures && row.window_started + 900 > util::now())
         .map(|row| (row.window_started + 900 - util::now()).max(1)))
 }
 
 pub async fn record_login_failure(env: &Env, key: &str) -> Result<()> {
+    record_login_failure_limit(env, key, 8).await
+}
+
+pub async fn record_login_failure_limit(env: &Env, key: &str, max_failures: i64) -> Result<()> {
     let database = env.d1("DB")?;
-    db::run(&database,
+    let now = util::now();
+    db::run(
+        &database,
         "INSERT INTO login_throttle (key_hash, failures, window_started) VALUES (?, 1, ?)
          ON CONFLICT(key_hash) DO UPDATE SET
-         failures = CASE WHEN window_started <= ? THEN 1 ELSE MIN(failures + 1, 8) END,
+         failures = CASE WHEN window_started <= ? THEN 1 ELSE MIN(failures + 1, ?) END,
          window_started = CASE WHEN window_started <= ? THEN excluded.window_started ELSE window_started END",
-        &[util::js_text(key), util::js_int(util::now()), util::js_int(util::now() - 900), util::js_int(util::now() - 900)]).await
+        &[
+            util::js_text(key),
+            util::js_int(now),
+            util::js_int(now - 900),
+            util::js_int(max_failures),
+            util::js_int(now - 900),
+        ],
+    )
+    .await
 }
 
 pub async fn reset_login_failures(env: &Env, key: &str) -> Result<()> {

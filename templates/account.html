@@ -38,7 +38,7 @@
           </div>
         </div>
       </section>
-      <div class="card">
+      <div class="form card">
         <p class="card__sub">
           {% if email_verified %}{{ chrome.locale.t(crate::i18n::AccountText::EmailVerified) }}{% else %}{{ chrome.locale.t(crate::i18n::AccountText::EmailUnverified) }}{% endif %}
         </p>
@@ -46,7 +46,7 @@
           {% if mail_configured %}
             <form method="post" action="/user/settings/email/verify">
               {% include "csrf.html" %}
-              <button class="btn" type="submit">{{ chrome.locale.t(crate::i18n::AccountText::SendVerification) }}</button>
+              <button class="btn btn--ghost" type="submit">{{ chrome.locale.t(crate::i18n::AccountText::SendVerification) }}</button>
             </form>
           {% else %}
             <p class="card__sub">{{ chrome.locale.t(crate::i18n::AccountText::MailUnavailable) }}</p>

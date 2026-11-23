@@ -179,20 +179,22 @@ fn line_comment(lang: Lang, source: &str, index: usize, line_start: bool) -> Opt
     let bytes = source.as_bytes();
     let rest = &bytes[index..];
     let starts = |prefix: &[u8]| rest.starts_with(prefix);
-    let line_end = source[index..]
-        .find('\n')
-        .map_or(source.len(), |offset| index + offset);
+    let line_end = || {
+        source[index..]
+            .find('\n')
+            .map_or(source.len(), |offset| index + offset)
+    };
     match lang {
         Lang::Rust | Lang::JavaScript | Lang::Go | Lang::Java | Lang::C => {
-            starts(b"//").then_some(line_end)
+            starts(b"//").then(line_end)
         }
-        Lang::Css => starts(b"//").then_some(line_end),
-        Lang::Dockerfile => starts(b"#").then_some(line_end),
+        Lang::Css => starts(b"//").then(line_end),
+        Lang::Dockerfile => starts(b"#").then(line_end),
         Lang::Python | Lang::Yaml | Lang::Toml | Lang::Makefile | Lang::Shell => (starts(b"#")
             && (line_start || index == 0 || bytes[index - 1].is_ascii_whitespace()))
-        .then_some(line_end),
-        Lang::Sql => starts(b"--").then_some(line_end),
-        Lang::Json => starts(b"//").then_some(line_end),
+        .then(line_end),
+        Lang::Sql => starts(b"--").then(line_end),
+        Lang::Json => starts(b"//").then(line_end),
         Lang::Html => None,
     }
 }
@@ -208,9 +210,9 @@ fn block_comment(lang: Lang, source: &str, index: usize) -> Option<(usize, usize
     if !rest.starts_with("/*") {
         return None;
     }
-    let end = rest
+    let end = rest[2..]
         .find("*/")
-        .map_or(source.len(), |offset| index + offset + 2);
+        .map_or(source.len(), |offset| index + 2 + offset + 2);
     Some((end, end))
 }
 

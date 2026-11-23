@@ -948,6 +948,22 @@ pub async fn set_state(req: Request, ctx: RouteContext<AppState>) -> Result<Resp
         );
     }
     database.batch(statements).await?;
+    if desired == "closed" && kind == "pull" {
+        if let Some(base_branch) = database
+            .prepare("SELECT base_branch FROM pulls WHERE issue_id = ?")
+            .bind(&[util::js_int(issue.id)])?
+            .first::<String>(Some("base_branch"))
+            .await?
+        {
+            let env = state.env.clone();
+            let repo_id = repo.id;
+            let issue_id = issue.id;
+            state.worker_ctx.wait_until(async move {
+                crate::branch_rules::wake_branch_issue(&env, repo_id, &base_branch, Some(issue_id))
+                    .await;
+            });
+        }
+    }
     redirect_to_entry(&state, &database, &repo, &issue, None).await
 }
 

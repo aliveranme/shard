@@ -195,7 +195,7 @@ fn apply(
     }
     if html {
         headers.set("Content-Language", locale.code())?;
-        if previous_token != Some(token) {
+        if !token.is_empty() && previous_token != Some(token) {
             headers.append(
                 "Set-Cookie",
                 &format!(

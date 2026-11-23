@@ -71,13 +71,20 @@ jobs:
           cp src/git_wire.js src/lfs_s3.js "$PACKAGE_DIR/src/"
           cp .node-version .dockerignore package-lock.json CHANGELOG.md "$PACKAGE_DIR/"
           cp node_modules/openpgp/LICENSE "$PACKAGE_DIR/OPENPGP-LICENSE"
-          cp scripts/deploy.mjs scripts/git-origin.mjs scripts/git-r2-origin.mjs scripts/git-lfs-r2-multipart.mjs "$PACKAGE_DIR/scripts/"
+          cp scripts/admin.mjs scripts/deploy.mjs scripts/git-origin.mjs scripts/git-r2-origin.mjs scripts/git-lfs-r2-multipart.mjs "$PACKAGE_DIR/scripts/"
           install -m 755 scripts/git-remote-shard.mjs "$PACKAGE_DIR/scripts/git-remote-shard.mjs"
           mise exec -- node <<'JS'
-          const { writeFileSync } = require('node:fs');
+          const { existsSync, writeFileSync } = require('node:fs');
           const { join } = require('node:path');
           const manifest = require('./package.json');
           for (const task of ['build', 'ci', 'cd', 'test']) delete manifest.scripts[task];
+          for (const entry of [...Object.values(manifest.scripts), ...Object.values(manifest.bin ?? {})]) {
+            for (const match of entry.matchAll(/\bscripts\/[^\s'"]+/g)) {
+              if (!existsSync(join(process.env.PACKAGE_DIR, match[0]))) {
+                throw new Error(`Missing packaged script: ${match[0]}`);
+              }
+            }
+          }
           writeFileSync(join(process.env.PACKAGE_DIR, 'package.json'), JSON.stringify(manifest, null, 2) + '\n');
           const { rawConfig } = require('wrangler').experimental_readRawConfig({ config: 'wrangler.jsonc' });
           delete rawConfig.$schema;
@@ -119,6 +126,9 @@ jobs:
           npm install --global --offline --prefix "$prefix" --no-audit --no-fund .
           git init --quiet "$checkout"
           PATH="$prefix/bin:$PATH" git -C "$checkout" remote-shard --list https://example.invalid/owner/repo.git
+          npm run admin -- --help
+          CI=true npm run db:migrate
+          npm run admin -- list --local
           BASH
       - uses: actions/upload-artifact@v7
         with:

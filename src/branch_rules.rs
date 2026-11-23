@@ -303,12 +303,22 @@ pub(crate) async fn request_merge(_req: Request, ctx: RouteContext<AppState>) ->
     let form = state.form()?;
     let location = format!("/{}/pulls/{number}#merge", repo.full_name());
     if util::form_value(form, "action").as_deref() == Some("cancel") {
-        db::run(
-            &database,
-            "DELETE FROM merge_queue WHERE issue_id = ? AND state = 'queued'",
-            &[util::js_int(issue_id)],
-        )
-        .await?;
+        let removed = database
+            .prepare("DELETE FROM merge_queue WHERE issue_id = ? AND state = 'queued'")
+            .bind(&[util::js_int(issue_id)])?
+            .run()
+            .await?
+            .meta()?
+            .and_then(|meta| meta.changes)
+            .unwrap_or(0);
+        if removed > 0 {
+            let env = state.env.clone();
+            let repo_id = repo.id;
+            let base_branch = pull.base_branch.clone();
+            state.worker_ctx.wait_until(async move {
+                wake_branch_issue(&env, repo_id, &base_branch, Some(issue_id)).await;
+            });
+        }
         return util::redirect(&location);
     }
     let version = util::form_value(form, "comparison_version").and_then(|value| value.parse().ok());
@@ -364,11 +374,13 @@ pub(crate) async fn process_queue(env: &Env, limit: i64) -> Result<()> {
     let entries = db::all::<EntryId>(
         &database,
         "SELECT issue_id, repo_id, base_branch FROM merge_queue q
-         WHERE ((q.state = 'queued' AND NOT EXISTS (
+         WHERE q.state IN ('queued', 'running')
+           AND ((q.state = 'queued' AND NOT EXISTS (
                   SELECT 1 FROM merge_queue earlier
-                  WHERE earlier.repo_id = q.repo_id AND earlier.base_branch = q.base_branch AND
-                      (earlier.state = 'running' OR (earlier.state = 'queued' AND
-                       (earlier.queued_at, earlier.issue_id) < (q.queued_at, q.issue_id)))))
+                  WHERE earlier.repo_id = q.repo_id AND earlier.base_branch = q.base_branch
+                    AND earlier.state IN ('queued', 'running')
+                    AND (earlier.state = 'running' OR (earlier.state = 'queued' AND
+                         (earlier.queued_at, earlier.issue_id) < (q.queued_at, q.issue_id)))))
                 OR (q.state = 'running' AND q.changed_at < ?1))
          ORDER BY changed_at, issue_id LIMIT ?2",
         &[
@@ -397,7 +409,7 @@ struct EntryId {
 
 async fn signal_or_run(env: &Env, repo_id: i64, branch: &str, issue_id: i64) -> Result<()> {
     if let Ok(namespace) = env.durable_object(MERGE_COORDINATOR) {
-        if signal_path(&namespace, repo_id, branch, "wake")
+        if signal_path(&namespace, repo_id, branch, "wake", Some(issue_id))
             .await
             .is_ok()
         {
@@ -410,7 +422,7 @@ async fn signal_or_run(env: &Env, repo_id: i64, branch: &str, issue_id: i64) -> 
 
 async fn recover_or_run(env: &Env, repo_id: i64, branch: &str, issue_id: i64) -> Result<()> {
     if let Ok(namespace) = env.durable_object(MERGE_COORDINATOR) {
-        if signal_path(&namespace, repo_id, branch, "recover")
+        if signal_path(&namespace, repo_id, branch, "recover", None)
             .await
             .is_ok()
         {
@@ -421,8 +433,13 @@ async fn recover_or_run(env: &Env, repo_id: i64, branch: &str, issue_id: i64) ->
     run_entry(env, issue_id).await
 }
 
-async fn signal(namespace: &ObjectNamespace, repo_id: i64, branch: &str) -> Result<()> {
-    signal_path(namespace, repo_id, branch, "wake").await
+async fn signal(
+    namespace: &ObjectNamespace,
+    repo_id: i64,
+    branch: &str,
+    issue_id: Option<i64>,
+) -> Result<()> {
+    signal_path(namespace, repo_id, branch, "wake", issue_id).await
 }
 
 async fn signal_path(
@@ -430,6 +447,7 @@ async fn signal_path(
     repo_id: i64,
     branch: &str,
     endpoint: &str,
+    issue_id: Option<i64>,
 ) -> Result<()> {
     let name = format!("{repo_id}:refs/heads/{branch}");
     let stub = namespace.get_by_name(&name)?;
@@ -438,11 +456,12 @@ async fn signal_path(
         body: Some(name.into()),
         ..Default::default()
     };
+    let url = match issue_id {
+        Some(id) => format!("https://internal/{endpoint}?issue={id}"),
+        None => format!("https://internal/{endpoint}"),
+    };
     let response = stub
-        .fetch_with_request(Request::new_with_init(
-            &format!("https://internal/{endpoint}"),
-            &init,
-        )?)
+        .fetch_with_request(Request::new_with_init(&url, &init)?)
         .await?;
     if response.status_code() == 202 {
         Ok(())
@@ -453,9 +472,14 @@ async fn signal_path(
     }
 }
 
-pub(crate) async fn wake_branch(env: &Env, repo_id: i64, branch: &str) {
+pub(crate) async fn wake_branch_issue(
+    env: &Env,
+    repo_id: i64,
+    branch: &str,
+    issue_id: Option<i64>,
+) {
     if let Ok(namespace) = env.durable_object(MERGE_COORDINATOR) {
-        let _ = signal(&namespace, repo_id, branch).await;
+        let _ = signal(&namespace, repo_id, branch, issue_id).await;
     }
 }
 
@@ -466,14 +490,15 @@ pub(crate) async fn wake_for_check(env: &Env, repo_id: i64, head: &str) -> Resul
     let database = env.d1("DB")?;
     let limit = crate::limits::ScheduledLimits::read(env)?.merges;
     #[derive(Deserialize)]
-    struct Branch {
+    struct BranchIssue {
+        issue_id: i64,
         base_branch: String,
     }
-    let branches = db::all::<Branch>(
+    let items = db::all::<BranchIssue>(
         &database,
-        "SELECT DISTINCT q.base_branch FROM merge_queue q JOIN pulls p ON p.issue_id = q.issue_id
+        "SELECT q.issue_id, q.base_branch FROM merge_queue q JOIN pulls p ON p.issue_id = q.issue_id
          WHERE q.repo_id = ?1 AND q.state = 'queued' AND p.head_commit = ?2
-         ORDER BY q.base_branch LIMIT ?3",
+         ORDER BY q.base_branch, q.queued_at, q.issue_id LIMIT ?3",
         &[
             util::js_int(repo_id),
             util::js_text(head),
@@ -481,8 +506,8 @@ pub(crate) async fn wake_for_check(env: &Env, repo_id: i64, head: &str) -> Resul
         ],
     )
     .await?;
-    for branch in branches {
-        signal(&namespace, repo_id, &branch.base_branch).await?;
+    for item in items {
+        signal(&namespace, repo_id, &item.base_branch, Some(item.issue_id)).await?;
     }
     Ok(())
 }
@@ -560,9 +585,17 @@ impl DurableObject for MergeQueueCoordinator {
             None => storage.put("branch", key).await?,
         }
         if path == "/wake" {
-            let _ = storage.delete("wait_attempts").await;
-            let _ = storage.delete("wait_issue").await;
-            self.arm(0).await?;
+            let woken_issue = util::query_param(&req, "issue")
+                .and_then(|value| value.parse::<i64>().ok())
+                .filter(|&id| id > 0);
+            let waiting_issue = storage.get::<i64>("wait_issue").await?;
+            if waiting_issue.is_none() || woken_issue.is_none() || waiting_issue == woken_issue {
+                let _ = storage.delete("wait_attempts").await;
+                let _ = storage.delete("wait_issue").await;
+                self.arm(0).await?;
+            } else if storage.get_alarm().await?.is_none() {
+                self.arm(0).await?;
+            }
         } else if storage.get_alarm().await?.is_none() {
             self.arm(0).await?;
         }
@@ -886,6 +919,7 @@ fn failure_text(reason: &str) -> BranchText {
         "access" => BranchText::MergeAccess,
         "conflict" => BranchText::MergeConflict,
         "unsupported" => BranchText::MergeUnsupported,
+        "checks" => BranchText::MergeChecks,
         _ => BranchText::MergeStorage,
     }
 }

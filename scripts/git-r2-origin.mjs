@@ -224,12 +224,12 @@ export async function createR2GitOrigin({ directory, mount, token, importHosts, 
   const workspaces = new Map();
 
   async function handle(req, res, signal) {
-    if (req.method === "GET" && req.url === "/healthz") return sendJson(res, 200, { protocol: 1 });
     const auth = req.headersDistinct.authorization;
     if (auth?.length !== 1 || !timingSafeEqual(createHash("sha256").update(auth[0]).digest(), expectedToken)) {
       res.setHeader("WWW-Authenticate", "Bearer");
       throw new HttpError(401);
     }
+    if (req.method === "GET" && req.url === "/healthz") return sendJson(res, 200, { protocol: 1 });
     const route = WORKSPACE_ROUTE.exec(req.url);
     if (!route) throw new HttpError(404);
     const [, job, path] = route;
@@ -269,11 +269,12 @@ export async function createR2GitOrigin({ directory, mount, token, importHosts, 
     try {
       // Native receive-pack can finish its ref transaction after the client disconnects.
       await previous;
-      signal.throwIfAborted();
       if (deleting) {
         if (workspaces.get(job) === workspace) await dispose(job, workspace);
-        return sendStatus(res, 204);
+        if (!signal.aborted) return sendStatus(res, 204);
+        return;
       }
+      signal.throwIfAborted();
       if (workspaces.get(job) !== workspace || !workspace.origin) throw new HttpError(404);
       const control = req.method === "POST" && CONTROL_ROUTE.exec(path ?? "");
       if (control) {

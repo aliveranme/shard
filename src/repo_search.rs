@@ -11,7 +11,6 @@ use std::borrow::Cow;
 use worker::{Error, Request, Response, Result, RouteContext};
 
 const MAX_QUERY_BYTES: usize = 256;
-const MAX_REF_BYTES: usize = 1_024;
 const MAX_PATH_BYTES: usize = 4_096;
 const MAX_DEPTH: usize = 16;
 const MAX_FILE_BYTES: usize = 64 * 1024;
@@ -179,14 +178,7 @@ pub async fn search(req: Request, ctx: RouteContext<AppState>) -> Result<Respons
 }
 
 fn valid_ref(reference: &str) -> bool {
-    !reference.is_empty()
-        && reference.len() <= MAX_REF_BYTES
-        && reference != "@"
-        && !reference.contains("..")
-        && !reference.contains("@{")
-        && !reference.chars().any(|ch| {
-            ch.is_control() || ch == ' ' || matches!(ch, '~' | '^' | ':' | '?' | '*' | '[' | '\\')
-        })
+    crate::handlers::repos::valid_browse_ref(reference)
 }
 
 async fn load_results(

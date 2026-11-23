@@ -84,7 +84,25 @@ pub fn form_bool(data: &FormData, name: &str) -> bool {
     )
 }
 
+/// Normalize client IP addresses so IPv6 hosts within one `/64` share rate-limit and throttle buckets.
+pub fn normalize_client_ip(raw: &str) -> String {
+    let trimmed = raw.trim();
+    match trimmed.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(v4)) => v4.to_string(),
+        Ok(std::net::IpAddr::V6(v6)) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                v4.to_string()
+            } else {
+                let s = v6.segments();
+                format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
+            }
+        }
+        Err(_) => trimmed.to_owned(),
+    }
+}
+
 /// Only allow local, absolute paths as post-login redirect targets.
+/// Percent-encode non-ASCII or space bytes so `Location` is always a valid HTTP header value.
 pub fn safe_next(next: Option<String>) -> String {
     match next {
         Some(n)
@@ -93,7 +111,19 @@ pub fn safe_next(next: Option<String>) -> String {
                 && !n.contains('\\')
                 && !n.chars().any(char::is_control) =>
         {
-            n
+            if n.bytes().all(|b| (0x21..=0x7e).contains(&b)) {
+                n
+            } else {
+                let mut encoded = String::with_capacity(n.len());
+                for byte in n.bytes() {
+                    if (0x21..=0x7e).contains(&byte) {
+                        encoded.push(byte as char);
+                    } else {
+                        encoded.push_str(&format!("%{byte:02X}"));
+                    }
+                }
+                encoded
+            }
         }
         _ => "/".into(),
     }

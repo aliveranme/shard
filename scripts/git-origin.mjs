@@ -450,16 +450,32 @@ async function updateRef(reference, newOid, oldOid, options) {
 
 async function workspaceHead(options) {
   const symbolic = await headRef(options);
-  if (symbolic && symbolic.startsWith(BRANCH_PREFIX) && symbolic.length > BRANCH_PREFIX.length) return symbolic;
-  // A mirror can have a detached HEAD. Keep its tip without overwriting a branch.
+  if (symbolic && symbolic.startsWith(BRANCH_PREFIX) && symbolic.length > BRANCH_PREFIX.length) {
+    try {
+      await validateRef(symbolic, true, options);
+      return symbolic;
+    } catch {
+      // Fall through to pick or create a valid default branch ref.
+    }
+  }
+  // A mirror can have a detached HEAD or an invalid default branch name. Keep its tip without overwriting a branch.
   const oid = await resolveRevision("HEAD", options);
   let branch = "refs/heads/main";
   if (oid) {
     const existing = await gitOutput("for-each-ref", [
-      "--count=1", "--format=%(refname)", `--points-at=${oid}`, "refs/heads/",
+      "--format=%(refname)", `--points-at=${oid}`, "refs/heads/",
     ], options);
-    if (existing.length) {
-      branch = existing.toString("utf8").replace(/\r?\n$/, "");
+    let picked = "";
+    for (const candidate of existing.toString("utf8").split(/\r?\n/)) {
+      if (!candidate) continue;
+      try {
+        await validateRef(candidate, true, options);
+        picked = candidate;
+        break;
+      } catch {}
+    }
+    if (picked) {
+      branch = picked;
     } else {
       const conflicting = await gitOutput("for-each-ref", ["--count=1", "--", branch], options);
       if (conflicting.length) branch = `refs/heads/shard-import-${randomUUID()}`;

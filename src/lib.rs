@@ -405,6 +405,7 @@ async fn serve(
         .then(|| handlers::git::direct_client_ip(&env, &req))
         .flatten()
         .or_else(|| util::header(&req, "cf-connecting-ip"))
+        .map(|raw| util::normalize_client_ip(&raw))
         .unwrap_or_else(|| "local".into());
     let class = if is_git {
         "git"
@@ -524,9 +525,12 @@ async fn serve(
                         }
                     })
             } else {
-                avatar::read_form_bounded(&mut req, 512 * 1024, false)
+                avatar::read_form_bounded(&mut req, 1024 * 1024, false)
                     .await
-                    .map_err(|_| (400, locale.t(CommonText::UnreadableForm)))
+                    .map_err(|error| match error {
+                        avatar::FormError::Invalid => (400, locale.t(CommonText::UnreadableForm)),
+                        avatar::FormError::TooLarge => (413, locale.t(CommonText::FormTooLarge)),
+                    })
             };
             match form {
                 Ok(form) if security::valid_form(&form, &state.csrf_token) => {
@@ -554,6 +558,7 @@ async fn serve(
     let response = match router.run(req, env).await {
         Ok(response)
             if !machine
+                && !is_avatar
                 && matches!(response.status_code(), 404 | 405)
                 && !security::is_html(response.headers())? =>
         {

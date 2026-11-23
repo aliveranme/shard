@@ -277,10 +277,11 @@ pub(super) async fn verify_direct(
     if validate_oid(attempt).is_err() || target.size > R2_SINGLE_PUT_BYTES {
         return failure(INVALID_OBJECT);
     }
+    let stage = stage_key(target.repo_id, target.oid, attempt);
     if let Some(response) = already_stored(target).await? {
+        let _ = target.bucket.delete(&stage).await;
         return Ok(response);
     }
-    let stage = stage_key(target.repo_id, target.oid, attempt);
     let response = publish(state, target, &stage).await?;
     if matches!(response.status_code(), 200 | 422) {
         let _ = target.bucket.delete(&stage).await;
@@ -396,6 +397,17 @@ pub(super) async fn multipart(
         }
         Command::Finish { upload_id } => {
             if let Some(response) = already_stored(target).await? {
+                if let Some(session) = session(&database, target, &upload_id).await? {
+                    let stage = stage_key(target.repo_id, target.oid, &session.attempt);
+                    if let Ok(upload) = target
+                        .bucket
+                        .resume_multipart_upload(&stage, &session.upload_id)
+                    {
+                        let _ = upload.abort().await;
+                    }
+                    let _ = target.bucket.delete(&stage).await;
+                    let _ = drop_session(&database, &session.attempt).await;
+                }
                 return Ok(response);
             }
             let Some(session) = session(&database, target, &upload_id).await? else {
@@ -465,13 +477,10 @@ async fn start(state: &AppState, database: &D1Database, target: &Transfer<'_>) -
     let existing = active(database, target).await?;
     if let Some(mismatched) = existing.as_ref().filter(|s| s.size != target.size) {
         let old_stage = stage_key(target.repo_id, target.oid, &mismatched.attempt);
-        let has_staged = target
-            .bucket
-            .head(&old_stage)
-            .await
-            .ok()
-            .flatten()
-            .is_some();
+        let has_staged = match target.bucket.head(&old_stage).await {
+            Ok(object) => object.is_some(),
+            Err(_) => return failure(STORAGE),
+        };
         let has_parts = db::first::<serde::de::IgnoredAny>(
             database,
             "SELECT 1 FROM repo_lfs_parts WHERE attempt = ? LIMIT 1",
@@ -550,7 +559,10 @@ async fn start(state: &AppState, database: &D1Database, target: &Transfer<'_>) -
                 };
                 concurrent
             }
-            Err(error) => return Err(error),
+            Err(error) => {
+                let _ = upload.abort().await;
+                return Err(error);
+            }
         }
     };
     if session.size != target.size {
@@ -668,20 +680,33 @@ async fn finish(
                                 return failure(STALE);
                             }
                         } else {
-                            let _ = db::run(
-                                database,
-                                "DELETE FROM repo_lfs_parts WHERE attempt = ?",
-                                &[js_text(&session.attempt)],
+                            let parts_json = serde_json::to_string(
+                                &valid
+                                    .iter()
+                                    .map(|part| {
+                                        json!({
+                                            "part_number": part.part_number,
+                                            "etag": part.etag,
+                                        })
+                                    })
+                                    .collect::<Vec<_>>(),
                             )
-                            .await;
-                            for part in valid {
-                                let _ = db::run(database,
+                            .map_err(|_| {
+                                Error::RustError("LFS part serialization failed".into())
+                            })?;
+                            let clear = database
+                                .prepare("DELETE FROM repo_lfs_parts WHERE attempt = ?")
+                                .bind(&[js_text(&session.attempt)])?;
+                            let restore = database
+                                .prepare(
                                     "INSERT INTO repo_lfs_parts (attempt, part_number, etag)
-                                     SELECT attempt, ?2, ?3 FROM repo_lfs_multipart WHERE attempt = ?1
+                                     SELECT m.attempt, json_extract(p.value, '$.part_number'), json_extract(p.value, '$.etag')
+                                       FROM repo_lfs_multipart m, json_each(?2) p
+                                      WHERE m.attempt = ?1
                                      ON CONFLICT (attempt, part_number) DO UPDATE SET etag = excluded.etag",
-                                    &[js_text(&session.attempt), js_int(i64::from(part.part_number)), js_text(&part.etag)],
-                                ).await;
-                            }
+                                )
+                                .bind(&[js_text(&session.attempt), js_text(&parts_json)])?;
+                            database.batch(vec![clear, restore]).await?;
                             return failure(INCOMPLETE);
                         }
                     } else {

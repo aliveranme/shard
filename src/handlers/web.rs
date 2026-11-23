@@ -230,6 +230,7 @@ async fn global_list(req: Request, ctx: RouteContext<AppState>, kind: &str) -> R
         state: state_filter.into(),
         query,
         filters,
+        is_pull,
         open_url: query_url(&req, &[("state", Some("open")), ("page", None)], None)?,
         closed_url: query_url(&req, &[("state", Some("closed")), ("page", None)], None)?,
         all_url: query_url(&req, &[("state", Some("all")), ("page", None)], None)?,

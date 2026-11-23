@@ -599,7 +599,7 @@ async fn memberships(database: &D1Database, actor: i64) -> Result<Vec<Organizati
     db::all(
         database,
         "SELECT o.id, o.slug, o.owner_id FROM organization_members m JOIN organizations o ON o.id = m.organization_id
-         WHERE m.user_id = ?1 ORDER BY o.slug LIMIT 200",
+         WHERE m.user_id = ?1 ORDER BY (o.owner_id = ?1) DESC, o.slug LIMIT 200",
         &[js_int(actor)],
     )
     .await
@@ -654,7 +654,7 @@ async fn linked_repositories(
              JOIN repos r ON r.id = l.repo_id JOIN users u ON u.id = r.owner_id
              WHERE o.id = ?3 AND (o.owner_id = ?1 OR (l.accepted = 1 AND {VISIBLE_REPO_SQL}))
                AND (?4 = 0 OR l.accepted = 1)
-             ORDER BY l.accepted, u.username, r.name COLLATE NOCASE, r.id"
+             ORDER BY l.accepted, u.username, r.name COLLATE NOCASE, r.id LIMIT 200"
         ),
         &[
             viewer,

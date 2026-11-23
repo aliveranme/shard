@@ -37,6 +37,7 @@ catalog! {
         MergeStale => "The source or target changed. Review the current comparison before queuing again.", "源分支或目标分支已更改。请审查当前对比后重新排队。";
         MergeAccess => "The merge requester's access changed or the pull request is closed.", "合并发起者的权限已变更，或合并请求已关闭。";
         MergeUnsupported => "This merge needs a configured Git origin with merge support.", "此合并需要配置支持合并的 Git 源站。";
+        MergeChecks => "Required approvals or checks did not pass before the merge request timed out.", "在合并队列超时前，必需的批准或检查未能通过。";
         MergeStorage => "Git storage could not complete the merge.", "Git 存储未能完成合并。";
         MergeForbidden => "Only a repository writer with access to the source can queue this merge.", "只有能访问源仓库的目标仓库写入者可以将此合并加入队列。";
     }

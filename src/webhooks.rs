@@ -241,7 +241,7 @@ async fn deliver_legacy(env: &Env, database: &D1Database, limit: usize) -> Resul
           WHERE event_id IN (
             SELECT event_id FROM webhook_deliveries
              WHERE repo_id = ?1 AND next_attempt_at <= ?2
-               AND state = 'sending' AND attempts >= ?3
+               AND state IN ('pending', 'sending') AND state = 'sending' AND attempts >= ?3
              ORDER BY next_attempt_at, event_id LIMIT ?4
           )",
         &[
@@ -620,11 +620,21 @@ pub async fn update(_req: Request, ctx: RouteContext<AppState>) -> Result<Respon
                         SELECT 1 FROM repos r JOIN users u ON u.id = ?2 WHERE {SETTINGS_ACCESS}
                      ) RETURNING id"
                 ),
-                &[repo_id, user_id, util::js_int(id)],
+                &[repo_id.clone(), user_id, util::js_int(id)],
             )
             .await?;
             if changed.is_none() {
                 return not_found(state, state.locale.t(Text::SubscriptionNotFound));
+            }
+            if action == "disable" {
+                let _ = db::run(
+                    &database,
+                    "UPDATE webhook_subscription_deliveries
+                        SET state = 'canceled'
+                      WHERE repo_id = ?1 AND subscription_id = ?2 AND state IN ('pending', 'sending')",
+                    &[repo_id, util::js_int(id)],
+                )
+                .await;
             }
             changed
         }
@@ -687,12 +697,18 @@ async fn clean_subscriptions(database: &D1Database) -> Result<()> {
         ).bind(std::slice::from_ref(&limit))?,
         database.prepare(
             "UPDATE webhook_subscription_deliveries SET state = 'failed', last_status = NULL WHERE id IN (
-                 SELECT id FROM webhook_subscription_deliveries WHERE state = 'sending'
-                   AND next_attempt_at <= ?1 AND attempts >= ?2 ORDER BY next_attempt_at, id LIMIT ?3
+                 SELECT id FROM webhook_subscription_deliveries
+                  WHERE state IN ('pending', 'sending') AND state = 'sending'
+                    AND next_attempt_at <= ?1 AND attempts >= ?2 ORDER BY next_attempt_at, id LIMIT ?3
              )",
         ).bind(&[util::js_int(now), util::js_int(MAX_ATTEMPTS), limit])?,
     ]).await?;
     Ok(())
+}
+
+enum SubscriptionOutcome {
+    Finished(Option<u16>),
+    Canceled,
 }
 
 async fn try_subscription(
@@ -701,9 +717,9 @@ async fn try_subscription(
     encryption_key: &JsValue,
     claim: &ClaimedDelivery,
     event: SubscriptionDelivery,
-) -> Result<Option<u16>> {
+) -> Result<SubscriptionOutcome> {
     let Some(endpoint) = subscription_endpoint(&event.endpoint, env) else {
-        return Ok(None);
+        return Ok(SubscriptionOutcome::Finished(None));
     };
     let key = shard_webhook_unseal(
         encryption_key,
@@ -713,7 +729,7 @@ async fn try_subscription(
     )
     .await;
     let Ok(key) = key else {
-        return Ok(None);
+        return Ok(SubscriptionOutcome::Finished(None));
     };
     let body = serde_json::to_string(&Payload {
         version: 1,
@@ -732,10 +748,10 @@ async fn try_subscription(
     })
     .map_err(|_| webhook_error("webhook serialization failed"))?;
     let Ok(signed) = shard_webhook_sign(&key, &body).await else {
-        return Ok(None);
+        return Ok(SubscriptionOutcome::Finished(None));
     };
-    // A transfer can cancel this claim while its key is being decrypted or
-    // the payload is being signed. Check again immediately before fetching.
+    // A transfer or disable can cancel this claim while its key is being
+    // decrypted or the payload is being signed. Check again immediately before fetching.
     let active = db::first::<RepoId>(
         database,
         "SELECT d.id FROM webhook_subscription_deliveries d
@@ -746,17 +762,19 @@ async fn try_subscription(
     )
     .await?;
     if active.is_none() {
-        return Ok(None);
+        return Ok(SubscriptionOutcome::Canceled);
     }
-    Ok(shard_webhook_post_signed(
-        endpoint.as_str(),
-        &event.event_id.to_string(),
-        &claim.id.to_string(),
-        &signed,
-    )
-    .await
-    .ok()
-    .filter(|&status| status != 0))
+    Ok(SubscriptionOutcome::Finished(
+        shard_webhook_post_signed(
+            endpoint.as_str(),
+            &event.event_id.to_string(),
+            &claim.id.to_string(),
+            &signed,
+        )
+        .await
+        .ok()
+        .filter(|&status| status != 0),
+    ))
 }
 
 async fn deliver_subscriptions(env: &Env, database: &D1Database, limit: usize) -> Result<()> {
@@ -768,8 +786,17 @@ async fn deliver_subscriptions(env: &Env, database: &D1Database, limit: usize) -
         .await
         .map_err(|_| webhook_error("webhook encryption key import failed"))?;
     let max_attempts = util::js_int(MAX_ATTEMPTS);
+    let deadline = util::now() + 20;
+    let max_per_repo = (limit / 4).max(1);
+    let mut repo_counts = std::collections::HashMap::<i64, usize>::new();
+    let mut saturated = Vec::<i64>::new();
     for _ in 0..limit {
+        if util::now() >= deadline {
+            break;
+        }
         let now = util::now();
+        let excluded_json = serde_json::to_string(&saturated)
+            .map_err(|_| webhook_error("webhook filter serialization failed"))?;
         let Some(claim) = db::first::<ClaimedDelivery>(
             database,
             "UPDATE webhook_subscription_deliveries
@@ -779,12 +806,14 @@ async fn deliver_subscriptions(env: &Env, database: &D1Database, limit: usize) -
                 JOIN webhook_subscriptions s ON s.repo_id = d.repo_id AND s.id = d.subscription_id
                  WHERE d.next_attempt_at <= ?1 AND d.state IN ('pending', 'sending')
                    AND d.attempts < ?3 AND s.disabled_at IS NULL
+                   AND d.repo_id NOT IN (SELECT value FROM json_each(?4))
                  ORDER BY d.next_attempt_at, d.id LIMIT 1
               ) RETURNING id, attempts",
             &[
                 util::js_int(now),
                 util::js_int(now + LEASE_SECONDS),
                 max_attempts.clone(),
+                util::js_text(&excluded_json),
             ],
         )
         .await?
@@ -807,7 +836,16 @@ async fn deliver_subscriptions(env: &Env, database: &D1Database, limit: usize) -
         ).await? else {
             continue;
         };
-        let status = try_subscription(env, database, &key, &claim, event).await?;
+        let repo_id = event.repo_id;
+        let count = repo_counts.entry(repo_id).or_insert(0);
+        *count += 1;
+        if *count >= max_per_repo {
+            saturated.push(repo_id);
+        }
+        let outcome = try_subscription(env, database, &key, &claim, event).await?;
+        let SubscriptionOutcome::Finished(status) = outcome else {
+            continue;
+        };
         let (state, next_attempt_at) = delivery_result(status, claim.attempts, util::now());
         db::run(
             database,

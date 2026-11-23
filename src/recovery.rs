@@ -132,9 +132,10 @@ async fn send_link(
          ON CONFLICT (user_id, purpose) DO UPDATE SET
            email = excluded.email, token_hash = excluded.token_hash,
            expires_at = excluded.expires_at, next_send_at = excluded.next_send_at
-         WHERE account_email_links.token_hash IS NULL
-            OR account_email_links.expires_at <= ?7
-            OR (?1 = 'verify' AND account_email_links.next_send_at <= ?7)
+         WHERE account_email_links.next_send_at <= ?7
+           AND (?1 = 'verify'
+                OR account_email_links.token_hash IS NULL
+                OR account_email_links.expires_at <= ?7)
          RETURNING email",
         &[
             util::js_text(purpose.key()),

@@ -129,7 +129,7 @@ pub async fn read_one(req: Request, ctx: RouteContext<AppState>) -> Result<Respo
     let Some(id) = ctx
         .param("id")
         .and_then(|id| id.parse::<i64>().ok())
-        .filter(|&id| id > 0)
+        .filter(|&id| (1..=9_007_199_254_740_991).contains(&id))
     else {
         return missing();
     };

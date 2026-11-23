@@ -144,7 +144,8 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
     let clientNumber = 0;
 
     class Client {
-      source = `2001:db8::${(++clientNumber).toString(16)}`;
+      // Each simulated client gets its own IPv6 /64 because limits key on the /64 prefix.
+      source = `2001:db8:0:${(++clientNumber).toString(16)}::1`;
       cookies = new Map();
       csrf = "";
       async request(path, options = {}) {
@@ -357,7 +358,11 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
 
       redirected(await upload(fixturePng));
       redirected(await member.post("/user/settings/delete", { confirm: "avatarfixture", current_password: password }));
-      assert.equal((await guest.get(image)).status, 404);
+      const csrfBefore = guest.csrf;
+      const missingAvatar = await guest.get(image);
+      assert.equal(missingAvatar.status, 404);
+      assert.equal(missingAvatar.body, "");
+      assert.equal(guest.csrf, csrfBefore, "missing avatar 404 must not clear shard_csrf cookie");
     });
 
     await t.test("private repositories and Git credentials keep their access boundary", async () => {
@@ -367,8 +372,8 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
       assert.equal((await owner.get(privateRepo)).status, 200);
       const headers = { "Accept-Language": "zh-CN" };
       const missing = await anonymous.request("/suiteowner/missing.git/info/refs?service=git-upload-pack", { headers });
-      assert.equal(missing.status, 404);
-      assert.equal(missing.body, "");
+      assert.equal(missing.status, 401);
+      assert.match(missing.headers.get("www-authenticate") ?? "", /^Basic /);
       assert.equal(missing.headers.get("cache-control"), "no-store");
       const withoutSuffix = await anonymous.request(`${publicRepo}/info/refs?service=git-upload-pack`, { headers });
       assert.equal(withoutSuffix.status, 404);
@@ -622,8 +627,12 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
       const image = await fetch(new URL(media, base));
       assert.equal(image.status, 200);
       assert.equal(image.headers.get("content-type"), "image/png");
+      assert.equal(image.headers.get("cache-control"), "public, max-age=86400, stale-while-revalidate=604800");
       assert.equal(image.headers.get("cross-origin-resource-policy"), "same-origin");
       assert.deepEqual(Buffer.from(await image.arrayBuffer()), fixturePng);
+      const branchMedia = await fetch(new URL(`${history}/media/figures/map.png?branch=feature%2Freadme`, base));
+      assert.equal(branchMedia.status, 200);
+      assert.equal(branchMedia.headers.get("cache-control"), "public, no-cache");
       const guideLink = branchPage.body.match(/href="([^"]+)"[^>]*>Guide<\/a>/)?.[1];
       assert.ok(guideLink, "the README links to the Markdown file");
       const guide = await fetch(new URL(guideLink, base));

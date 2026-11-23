@@ -320,7 +320,7 @@ pub async fn file(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
     let Some(repo) = visible_repo(&state, &owner, &name).await? else {
         return repository_not_found(&state);
     };
-    let Some(path) = requested_path(&ctx) else {
+    let Some(path) = requested_path(&ctx).filter(|path| valid_repo_path(path)) else {
         return not_found(&state, state.locale.t(RepoText::FileNotFound));
     };
     let branch = util::query_param(&req, "branch").unwrap_or_else(|| repo.default_branch.clone());
@@ -422,19 +422,13 @@ async fn file_response(
     let Some(repo) = visible_repo(&state, &owner, &name).await? else {
         return repository_not_found(&state);
     };
-    let Some(path) = requested_path(&ctx) else {
+    let Some(path) = requested_path(&ctx).filter(|path| valid_repo_path(path)) else {
         return not_found(&state, state.locale.t(RepoText::FileNotFound));
     };
     let mime = if inline_image {
         let Some(mime) = image_mime(&path) else {
             return not_found(&state, state.locale.t(RepoText::FileNotFound));
         };
-        if path.contains('\\')
-            || path.chars().any(char::is_control)
-            || path.split('/').any(|part| matches!(part, "" | "." | ".."))
-        {
-            return not_found(&state, state.locale.t(RepoText::FileNotFound));
-        }
         mime
     } else {
         "application/octet-stream"
@@ -463,9 +457,11 @@ async fn file_response(
         headers.set(
             "Cache-Control",
             if repo.is_private() {
-                "private, max-age=86400"
-            } else {
+                "private, no-store"
+            } else if is_object_id(&branch) {
                 "public, max-age=86400, stale-while-revalidate=604800"
+            } else {
+                "public, no-cache"
             },
         )?;
         headers.set("Cross-Origin-Resource-Policy", "same-origin")?;
@@ -825,7 +821,15 @@ enum BrowseEntry {
     File,
 }
 
-fn valid_browse_ref(reference: &str) -> bool {
+fn valid_repo_path(path: &str) -> bool {
+    !path.is_empty()
+        && path.len() <= 4096
+        && !path.contains('\\')
+        && !path.chars().any(char::is_control)
+        && !path.split('/').any(|part| matches!(part, "" | "." | ".."))
+}
+
+pub(crate) fn valid_browse_ref(reference: &str) -> bool {
     reference == "HEAD"
         || is_object_id(reference)
         || crate::git_wire::valid_ref(reference)

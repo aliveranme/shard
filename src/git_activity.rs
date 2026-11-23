@@ -40,14 +40,19 @@ pub(crate) enum Admission {
 }
 
 // Both paths bind the proposed updates as ?2 and the deletion OID as ?3.
+// Native repositories may run on case-insensitive filesystems (NTFS/APFS),
+// so protected branch and default branch guards compare case-insensitively there.
 macro_rules! writable_refs {
     () => {
         "NOT EXISTS (
             SELECT 1 FROM json_each(?2) u
-            LEFT JOIN repo_branch_rules b ON b.repo_id = r.id AND b.branch = substr(json_extract(u.value, '$.name'), 12)
+            LEFT JOIN repo_branch_rules b ON b.repo_id = r.id
+              AND ((r.git_backend = 'native' AND b.branch = substr(json_extract(u.value, '$.name'), 12) COLLATE NOCASE)
+                   OR b.branch = substr(json_extract(u.value, '$.name'), 12))
             WHERE json_extract(u.value, '$.name') GLOB 'refs/heads/*'
               AND (b.repo_id IS NOT NULL OR (json_extract(u.value, '$.after') = ?3
-                   AND r.default_branch = substr(json_extract(u.value, '$.name'), 12)))
+                   AND ((r.git_backend = 'native' AND r.default_branch = substr(json_extract(u.value, '$.name'), 12) COLLATE NOCASE)
+                        OR r.default_branch = substr(json_extract(u.value, '$.name'), 12))))
         )"
     };
 }

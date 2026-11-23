@@ -409,26 +409,33 @@ fn autolinks<'a>(
 ) -> Event<'a> {
     let mut tail = text.as_ref();
     let mut plain_start = 0;
+    let mut skip_url_until = 0;
     let mut previous = None;
     while let Some(first) = tail.chars().next() {
+        let offset = text.len() - tail.len();
         if previous.is_none_or(|c| !name_char(c) && !matches!(c, '/' | '#' | '@')) {
-            if let Some((label, destination)) = autolink_at(tail, context) {
-                let offset = text.len() - tail.len();
-                if plain_start < offset {
-                    pending.push_back(Event::Text(text_slice(&text, plain_start, offset)));
+            match autolink_at(tail, context, offset >= skip_url_until) {
+                AutolinkMatch::Found(label, destination) => {
+                    if plain_start < offset {
+                        pending.push_back(Event::Text(text_slice(&text, plain_start, offset)));
+                    }
+                    pending.push_back(Event::Start(Tag::Link {
+                        link_type: LinkType::Autolink,
+                        dest_url: CowStr::from(destination),
+                        title: CowStr::Borrowed(""),
+                        id: CowStr::Borrowed(""),
+                    }));
+                    plain_start = offset + label.len();
+                    pending.push_back(Event::Text(text_slice(&text, offset, plain_start)));
+                    pending.push_back(Event::End(TagEnd::Link));
+                    previous = label.chars().next_back();
+                    tail = &tail[label.len()..];
+                    continue;
                 }
-                pending.push_back(Event::Start(Tag::Link {
-                    link_type: LinkType::Autolink,
-                    dest_url: CowStr::from(destination),
-                    title: CowStr::Borrowed(""),
-                    id: CowStr::Borrowed(""),
-                }));
-                plain_start = offset + label.len();
-                pending.push_back(Event::Text(text_slice(&text, offset, plain_start)));
-                pending.push_back(Event::End(TagEnd::Link));
-                previous = label.chars().next_back();
-                tail = &tail[label.len()..];
-                continue;
+                AutolinkMatch::InvalidUrl(scanned_len) => {
+                    skip_url_until = offset + scanned_len;
+                }
+                AutolinkMatch::None => {}
             }
         }
         previous = Some(first);
@@ -445,6 +452,12 @@ fn autolinks<'a>(
         .expect("at least one autolink was queued")
 }
 
+enum AutolinkMatch<'a> {
+    Found(&'a str, String),
+    InvalidUrl(usize),
+    None,
+}
+
 fn text_slice<'a>(text: &CowStr<'a>, start: usize, end: usize) -> CowStr<'a> {
     match text {
         CowStr::Borrowed(text) => CowStr::Borrowed(&(*text)[start..end]),
@@ -452,13 +465,20 @@ fn text_slice<'a>(text: &CowStr<'a>, start: usize, end: usize) -> CowStr<'a> {
     }
 }
 
-fn autolink_at<'a>(text: &'a str, context: &Context<'_>) -> Option<(&'a str, String)> {
+fn autolink_at<'a>(text: &'a str, context: &Context<'_>, allow_url: bool) -> AutolinkMatch<'a> {
     if ["https://", "http://"].iter().any(|scheme| {
         text.get(..scheme.len())
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case(scheme))
     }) {
-        let url = plain_url(text);
-        return absolute_url(url, false).then(|| (url, url.to_owned()));
+        if !allow_url {
+            return AutolinkMatch::None;
+        }
+        let (url, scanned_len) = plain_url(text);
+        return if absolute_url(url, false) {
+            AutolinkMatch::Found(url, url.to_owned())
+        } else {
+            AutolinkMatch::InvalidUrl(scanned_len)
+        };
     }
     let (owner, repo, digits) = if let Some(reference) = qualified_reference(text) {
         reference
@@ -471,7 +491,7 @@ fn autolink_at<'a>(text: &'a str, context: &Context<'_>) -> Option<(&'a str, Str
         {
             &text[3..]
         } else {
-            return None;
+            return AutolinkMatch::None;
         };
         (
             context.repo.owner_name.as_str(),
@@ -489,14 +509,17 @@ fn autolink_at<'a>(text: &'a str, context: &Context<'_>) -> Option<(&'a str, Str
             .strip_prefix('.')
             .is_some_and(|rest| rest.starts_with(invalid_suffix))
     {
-        return None;
+        return AutolinkMatch::None;
     }
-    let number = number
+    let Some(number) = number
         .parse::<u64>()
         .ok()
-        .filter(|number| (1..=9_007_199_254_740_991).contains(number))?;
+        .filter(|number| (1..=9_007_199_254_740_991).contains(number))
+    else {
+        return AutolinkMatch::None;
+    };
     let label = &text[..text.len() - suffix.len()];
-    Some((label, format!("/{owner}/{repo}/issues/{number}")))
+    AutolinkMatch::Found(label, format!("/{owner}/{repo}/issues/{number}"))
 }
 
 fn qualified_reference(text: &str) -> Option<(&str, &str, &str)> {
@@ -511,7 +534,7 @@ fn name_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_')
 }
 
-fn plain_url(text: &str) -> &str {
+fn plain_url(text: &str) -> (&str, usize) {
     let mut parens = 0;
     let mut brackets = 0;
     let mut end = text.len();
@@ -544,5 +567,8 @@ fn plain_url(text: &str) -> &str {
             _ => {}
         }
     }
-    text[..end].trim_end_matches(['.', ',', ':', ';', '!', '?'])
+    (
+        text[..end].trim_end_matches(['.', ',', ':', ';', '!', '?']),
+        end,
+    )
 }

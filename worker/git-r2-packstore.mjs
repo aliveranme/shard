@@ -161,9 +161,13 @@ export async function buildR2PackStore(bucket, packs, getIndex, maxObjects = 200
       if (!Number.isSafeInteger(dataLen) || dataLen <= 0) return null;
       let type = parsed.type >= 1 && parsed.type <= 4 ? TYPES[parsed.type] : null;
       let baseOid = null;
+      const isDelta = parsed.type === 6 || parsed.type === 7;
+      let size = parsed.size;
       if (parsed.type === 6) {
         baseOid = offsetOids.get(parsed.baseOffset) ?? null;
         type = types.get(parsed.baseOffset) ?? null;
+        const baseEntry = baseOid ? entries.get(baseOid) : null;
+        if (baseEntry) size = Math.max(size, baseEntry.size ?? 0);
       } else if (parsed.type === 7) {
         baseOid = parsed.baseOid;
         // A ref-delta base may live in another pack or later in this one.
@@ -174,7 +178,7 @@ export async function buildR2PackStore(bucket, packs, getIndex, maxObjects = 200
       const oid = index.oidAt(entryIndex);
       entries.set(oid, {
         oid, packId: position + 1, offset, dataOff, dataLen,
-        type, size: parsed.size, entrySize: parsed.size, baseOid,
+        type, size, entrySize: parsed.size, baseOid, isDelta,
       });
     }
   }
@@ -189,7 +193,7 @@ export async function buildR2PackStore(bucket, packs, getIndex, maxObjects = 200
       if (!parent) break;
       if (parent.type) {
         entry.type = parent.type;
-        entry.size = parent.entrySize ?? parent.size;
+        entry.size = Math.max(entry.size ?? 0, parent.size ?? parent.entrySize ?? 0);
         break;
       }
       base = parent.baseOid;

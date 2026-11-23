@@ -63,8 +63,9 @@ class Packets {
     }
   }
 
-  replay() {
+  replay(maxDurationMs = 0) {
     const { reader, saved } = this;
+    const deadline = maxDurationMs > 0 ? Date.now() + maxDurationMs : 0;
     let index = 0;
     return new ReadableStream({
       async pull(controller) {
@@ -73,7 +74,32 @@ class Packets {
           saved[index++] = null;
           return;
         }
-        const next = await reader.read();
+        let next;
+        if (deadline > 0) {
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) {
+            void reader.cancel().catch(() => {});
+            controller.error(new Error("Git push admission expired"));
+            return;
+          }
+          let timer;
+          try {
+            next = await Promise.race([
+              reader.read(),
+              new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new Error("Git push admission expired")), remaining);
+              }),
+            ]);
+          } catch (error) {
+            void reader.cancel().catch(() => {});
+            controller.error(error);
+            return;
+          } finally {
+            clearTimeout(timer);
+          }
+        } else {
+          next = await reader.read();
+        }
         if (next.done) {
           reader.releaseLock();
           controller.close();
@@ -111,7 +137,7 @@ function packet(text) {
   return concat([encoder.encode((data.length + 4).toString(16).padStart(4, "0")), data]);
 }
 
-export async function shard_receive_request(body, encoding) {
+export async function shard_receive_request(body, encoding, maxDurationMs = 0) {
   if (encoding === "gzip") body = body.pipeThrough(new DecompressionStream("gzip"));
   const input = new Packets(body, maxPrefix, true);
   const updates = [];
@@ -147,7 +173,7 @@ export async function shard_receive_request(body, encoding) {
       seen.add(name);
       updates.push({ name, before, after });
     }
-    return { body: input.replay(), updates: JSON.stringify(updates), sideband, report };
+    return { body: input.replay(maxDurationMs), updates: JSON.stringify(updates), sideband, report };
   } catch (error) {
     input.cancel();
     throw error;

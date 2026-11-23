@@ -50,6 +50,7 @@ catalog! {
         FormOrigin => "This form must be submitted from this shard.", "请在当前 Shard 站点提交此表单。";
         FormExpired => "This form has expired. Reload the page and try again.", "此表单已过期，请刷新页面后重试。";
         UnreadableForm => "The submitted form could not be read.", "无法读取提交的表单。";
+        FormTooLarge => "The submitted form exceeds the size limit.", "提交的表单超出了大小限制。";
         WorkerError => "Something went wrong. The request was logged.", "服务发生错误，请求已记录。";
         RateLimit => "Too many requests. Try again in a minute.", "请求过于频繁。请在一分钟后重试。";
     }

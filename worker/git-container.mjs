@@ -24,7 +24,7 @@ export class ArtifactsMergeContainer extends DurableObject {
       if (!ready.health.mergeEnabled) return new Response(null, { status: 501 });
 
       // After handing off a mutation, a lost response may hide a successful push.
-      return await container.getTcpPort(PORT).fetch("http://container/v1/artifacts/merge", {
+      const response = await container.getTcpPort(PORT).fetch("http://container/v1/artifacts/merge", {
         method: "POST",
         redirect: "manual",
         headers: {
@@ -33,6 +33,14 @@ export class ArtifactsMergeContainer extends DurableObject {
         },
         body: request.body,
       });
+      if (response.status === 401 || response.status === 403) {
+        await response.body?.cancel();
+        this.#sessionToken = undefined;
+        await this.ctx.storage.delete("container-token").catch(() => {});
+        await container.destroy().catch(() => {});
+        return new Response(null, { status: 502 });
+      }
+      return response;
     } catch {
       return new Response(null, { status: health ? 503 : 502 });
     }
@@ -76,6 +84,9 @@ export class ArtifactsMergeContainer extends DurableObject {
       }
       await scheduler.wait(200);
     } while (Date.now() < deadline);
+    this.#sessionToken = undefined;
+    await this.ctx.storage.delete("container-token").catch(() => {});
+    await container.destroy().catch(() => {});
     throw new Error("Artifacts merge bridge did not become ready");
   }
 }

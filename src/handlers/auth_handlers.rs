@@ -12,6 +12,9 @@ use crate::templates::{error_response, render, AuthPage, Chrome};
 use crate::util;
 use worker::*;
 
+/// Failed logins allowed per normalized client address (IPv6 `/64`) per window.
+const IP_LOGIN_FAILURES: i64 = 100;
+
 pub async fn login_form(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = ctx.data.clone();
     if state.user.is_some() {
@@ -46,8 +49,13 @@ pub async fn login_submit(req: Request, ctx: RouteContext<AppState>) -> Result<R
             state.locale.t(AccountText::InvalidLoginLength),
         );
     }
-    let key = auth::login_key(&state.env, &req, &login).await?;
-    if let Some(seconds) = auth::login_retry_after(&state.env, &key).await? {
+    let key = auth::login_key(&req, &login).await?;
+    let ip_key = auth::login_ip_key(&req).await?;
+    let retry_after = match auth::login_retry_after(&state.env, &key).await? {
+        Some(seconds) => Some(seconds),
+        None => auth::login_retry_after_limit(&state.env, &ip_key, IP_LOGIN_FAILURES).await?,
+    };
+    if let Some(seconds) = retry_after {
         let mut response = error_response(
             &Chrome::new(&state),
             429,
@@ -69,6 +77,7 @@ pub async fn login_submit(req: Request, ctx: RouteContext<AppState>) -> Result<R
         }
         None => {
             auth::record_login_failure(&state.env, &key).await?;
+            auth::record_login_failure_limit(&state.env, &ip_key, IP_LOGIN_FAILURES).await?;
             let page = AuthPage {
                 chrome: Chrome::new(&state),
                 title: page_title(&[state.locale.t(CommonText::SignIn)]),

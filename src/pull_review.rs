@@ -206,8 +206,15 @@ async fn mutate(ctx: RouteContext<AppState>, operation: Operation) -> Result<Res
                 let env = state.env.clone();
                 let repo_id = repo.id;
                 let base_branch = pull.base_branch.clone();
+                let issue_id = issue.id;
                 state.worker_ctx.wait_until(async move {
-                    crate::branch_rules::wake_branch(&env, repo_id, &base_branch).await;
+                    crate::branch_rules::wake_branch_issue(
+                        &env,
+                        repo_id,
+                        &base_branch,
+                        Some(issue_id),
+                    )
+                    .await;
                 });
             }
             crate::handlers::issues::redirect_to_entry(
@@ -244,6 +251,14 @@ async fn refresh_comparison(
             if !save_comparison(database, pull, &tips, Some(actor), None).await? {
                 return error(state, 409, DiscussionText::ReviewConflict);
             }
+            let env = state.env.clone();
+            let repo_id = target.id;
+            let base_branch = pull.base_branch.clone();
+            let issue_id = pull.issue_id;
+            state.worker_ctx.wait_until(async move {
+                crate::branch_rules::wake_branch_issue(&env, repo_id, &base_branch, Some(issue_id))
+                    .await;
+            });
         }
         Ok(None) => {}
         Err(message) => return error(state, 409, message),
@@ -451,14 +466,24 @@ async fn refresh_pending_comparison(
     let handles = Repositories::open(env, &repo, source).await?;
     match sample_comparison(&handles, &pull, true).await {
         Ok(Some(tips)) => {
-            save_comparison(
+            let changed = save_comparison(
                 database,
                 &pull,
                 &tips,
                 target.author_id,
                 Some(item.generation),
             )
-            .await
+            .await?;
+            if changed {
+                crate::branch_rules::wake_branch_issue(
+                    env,
+                    repo.id,
+                    &pull.base_branch,
+                    Some(pull.issue_id),
+                )
+                .await;
+            }
+            Ok(changed)
         }
         Err(DiscussionText::GitUnavailable | DiscussionText::MergeUnavailable) => Ok(false),
         Ok(None) | Err(_) => Ok(true),

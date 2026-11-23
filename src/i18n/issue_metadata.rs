@@ -6,7 +6,7 @@ catalog! {
         ClassifyForbidden => "Only repository writers can classify issues.", "只有拥有仓库写入权限的用户可以为议题分类。";
         InvalidForm => "Submit one value for each field other than labels.", "除标签外，每个字段只能提交一个值。";
         InvalidTitle => "Use a single-line title of at most 300 characters.", "请使用不超过 300 个字符的单行标题。";
-        InvalidBody => "Use plain text or Markdown up to 1 MB, without control characters other than line breaks and tabs.", "请输入不超过 1 MB 的纯文本或 Markdown，控制字符仅允许换行符和制表符。";
+        InvalidBody => "Use plain text or Markdown up to 256 KiB, without control characters other than line breaks and tabs.", "请输入不超过 256 KiB 的纯文本或 Markdown，控制字符仅允许换行符和制表符。";
         InvalidSelection => "Choose labels, a milestone and an assignee from the available options.", "请从可用选项中选择标签、里程碑和负责人。";
         Classification => "Classification", "分类";
         Labels => "Labels", "标签";

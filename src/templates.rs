@@ -247,6 +247,7 @@ pub struct GlobalIssuesPage {
     pub state: String,
     pub query: String,
     pub filters: crate::issue_filters::IssueFilters,
+    pub is_pull: bool,
     pub open_url: String,
     pub closed_url: String,
     pub all_url: String,

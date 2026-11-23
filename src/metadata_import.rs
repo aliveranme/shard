@@ -228,18 +228,7 @@ fn valid_text(text: &str) -> bool {
 }
 
 fn valid_ref_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 255
-        && name != "@"
-        && !name.ends_with('.')
-        && !name.contains("..")
-        && !name.contains("@{")
-        && !name.chars().any(|ch| {
-            ch.is_control() || matches!(ch, ' ' | '~' | '^' | ':' | '?' | '*' | '[' | '\\')
-        })
-        && name
-            .split('/')
-            .all(|part| !part.is_empty() && !part.starts_with('.') && !part.ends_with(".lock"))
+    crate::git_wire::valid_ref(name)
 }
 
 #[derive(Template)]

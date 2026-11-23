@@ -62,8 +62,9 @@ async fn proxy(req: Request, ctx: RouteContext<AppState>, service: &str) -> Resu
     };
 
     let database = state.db()?;
+    let identity = resolve_git_identity(&state.env, &req).await?;
     let Some(repo) = load_repo(&database, &owner, repo_name).await? else {
-        return hidden_repo();
+        return missing_repo(state, identity.as_ref());
     };
     let request_url = req.url()?;
     let query = request_url.query().unwrap_or_default();
@@ -74,7 +75,7 @@ async fn proxy(req: Request, ctx: RouteContext<AppState>, service: &str) -> Resu
                 .query_pairs()
                 .any(|(key, value)| key == "service" && value == "git-receive-pack"));
     let private = repo.visibility != "public";
-    let identity = match authorize(state, &database, &repo, &req, write).await? {
+    let identity = match authorize_identity(state, &database, &repo, identity, write).await? {
         Ok(identity) => identity,
         Err(response) => return Ok(response),
     };
@@ -96,7 +97,8 @@ async fn proxy(req: Request, ctx: RouteContext<AppState>, service: &str) -> Resu
         if !matches!(encoding.as_str(), "" | "identity" | "gzip") {
             return git_error(state, 415, BranchText::InvalidPush);
         }
-        let push = match ReceiveRequest::inspect(&req, &encoding).await {
+        let max_duration_ms = if r2 { 0 } else { 270_000 };
+        let push = match ReceiveRequest::inspect(&req, &encoding, max_duration_ms).await {
             Ok(push) => push,
             Err(_) => return git_error(state, 400, BranchText::InvalidPush),
         };
@@ -298,10 +300,11 @@ pub(crate) async fn multipart_upload(
         return hidden_repo();
     };
     let database = state.db()?;
+    let identity = resolve_git_identity(&state.env, &req).await?;
     let Some(repo) = load_repo(&database, owner, name).await? else {
-        return hidden_repo();
+        return missing_repo(state, identity.as_ref());
     };
-    let actor = match authorize(state, &database, &repo, &req, true).await? {
+    let actor = match authorize_identity(state, &database, &repo, identity, true).await? {
         Ok(Some(identity)) => identity.user_id,
         Err(response) => return Ok(response),
         Ok(None) => return hidden_repo(),
@@ -388,7 +391,8 @@ async fn publish_r2(
         abort_prepared(prepared.prepared).await;
         return hidden_repo();
     }
-    match authorize(state, &database, &repo, req, true).await? {
+    let identity = resolve_git_identity(&state.env, req).await?;
+    match authorize_identity(state, &database, &repo, identity, true).await? {
         Ok(Some(identity)) if identity.user_id == actor => {}
         Err(response) => {
             abort_prepared(prepared.prepared).await;
@@ -482,18 +486,29 @@ async fn load_repo(database: &d1::D1Database, owner: &str, name: &str) -> Result
     .await
 }
 
-async fn authorize(
+async fn resolve_git_identity(env: &Env, req: &Request) -> Result<Option<GitIdentity>> {
+    match auth::git_identity(env, req).await {
+        Ok(identity) => Ok(identity),
+        Err(Error::RustError(message)) if message == "invalid basic credentials" => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn missing_repo(state: &AppState, identity: Option<&GitIdentity>) -> Result<Response> {
+    if identity.is_none() {
+        unauthorized(state.locale.t(CollaboratorText::GitCredentials))
+    } else {
+        hidden_repo()
+    }
+}
+
+async fn authorize_identity(
     state: &AppState,
     database: &d1::D1Database,
     repo: &GitRepo,
-    req: &Request,
+    identity: Option<GitIdentity>,
     write: bool,
 ) -> Result<std::result::Result<Option<GitIdentity>, Response>> {
-    let identity = match auth::git_identity(&state.env, req).await {
-        Ok(identity) => identity,
-        Err(Error::RustError(message)) if message == "invalid basic credentials" => None,
-        Err(error) => return Err(error),
-    };
     if !write && repo.visibility == "public" {
         return Ok(Ok(identity));
     }
@@ -593,21 +608,24 @@ pub(crate) async fn direct_control(req: Request, ctx: RouteContext<AppState>) ->
         return invalid(400);
     };
     let database = state.db()?;
+    let identity = resolve_git_identity(&state.env, &req).await?;
     let Some(repo) = load_repo(&database, owner, name).await? else {
-        return hidden_repo();
+        return missing_repo(state, identity.as_ref());
     };
     if !matches!(repo.git_backend, GitBackend::Native) {
         return hidden_repo();
     }
     let mut response = match command {
         DirectCommand::Resolve { write } => {
-            if let Err(response) = authorize(state, &database, &repo, &req, write).await? {
+            if let Err(response) =
+                authorize_identity(state, &database, &repo, identity, write).await?
+            {
                 return Ok(response);
             }
             Response::from_json(&serde_json::json!({"storage": repo.storage_id}))?
         }
         DirectCommand::Stage { storage, updates } if storage == repo.storage_id => {
-            let actor = match authorize(state, &database, &repo, &req, true).await? {
+            let actor = match authorize_identity(state, &database, &repo, identity, true).await? {
                 Ok(Some(identity)) => identity.user_id,
                 Err(response) => return Ok(response),
                 Ok(None) => return invalid(400),

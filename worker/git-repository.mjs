@@ -9,6 +9,7 @@ import { advertisement, renderStatus, validatePush } from "../node_modules/durab
 import { GitStore } from "../node_modules/durable-git/src/git/store.ts";
 import { concat, isOid, td, te, ZERO_OID } from "../node_modules/durable-git/src/git/util.ts";
 import { shard_receive_request } from "../src/git_wire.js";
+import { parseCommit as parseStrictCommit, parseTag as parseStrictTag, parseTree as parseStrictTree } from "./git-r2-pack.mjs";
 
 const ID = /^shard-[A-Za-z0-9._-]{1,245}$/;
 const HEADS = "refs/heads/";
@@ -24,6 +25,8 @@ const SYMBOLIC_HEAD = "shard-head";
 const IMPORT_HOSTS = new Set(["github.com", "gitlab.com", "codeberg.org"]);
 const MIB = 1024 * 1024;
 const MAX_PUSH_MIB = 32;
+const MAX_FILE_BYTES = MAX_PUSH_MIB * MIB;
+const MAX_TOTAL_INFLATED = 64 * MIB;
 const MAX_INGEST_CACHE_MIB = 16;
 const MAX_RAW_COMMIT = 256 * 1024;
 const MAX_CONTROL = 8 * 1024;
@@ -80,7 +83,7 @@ function validRef(reference) {
     : reference.startsWith("refs/tags/")
       ? reference.slice("refs/tags/".length)
       : null;
-  if (short !== null && (!short || short.startsWith("-") || te.encode(short).length > MAX_QUERY)) {
+  if (short !== null && (!short || short.startsWith("-") || te.encode(short).length > 255)) {
     return false;
   }
   return true;
@@ -738,7 +741,8 @@ export class GitRepository extends RepoCell {
       const commands = targets.map((target, index) => ({ ref: `refs/shard-copy/${index}`, old: ZERO_OID, next: target }));
       const plan = await validatePush(this.store, commands, null, packId);
       if (plan.decisions.some(decision => decision.reject) ||
-          refs.some(({ name, target }) => name.startsWith(HEADS) && this.store.typeAndSize(target)?.type !== "commit")) {
+          refs.some(({ name, target }) => name.startsWith(HEADS) && this.store.typeAndSize(target)?.type !== "commit") ||
+          !await this.#fsckPacksAfter(packId - 1)) {
         throw new HttpError(422);
       }
     } catch (error) {
@@ -840,10 +844,41 @@ export class GitRepository extends RepoCell {
     return this.#blob(oid, limit, true);
   }
 
+  async #fsckPacksAfter(lastPackId) {
+    const rows = this.ctx.storage.sql.exec(
+      "SELECT oid, type, size FROM pack_objects WHERE pack_id > ?", lastPackId,
+    ).toArray();
+    let totalBytes = 0;
+    for (const row of rows) {
+      if (!Number.isSafeInteger(row.size) || row.size < 0 || row.size > MAX_FILE_BYTES) return false;
+      totalBytes += row.size;
+      if (totalBytes > MAX_TOTAL_INFLATED) return false;
+    }
+    for (const row of rows) {
+      if (row.type !== "commit" && row.type !== "tree" && row.type !== "tag") continue;
+      const object = await this.store.get(row.oid);
+      if (!object || object.type !== row.type) return false;
+      try {
+        if (row.type === "commit") {
+          parseStrictCommit(row.oid, object.data);
+        } else if (row.type === "tree") {
+          parseStrictTree(object.data);
+        } else if (row.type === "tag") {
+          const tag = parseStrictTag(object.data);
+          const target = this.store.typeAndSize(tag.target);
+          if (!target || target.type !== tag.typeName) return false;
+        }
+      } catch {
+        return false;
+      }
+    }
+    return true;
+  }
+
   async #blob(oid, limit, file = false) {
     const meta = this.store.typeAndSize(oid);
     if (meta?.type !== "blob") throw new HttpError(404);
-    if (!file && meta.size > limit) throw new HttpError(413);
+    if (meta.size > MAX_FILE_BYTES || (!file && meta.size > limit)) throw new HttpError(413);
     const size = file && limit !== null ? Math.min(limit, meta.size) : meta.size;
     const headers = { "Content-Type": "application/octet-stream", "Content-Length": String(size), "Cache-Control": "no-store" };
     if (file) headers["X-Shard-Object-Size"] = String(meta.size);
@@ -992,7 +1027,15 @@ export class GitRepository extends RepoCell {
     try {
       const bytes = await readBytes(input, MAX_UPLOAD_REQUEST);
       const parser = new PktParser(bytes);
-      if (parser.read()?.text === "command=ls-refs") return this.#lsRefs(parser);
+      const first = parser.read();
+      if (first?.text === "command=ls-refs") return this.#lsRefs(parser);
+      for (let packet = first; packet; packet = parser.read()) {
+        if (packet.kind !== "line") continue;
+        const text = packet.text.replace(/\n$/, "");
+        if (text === "deepen-relative" || text.startsWith("deepen-since ") || text.startsWith("deepen-not ")) {
+          return gitResponse(UPLOAD, "result", concat([pkt("ERR unsupported shallow option\n"), FLUSH]));
+        }
+      }
       return await this.#preparePack(new Request(`${INTERNAL}/${UPLOAD}`, {
         method: "POST",
         headers: { "x-repo": name },
@@ -1047,9 +1090,12 @@ export class GitRepository extends RepoCell {
       const results = updates.map(({ name }) => ({ ref: name, ok: false, msg: "cannot delete the default branch" }));
       return gitResponse(RECEIVE, "result", renderStatus(results, null, push.sideband));
     }
-    const existingRefs = new Set(this.store.refs().map(({ name }) => name));
-    for (const { name, after } of updates) {
-      if (after === ZERO_OID) existingRefs.delete(name);
+    const priorRefs = new Map(this.store.refs().map(({ name, target }) => [name, target]));
+    const existingRefs = new Set(priorRefs.keys());
+    for (const { name, before, after } of updates) {
+      if (after === ZERO_OID && name !== head && before === (priorRefs.get(name) ?? ZERO_OID)) {
+        existingRefs.delete(name);
+      }
     }
     const hasDfConflict = updates.some(({ name, after }) => {
       if (after === ZERO_OID) return false;
@@ -1066,13 +1112,37 @@ export class GitRepository extends RepoCell {
       const results = updates.map(({ name }) => ({ ref: name, ok: false, msg: "reference directory/file conflict" }));
       return gitResponse(RECEIVE, "result", renderStatus(results, null, push.sideband));
     }
+    const priorLastPack = this.ctx.storage.sql.exec("SELECT COALESCE(MAX(pack_id), 0) AS id FROM pack_meta").one().id;
     try {
       const response = await super.fetch(new Request(`${INTERNAL}/${RECEIVE}`, {
         method: "POST",
         headers: { "x-repo": name },
         body: push.body,
       }));
-      return oversized ? empty(413) : response;
+      if (oversized) return empty(413);
+      const badBranch = this.store.refs().some(
+        ({ name: refName, target }) => refName.startsWith(HEADS) && this.store.typeAndSize(target)?.type !== "commit",
+      );
+      const fsckOk = !badBranch && await this.#fsckPacksAfter(priorLastPack);
+      if (!fsckOk) {
+        this.ctx.storage.transactionSync(() => {
+          const sql = this.ctx.storage.sql;
+          sql.exec("DELETE FROM refs WHERE name != 'HEAD'");
+          for (const [refName, target] of priorRefs) {
+            sql.exec("INSERT INTO refs (name, target) VALUES (?, ?)", refName, target);
+          }
+          for (const table of ["pack_meta", "pack_objects", "pack_data", "pack_pending"]) {
+            sql.exec(`DELETE FROM ${table} WHERE pack_id > ?`, priorLastPack);
+          }
+          sql.exec("DELETE FROM reachable; DELETE FROM peeled;");
+          this.store = new GitStore(sql);
+        });
+        if (!push.report) return empty(422);
+        const msg = badBranch ? "branches must reference a commit" : "object validation failed";
+        const results = updates.map(({ name: refName }) => ({ ref: refName, ok: false, msg }));
+        return gitResponse(RECEIVE, "result", renderStatus(results, null, push.sideband));
+      }
+      return response;
     } finally {
       // RepoCell can select another branch on push. Shard's configured symbolic
       // HEAD changes only through /head or initial repository publication.

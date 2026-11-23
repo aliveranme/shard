@@ -42,12 +42,12 @@ function parseJson(text) {
   }
 }
 
-function endpoint(href, label) {
+function endpoint(href, label, { loopback = true } = {}) {
   const url = typeof href === "string" ? URL.parse(href) : null;
-  const loopback = url && /^(?:localhost|\[::1\]|127\.(?:\d{1,3}\.){2}\d{1,3})$/.test(url.hostname);
+  const isLoopback = url && /^(?:localhost|\[::1\]|127\.(?:\d{1,3}\.){2}\d{1,3})$/.test(url.hostname);
   if (!url || url.username || url.password || url.hash ||
-      (url.protocol !== "https:" && !(url.protocol === "http:" && loopback))) {
-    throw new TransferError(`${label} URL must use HTTPS or loopback HTTP`);
+      (url.protocol !== "https:" && !(loopback && url.protocol === "http:" && isLoopback))) {
+    throw new TransferError(loopback ? `${label} URL must use HTTPS or loopback HTTP` : `${label} URL must use HTTPS`);
   }
   return url;
 }
@@ -172,10 +172,12 @@ async function exchange(url, { method, headers, send, label, timeout, idle = 0, 
     if (!ok) throw httpFailure(label, status, retryAfter, shardErrorDetail(body, authorization));
     return { status, body, etag: response.headers.etag };
   });
-  const upload = outgoing ? Promise.resolve().then(() => send(outgoing)) : undefined;
+  const upload = outgoing ? Promise.resolve().then(() => send(outgoing)) : Promise.resolve();
   try {
-    const [response] = await Promise.all([receive, upload]);
-    return response;
+    const [recv, sent] = await Promise.allSettled([receive, upload]);
+    if (recv.status === "rejected") throw recv.reason;
+    if (sent.status === "rejected") throw sent.reason;
+    return recv.value;
   } catch (error) {
     incoming?.destroy();
     outgoing?.destroy();
@@ -295,7 +297,7 @@ async function uploadObject({ oid, size, path, action }) {
       const etag = await retry(async (partSignal) => {
         // Refresh the signing URL on each PUT attempt. Re-uploading a part replaces it.
         const action = await retry((signal) => postShard(url, authorization, payload, signal), CONTROL_RETRY_MS, partSignal);
-        const target = endpoint(action.href, "R2 part");
+        const target = endpoint(action.href, "R2 part", { loopback: url.protocol !== "https:" });
         return putPart(target, action.header, path, start, length, (bytes) => progress(transferred + bytes), partSignal);
       }, PART_RETRY_MS);
       const receipt = { action: "record", uploadId, partNumber, etag };
@@ -304,7 +306,7 @@ async function uploadObject({ oid, size, path, action }) {
       await progress(transferred, true);
     }
   }
-  await postShard(url, authorization, { action: "finish", uploadId });
+  await retry((signal) => postShard(url, authorization, { action: "finish", uploadId }, signal), FINISH_TIMEOUT_MS);
 }
 
 function protocolError(error) {

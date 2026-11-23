@@ -1117,7 +1117,9 @@ async fn reconcile_copy(
             Ok(copied) => copied,
             Err(error) => {
                 console_error!("Unable to copy LFS objects for fork {}: {error}", job.id);
-                discard_revoked_copy(database, job.id).await?;
+                if discard_revoked_copy(database, job.id).await? {
+                    return Ok(CopyProgress::Done);
+                }
                 return Ok(CopyProgress::Unknown);
             }
         }
@@ -1250,7 +1252,7 @@ async fn reconcile_cleanup(
         &cutoff,
     )
     .await?;
-    let expired: Vec<ExpiredMultipart> = db::all(
+    let mut expired: Vec<ExpiredMultipart> = db::all(
         database,
         "DELETE FROM repo_lfs_multipart WHERE attempt IN (
              SELECT attempt FROM repo_lfs_multipart WHERE expires_at <= ? ORDER BY expires_at LIMIT 32
@@ -1258,6 +1260,15 @@ async fn reconcile_cleanup(
         &cutoff,
     )
     .await?;
+    let mut deleted_aborts: Vec<ExpiredMultipart> = db::all(
+        database,
+        "DELETE FROM repo_lfs_multipart_aborts WHERE id IN (
+             SELECT id FROM repo_lfs_multipart_aborts ORDER BY id LIMIT 32
+         ) RETURNING repo_id, oid, attempt, upload_id",
+        &[],
+    )
+    .await?;
+    expired.append(&mut deleted_aborts);
     if !expired.is_empty() {
         if let Ok(Some(bucket)) = lfs::storage_bucket(env) {
             for item in expired {
@@ -1337,10 +1348,10 @@ async fn clean_storage(
         .lfs_copy_id
         .map(Namespace::Fork)
         .or_else(|| job.repo_id.map(Namespace::Repo));
-    if let Some(namespace) = namespace {
-        if !lfs::delete_page(env, namespace, lfs_limit).await? {
-            return Ok(());
-        }
+    if (namespace.is_some() || job.repo_id.is_some())
+        && !lfs::delete_page(env, namespace, job.repo_id, lfs_limit).await?
+    {
+        return Ok(());
     }
     if let Some(copy_id) = job.copy_id {
         let mark_failed = database

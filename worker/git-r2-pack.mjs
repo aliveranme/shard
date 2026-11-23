@@ -249,6 +249,9 @@ async function verifyObject(oid, type, data) {
   if (actual !== oid) throw new Error("Git object digest mismatch");
 }
 
+const MAX_CACHE_ENTRY = 1024 * 1024;
+const MAX_CACHE_TOTAL = 4 * 1024 * 1024;
+
 export async function readPackedObject(index, oid, {
   readRange,
   readBase,
@@ -259,48 +262,77 @@ export async function readPackedObject(index, oid, {
 } = {}) {
   if (!OID.test(oid) || typeof readRange !== "function") return null;
   if (cache.has(`oid:${oid}`)) return cache.get(`oid:${oid}`);
-  const readAt = async (offset, depth) => {
-    if (depth > 64) throw new Error("Git delta chain is too deep");
-    const cached = cache.get(`at:${offset}`);
-    if (cached) return cached;
-    const header = await readRange(offset, 128 * 1024);
-    const parsed = parsePackEntry(header, offset);
-    const initial = parsed.start >= offset && parsed.start <= offset + header.length
-      ? header.subarray(parsed.start - offset)
-      : new Uint8Array();
-    const data = await inflateAt(readRange, parsed.start, parsed.size, maxBytes, initial);
-    let object;
-    if (parsed.type >= 1 && parsed.type <= 4) {
-      object = { type: parsed.type, data };
-    } else if (parsed.type === 6) {
-      const base = await readAt(parsed.baseOffset, depth + 1);
-      if (!base) return null;
-      object = { type: base.type, data: applyDelta(base.data, data, maxBytes) };
-    } else if (parsed.type === 7) {
-      const base = typeof readBase === "function" ? await readBase(parsed.baseOid, depth + 1) : null;
-      if (!base) return null;
-      object = { type: base.type, data: applyDelta(base.data, data, maxBytes) };
-    } else {
-      throw new Error("Unsupported Git pack entry type");
+  let cacheBytes = cache.__bytes ?? 0;
+  const remember = (key, value) => {
+    const size = value?.data?.length ?? 0;
+    if (size > MAX_CACHE_ENTRY || cacheBytes + size > MAX_CACHE_TOTAL) return;
+    if (!cache.has(key)) cacheBytes += size;
+    cache.set(key, value);
+    cache.__bytes = cacheBytes;
+  };
+  const readAt = async (startOffset, startDepth) => {
+    const chain = [];
+    const seenOffsets = new Set();
+    let curOffset = startOffset;
+    let curDepth = startDepth;
+    let current = null;
+    for (;;) {
+      if (curDepth > 64) throw new Error("Git delta chain is too deep");
+      const cached = cache.get(`at:${curOffset}`);
+      if (cached) {
+        current = cached;
+        break;
+      }
+      if (seenOffsets.has(curOffset)) throw new Error("Git delta cycle detected");
+      seenOffsets.add(curOffset);
+      const header = await readRange(curOffset, 128 * 1024);
+      const parsed = parsePackEntry(header, curOffset);
+      const initial = parsed.start >= curOffset && parsed.start <= curOffset + header.length
+        ? header.subarray(parsed.start - curOffset)
+        : new Uint8Array();
+      const data = await inflateAt(readRange, parsed.start, parsed.size, maxBytes, initial);
+      if (parsed.type >= 1 && parsed.type <= 4) {
+        current = { type: parsed.type, data };
+        remember(`at:${curOffset}`, current);
+        break;
+      } else if (parsed.type === 6) {
+        chain.push({ offset: curOffset, data });
+        curOffset = parsed.baseOffset;
+        curDepth += 1;
+      } else if (parsed.type === 7) {
+        const base = typeof readBase === "function" ? await readBase(parsed.baseOid, curDepth + 1) : null;
+        if (!base) return null;
+        current = { type: base.type, data: applyDelta(base.data, data, maxBytes) };
+        remember(`at:${curOffset}`, current);
+        break;
+      } else {
+        throw new Error("Unsupported Git pack entry type");
+      }
     }
-    cache.set(`at:${offset}`, object);
-    return object;
+    for (let i = chain.length - 1; i >= 0; i--) {
+      const step = chain[i];
+      current = { type: current.type, data: applyDelta(current.data, step.data, maxBytes) };
+      chain[i] = null;
+      remember(`at:${step.offset}`, current);
+    }
+    return current;
   };
   const offset = index.find(oid);
   if (offset === null) return null;
   const object = await readAt(offset, initialDepth);
   if (!object) return null;
   if (verify) await verifyObject(oid, object.type, object.data);
-  cache.set(`oid:${oid}`, object);
+  remember(`oid:${oid}`, object);
   return object;
 }
 
 const CANONICAL_TREE_MODES = new Set(["40000", "100644", "100755", "120000", "160000"]);
-const IGNORABLE_GIT_CHARS = /[\u200c-\u200f\u202a-\u202e\u206a-\u206f\ufeff]/g;
+const IGNORABLE_GIT_CHARS = /[\u00ad\u034f\u115f\u1160\u17b4\u17b5\u180b-\u180d\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufeff\uffa0]/g;
 
-function isForbiddenDotGit(name) {
+export function isForbiddenDotGit(name) {
   const stripped = name.replace(IGNORABLE_GIT_CHARS, "");
-  return /^(\.git|git~1)(\.+|$)/i.test(stripped);
+  const base = stripped.split(":", 1)[0].replace(/[. ]+$/, "");
+  return /^(?:\.git|git~[1-9]\d*)$/i.test(base);
 }
 
 function compareTreeEntryBytes(leftBytes, leftIsDir, rightBytes, rightIsDir) {
@@ -317,22 +349,43 @@ function compareTreeEntryBytes(leftBytes, leftIsDir, rightBytes, rightIsDir) {
   return leftBytes[rightBytes.length] - rightNext;
 }
 
+const IDENTITY_LINE = /^([^<>\n]+) <([^<>\n]*)> (0|[1-9]\d*) [+-]\d{4}$/;
+
 export function parseCommit(oid, data) {
+  if (data.includes(0)) throw new Error("Invalid Git commit");
   const text = new TextDecoder("utf-8", { fatal: false }).decode(data);
   const separator = text.indexOf("\n\n");
   const headers = separator < 0 ? text : text.slice(0, separator);
   const message = separator < 0 ? "" : text.slice(separator + 2);
-  if (!/^tree [0-9a-f]{40}(?:\n|$)/.test(headers)) throw new Error("Invalid Git commit");
-  const trees = [...headers.matchAll(/^tree ([0-9a-f]{40})$/gm)];
-  const authors = [...headers.matchAll(/^author (.*) <([^<>]*)> (-?\d+) [+-]\d{4}$/gm)];
-  const committers = [...headers.matchAll(/^committer (.*) <([^<>]*)> (-?\d+) [+-]\d{4}$/gm)];
-  if (trees.length !== 1 || authors.length !== 1 || committers.length !== 1) {
-    throw new Error("Invalid Git commit");
+  const lines = headers.split("\n");
+  let index = 0;
+  const treeMatch = /^tree ([0-9a-f]{40})$/.exec(lines[index] ?? "");
+  if (!treeMatch) throw new Error("Invalid Git commit");
+  const tree = treeMatch[1];
+  index += 1;
+  const parents = [];
+  while (index < lines.length && lines[index].startsWith("parent ")) {
+    const parentMatch = /^parent ([0-9a-f]{40})$/.exec(lines[index]);
+    if (!parentMatch) throw new Error("Invalid Git commit");
+    parents.push(parentMatch[1]);
+    index += 1;
   }
-  const tree = trees[0][1];
-  const author = authors[0];
-  const committer = committers[0];
-  const parents = [...headers.matchAll(/^parent ([0-9a-f]{40})$/gm)].map((match) => match[1]);
+  const authorLine = lines[index] ?? "";
+  if (!authorLine.startsWith("author ")) throw new Error("Invalid Git commit");
+  const author = IDENTITY_LINE.exec(authorLine.slice("author ".length));
+  if (!author) throw new Error("Invalid Git commit");
+  index += 1;
+  const committerLine = lines[index] ?? "";
+  if (!committerLine.startsWith("committer ")) throw new Error("Invalid Git commit");
+  const committer = IDENTITY_LINE.exec(committerLine.slice("committer ".length));
+  if (!committer) throw new Error("Invalid Git commit");
+  index += 1;
+  for (; index < lines.length; index++) {
+    const line = lines[index];
+    if (line.startsWith("tree ") || line.startsWith("parent ") || line.startsWith("author ") || line.startsWith("committer ")) {
+      throw new Error("Invalid Git commit");
+    }
+  }
   const timestamp = Number(author[3]);
   const committerTimestamp = Number(committer[3]);
   if (!Number.isSafeInteger(timestamp) || !Number.isSafeInteger(committerTimestamp)) {
@@ -383,11 +436,36 @@ export function parseTree(data) {
   return entries;
 }
 
-export function parseTagTarget(data) {
+export function parseTag(data) {
+  if (data.includes(0)) throw new Error("Invalid Git tag");
   const text = new TextDecoder("utf-8", { fatal: false }).decode(data);
   const separator = text.indexOf("\n\n");
   const headers = separator < 0 ? text : text.slice(0, separator);
-  const target = /^object ([0-9a-f]{40})(?:\n|$)/.exec(headers)?.[1];
-  if (!target) throw new Error("Invalid Git tag");
-  return target;
+  const lines = headers.split("\n");
+  const objMatch = /^object ([0-9a-f]{40})$/.exec(lines[0] ?? "");
+  const typeMatch = /^type (commit|tree|blob|tag)$/.exec(lines[1] ?? "");
+  const tagMatch = /^tag ([^\n]+)$/.exec(lines[2] ?? "");
+  if (!objMatch || !typeMatch || !tagMatch) throw new Error("Invalid Git tag");
+  let index = 3;
+  if (index < lines.length && lines[index].startsWith("tagger ")) {
+    const tagger = IDENTITY_LINE.exec(lines[index].slice("tagger ".length));
+    if (!tagger || !Number.isSafeInteger(Number(tagger[3]))) throw new Error("Invalid Git tag");
+    index += 1;
+  }
+  for (; index < lines.length; index++) {
+    const line = lines[index];
+    if (line.startsWith("object ") || line.startsWith("type ") || line.startsWith("tag ") || line.startsWith("tagger ")) {
+      throw new Error("Invalid Git tag");
+    }
+  }
+  return {
+    target: objMatch[1],
+    type: TYPE_NAMES.indexOf(typeMatch[1]),
+    typeName: typeMatch[1],
+    tag: tagMatch[1],
+  };
+}
+
+export function parseTagTarget(data) {
+  return parseTag(data).target;
 }
