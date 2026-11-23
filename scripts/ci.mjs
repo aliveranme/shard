@@ -67,7 +67,8 @@ function checkR2Container(name, image) {
         await once(server, "listening");
         const origin = "http://127.0.0.1:" + server.address().port;
         const request = (path, options) => fetch(origin + path, { signal: AbortSignal.timeout(5000), ...options });
-        const health = await request("/healthz");
+        assert.equal((await request("/healthz")).status, 401);
+        const health = await request("/healthz", { headers: { Authorization: "Bearer " + token } });
         assert.equal(health.status, 200);
         assert.equal((await health.json()).protocol, 1);
 
