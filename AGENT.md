@@ -52,6 +52,29 @@ Run the narrowest relevant checks after implementing a complete change. For UI c
 
 Commit every completed feature change to Git after its relevant checks pass. Keep each commit focused on one feature and record the behavior and verification in `STATUS.md`. Preserve unrelated worktree changes. A local commit does not authorize a push.
 
+## Live deployment
+
+This checkout's production Worker is `shard`, served from the R2 backend. It is not the
+`shard-r2` target declared by `wrangler.jsonc`; that target is a separate fresh-install
+template. Deploy the live Worker with the gitignored `.wrangler.deploy-live.json`, which
+binds D1 `shard-max` (`ad511e92-6390-4d09-bc11-733e6d0c5142`), R2 `shard-max-git-packs`
+and `shard-max-lfs`, and the existing `shard-copy` Workflow.
+
+Keep the configuration under `env.r2`: the generated container application name must stay
+`shard-r2gitrepository-r2` to match the existing application. A top-level config derives
+`shard-r2gitrepository` and fails the application identity check.
+
+```sh
+mise exec -- npx wrangler d1 migrations apply DB --remote --env r2 --config .wrangler.deploy-live.json
+mise exec -- npx wrangler deploy --env r2 --config .wrangler.deploy-live.json \
+  --tag vX.Y.Z --message "release: vX.Y.Z" --containers-rollout immediate
+```
+
+Deploy with Wrangler directly, not `npm run deploy:paid`: the live R2 secrets already
+exist on the Worker, while the Paid script requires a secrets file and would upload the
+values it contains. `keep_vars` preserves the dashboard-managed R2, LFS, registration and
+limit variables.
+
 ## Remotes
 
 `origin` (`https://github.com/aliveranme/shard.git`) is the authoritative development
