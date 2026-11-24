@@ -39,7 +39,7 @@
     </div>
     <div class="field">
       <label for="description">{{ chrome.locale.t(crate::i18n::RepoText::Description) }}</label>
-      <input class="input" id="description" name="description" value="{{ destination.description }}">
+      <input class="input" id="description" name="description" value="{{ destination.description }}" maxlength="350">
     </div>
     {% if private_source %}
     <p class="card__sub">{{ chrome.locale.t(crate::i18n::LifecycleText::PrivateFork) }}</p>

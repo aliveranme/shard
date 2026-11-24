@@ -585,6 +585,70 @@ test("forge native Git over loopback", { timeout: 240_000 }, async (t) => {
       assert.equal(await readFile(join(forkClone, folder, filename), "utf8"), notes);
       assert.deepEqual(await readFile(join(forkClone, "marker.bin")), binary);
     });
+
+    await t.test("native branch protection matches refs case-insensitively", async () => {
+      const owner = await signup(base, "caseowner");
+      const writer = await signup(base, "casewriter");
+      const repo = "/caseowner/case";
+      redirected(await owner.post("/repo/create", { name: "case" }), repo);
+      redirected(await owner.post(`${repo}/settings/collaborators`, {
+        username: "casewriter", role: "write",
+      }));
+      const remote = remoteUrl(base, repo);
+      const writeToken = await scopedToken(owner, "write");
+      const git = await gitClient(temporary);
+      const worktree = join(temporary, "case-worktree");
+      await git(null, "init", "--object-format=sha1", "--initial-branch=Main", worktree);
+      const local = (...args) => git(null, "-C", worktree, ...args);
+      await writeFile(join(worktree, "README.md"), "# Case-folded branch\n");
+      await local("add", "README.md");
+      await local("commit", "-m", "Seed Main");
+      const baseOid = await local("rev-parse", "HEAD");
+      await git(writeToken, "-C", worktree, "push", remote, "Main");
+      await local("checkout", "-b", "feature");
+      await writeFile(join(worktree, "feature.txt"), "Feature\n");
+      await local("add", "feature.txt");
+      await local("commit", "-m", "Feature");
+      const featureOid = await local("rev-parse", "HEAD");
+      await git(writeToken, "-C", worktree, "push", remote, "feature");
+
+      const opened = await writer.post(`${repo}/pulls/new`, {
+        title: "Case-insensitive protection", body: "",
+        base_branch: "Main", head_branch: "feature",
+      });
+      redirected(opened);
+      redirected(await owner.post(`${repo}/settings/branches`, {
+        action: "save", branch: "main", approvals: "1",
+      }));
+      const page = await writer.get(opened.location);
+      const version = page.body.match(/name="comparison_version" value="(\d+)"/)?.[1];
+      assert.ok(version, page.body.slice(-1000));
+      redirected(await writer.post(`${opened.location}/merge`, {
+        action: "queue", comparison_version: version,
+      }));
+      const waiting = /Waiting for required approvals or checks/;
+      const deadline = Date.now() + 10_000;
+      let queued = await writer.get(opened.location);
+      while (!waiting.test(queued.body) && Date.now() < deadline) {
+        await delay(75);
+        queued = await writer.get(opened.location);
+      }
+      assert.match(queued.body, waiting);
+      assert.equal(await git(null, "ls-remote", remote, "refs/heads/Main"),
+        `${baseOid}\trefs/heads/Main`);
+
+      redirected(await owner.post(`${opened.location}/reviews`, {
+        decision: "approved", comparison_version: version,
+      }));
+      const merged = Date.now() + 10_000;
+      let tip = await git(null, "ls-remote", remote, "refs/heads/Main");
+      while (tip !== `${featureOid}\trefs/heads/Main` && Date.now() < merged) {
+        await tick(base);
+        await delay(75);
+        tip = await git(null, "ls-remote", remote, "refs/heads/Main");
+      }
+      assert.equal(tip, `${featureOid}\trefs/heads/Main`);
+    });
   } finally {
     try {
       await worker?.stop();

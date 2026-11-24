@@ -2,6 +2,11 @@
 
 Tracked findings from the full-repository code reviews.
 
+## Third review (2026-11-24)
+
+- [x] Repository descriptions are capped at 350 characters in creation, settings, forks and imports; migration `0036_repo_description_limit.sql` truncates legacy oversized rows.
+- [x] Native branch rules use case-insensitive matching in merge-queue approvals/checks and rule-change guards, matching push admission.
+
 ## v0.5.0 audit (H1–H5, M1–M13, L1–L8)
 
 All items are complete; see [CHANGELOG.md](CHANGELOG.md) for 0.5.1.

@@ -46,7 +46,10 @@ pub async fn create(_req: Request, ctx: RouteContext<AppState>) -> Result<Respon
         .unwrap_or_default()
         .trim()
         .to_string();
-    let description = util::form_value(form, "description").unwrap_or_default();
+    let description = util::form_value(form, "description")
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     let private = util::form_bool(form, "private");
 
     let invalid = |message: RepoText| -> Result<Response> {
@@ -63,6 +66,9 @@ pub async fn create(_req: Request, ctx: RouteContext<AppState>) -> Result<Respon
 
     if !util::valid_slug(&name) {
         return invalid(RepoText::InvalidName);
+    }
+    if !util::valid_repository_description(&description) {
+        return invalid(RepoText::DescriptionTooLong);
     }
 
     let database = state.db()?;
@@ -641,6 +647,7 @@ pub async fn settings(req: Request, ctx: RouteContext<AppState>) -> Result<Respo
             Some("delete-storage-failed") => Some(RepoText::DeleteStorageFailed),
             Some("delete-failed") => Some(RepoText::DeleteFailed),
             Some("save-failed") => Some(RepoText::SaveFailed),
+            Some("description-too-long") => Some(RepoText::DescriptionTooLong),
             Some("settings-changed") => Some(RepoText::SettingsChanged),
             Some("branch-not-found") => Some(RepoText::DefaultBranchNotFound),
             Some("branch-check-limit") => Some(RepoText::RefsLimit),
@@ -666,7 +673,14 @@ pub async fn update_settings(_req: Request, ctx: RouteContext<AppState>) -> Resu
         return super::common::forbidden(&state, state.locale.t(RepoText::SettingsForbidden));
     };
     let form = state.form()?;
-    let description = util::form_value(form, "description").unwrap_or_default();
+    let description = util::form_value(form, "description")
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let settings_url = format!("/{}/settings", repo.full_name());
+    if !util::valid_repository_description(&description) {
+        return util::redirect(&format!("{settings_url}?error=description-too-long"));
+    }
     let visibility = match util::form_value(form, "visibility").as_deref() {
         Some("private") => "private",
         _ => "public",
@@ -676,7 +690,6 @@ pub async fn update_settings(_req: Request, ctx: RouteContext<AppState>) -> Resu
         .unwrap_or_else(|| repo.default_branch.clone());
     let sync_head = default_branch != repo.default_branch
         || util::form_value(form, "sync_git_head").as_deref() == Some("1");
-    let settings_url = format!("/{}/settings", repo.full_name());
     let database = state.db()?;
     let repo_id = util::js_int(repo.id);
     if visibility != "private"

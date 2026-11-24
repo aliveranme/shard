@@ -234,6 +234,30 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
       redirected(await anonymous.post("/user/login", fields));
     });
 
+    await t.test("repository descriptions stay within the public listing budget", async () => {
+      const oversized = "x".repeat(351);
+      const rejected = await owner.post("/repo/create", {
+        name: "oversized", description: oversized,
+      });
+      assert.equal(rejected.status, 200);
+      assert.match(rejected.body, /Keep the repository description to 350 characters/);
+      assert.equal((await owner.get("/suiteowner/oversized")).status, 404);
+
+      const settings = `${publicRepo}/settings`;
+      const invalidSettings = await owner.post(settings, { description: oversized });
+      redirected(invalidSettings);
+      assert.equal(invalidSettings.location, `${settings}?error=description-too-long`);
+      assert.match((await owner.get(invalidSettings.location)).body,
+        /Keep the repository description to 350 characters/);
+      assert.match((await owner.get(publicRepo)).body, /HTTP regression repository/);
+
+      const fork = await owner.post(`${publicRepo}/fork`, {
+        name: "oversized-fork", description: oversized,
+      });
+      assert.equal(fork.status, 400);
+      assert.match(fork.body, /Keep the repository description to 350 characters/);
+    });
+
     await t.test("redirect targets cannot escape the forge through backslashes", async () => {
       const anonymous = new Client();
       await anonymous.get("/user/login");

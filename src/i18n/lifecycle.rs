@@ -30,6 +30,7 @@ catalog! {
         Import => "Import repository", "导入仓库";
         ImportHelp => "Enter the final HTTPS Git URL. Use source credentials when Git requires sign-in.", "请输入最终的 HTTPS Git 地址。如果 Git 要求登录，请填写源仓库凭据。";
         InvalidName => "Start the repository name with a letter or digit and use only letters, digits, dots, dashes, or underscores.", "仓库名称必须以字母或数字开头，并且只能包含字母、数字、点、连字符或下划线。";
+        DescriptionTooLong => "Keep the repository description to 350 characters.", "仓库描述最多 350 个字符。";
         SourceUrl => "HTTPS Git URL", "HTTPS Git 地址";
         InvalidSource => "Enter an HTTPS Git URL on a public hostname with a repository path. Leave credentials, query parameters, and fragments out of the URL.", "请输入使用公网主机名并含仓库路径的 HTTPS Git 地址。请勿在地址中填写凭据、查询参数或片段。";
         ImportCredentialHelp => "Optional. Use a username and password or an access token with the Bearer scheme. Authenticated imports start as private repositories.", "选填。使用用户名和密码，或使用 Bearer 方式的访问令牌。需要认证的导入初始为私有仓库。";

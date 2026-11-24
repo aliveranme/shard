@@ -46,6 +46,7 @@ catalog! {
         NameHelp => "Letters, digits, dot, dash or underscore. Starts with a letter or digit.", "可使用字母、数字、点、连字符或下划线，须以字母或数字开头。";
         Description => "Description", "描述";
         DescriptionPlaceholder => "What is this repository for?", "此仓库的用途是什么？";
+        DescriptionTooLong => "Keep the repository description to 350 characters.", "仓库描述最多 350 个字符。";
         PrivateHelp => "Private — accessible only to authorized users", "设为私有，仅授权用户可访问";
         CreateRepository => "Create repository", "创建仓库";
         Cancel => "Cancel", "取消";

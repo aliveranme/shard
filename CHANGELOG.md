@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Repository descriptions**: Cap descriptions at 350 characters on creation, settings, forks and imports, reject control characters, and truncate legacy oversized values (migration `0036_repo_description_limit.sql`). Public home, Explore, profile and repository pages can no longer be inflated by a single repository description.
+- **Native branch rules**: Match merge-queue approvals and checks against Native branch rules with the same case-insensitive semantics as push admission, and compare pending writes case-insensitively when changing rules. A case-only rule mismatch can no longer bypass required approvals or checks.
+
 ## 0.5.2
 
 ### Security & Reliability (second audit)

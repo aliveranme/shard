@@ -129,6 +129,15 @@ pub fn safe_next(next: Option<String>) -> String {
     }
 }
 
+/// Repository descriptions appear on public listing pages, so keep them short.
+pub const MAX_REPOSITORY_DESCRIPTION_CHARS: usize = 350;
+
+/// A single-line repository description within the public listing budget.
+pub fn valid_repository_description(description: &str) -> bool {
+    description.chars().count() <= MAX_REPOSITORY_DESCRIPTION_CHARS
+        && !description.chars().any(char::is_control)
+}
+
 /// Repository and user names: alphanumerics, dot, dash and underscore.
 pub fn valid_slug(name: &str) -> bool {
     let bytes = name.as_bytes();

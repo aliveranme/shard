@@ -23,7 +23,7 @@
     </div>
     <div class="field">
       <label for="description">{{ chrome.locale.t(crate::i18n::RepoText::Description) }}</label>
-      <input class="input" id="description" name="description" value="{{ description_value }}" placeholder="{{ chrome.locale.t(crate::i18n::RepoText::DescriptionPlaceholder) }}">
+      <input class="input" id="description" name="description" value="{{ description_value }}" placeholder="{{ chrome.locale.t(crate::i18n::RepoText::DescriptionPlaceholder) }}" maxlength="350">
     </div>
     <label class="checkbox">
       <input type="checkbox" name="private" {% if private_checked %}checked{% endif %}>

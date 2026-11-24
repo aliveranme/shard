@@ -113,8 +113,8 @@ pub(crate) async fn update(_req: Request, ctx: RouteContext<AppState>) -> Result
                      SELECT 1 FROM repos r JOIN users actor ON actor.id = ?5
                       WHERE r.id = ?1 AND (actor.id = r.owner_id OR actor.is_admin = 1))
                  AND NOT EXISTS (
-                     SELECT 1 FROM merge_queue WHERE repo_id = ?1 AND base_branch = ?2 AND state = 'running')
-                 AND NOT EXISTS (SELECT 1 FROM pending_branch_writes WHERE repo_id = ?1 AND branch = ?2)
+                     SELECT 1 FROM merge_queue WHERE repo_id = ?1 AND base_branch = ?2 COLLATE NOCASE AND state = 'running')
+                 AND NOT EXISTS (SELECT 1 FROM pending_branch_writes WHERE repo_id = ?1 AND branch = ?2 COLLATE NOCASE)
                  ON CONFLICT(repo_id, branch) DO UPDATE SET approvals = excluded.approvals, checks = excluded.checks
                  RETURNING repo_id",
             ).bind(&[repo_id, branch_value, util::js_int(approvals), util::js_text(&checks), actor_id])?.first::<i64>(Some("repo_id")).await?
@@ -125,8 +125,8 @@ pub(crate) async fn update(_req: Request, ctx: RouteContext<AppState>) -> Result
                  AND EXISTS (SELECT 1 FROM repos r JOIN users actor ON actor.id = ?3
                               WHERE r.id = ?1 AND (actor.id = r.owner_id OR actor.is_admin = 1))
                  AND NOT EXISTS (
-                     SELECT 1 FROM merge_queue WHERE repo_id = ?1 AND base_branch = ?2 AND state = 'running')
-                 AND NOT EXISTS (SELECT 1 FROM pending_branch_writes WHERE repo_id = ?1 AND branch = ?2)
+                     SELECT 1 FROM merge_queue WHERE repo_id = ?1 AND base_branch = ?2 COLLATE NOCASE AND state = 'running')
+                 AND NOT EXISTS (SELECT 1 FROM pending_branch_writes WHERE repo_id = ?1 AND branch = ?2 COLLATE NOCASE)
                  RETURNING repo_id",
             ).bind(&[repo_id, branch_value, actor_id])?.first::<i64>(Some("repo_id")).await?
         }
@@ -823,6 +823,9 @@ async fn run_entry(env: &Env, issue_id: i64) -> Result<()> {
     }
 }
 
+// Match Native branch rules with the same NOCASE semantics as push admission.
+// NTFS/APFS repositories may fold ref names, so a case-only rule mismatch must
+// never let the merge queue skip approvals or checks.
 const CLAIM: &str = "WITH latest_reviews AS (
     SELECT p.actor_id, p.decision FROM pull_reviews p JOIN users u ON u.id = p.actor_id
     JOIN merge_queue q ON q.issue_id = p.issue_id JOIN repos r ON r.id = q.repo_id
@@ -852,12 +855,16 @@ const CLAIM: &str = "WITH latest_reviews AS (
              AND (s.owner_id = u.id OR u.is_admin = 1 OR EXISTS (
                  SELECT 1 FROM repo_member_roles m WHERE m.repo_id = s.id AND m.user_id = u.id))))
    )
-   AND NOT EXISTS (SELECT 1 FROM repo_branch_rules b WHERE b.repo_id = merge_queue.repo_id AND b.branch = merge_queue.base_branch
-       AND (b.approvals > (SELECT COUNT(*) FROM latest_reviews WHERE decision = 'approved')
-        OR EXISTS (SELECT 1 FROM latest_reviews WHERE decision = 'changes_requested')
-        OR EXISTS (SELECT 1 FROM json_each(b.checks) c WHERE NOT EXISTS (
-            SELECT 1 FROM commit_checks k WHERE k.repo_id = b.repo_id AND k.commit_hash = ?3
-                AND k.context = c.value AND k.state = 'success'))))
+   AND NOT EXISTS (
+       SELECT 1 FROM repo_branch_rules b JOIN repos rule_repo ON rule_repo.id = b.repo_id
+       WHERE b.repo_id = merge_queue.repo_id
+         AND ((rule_repo.git_backend = 'native' AND b.branch = merge_queue.base_branch COLLATE NOCASE)
+              OR b.branch = merge_queue.base_branch)
+         AND (b.approvals > (SELECT COUNT(*) FROM latest_reviews WHERE decision = 'approved')
+          OR EXISTS (SELECT 1 FROM latest_reviews WHERE decision = 'changes_requested')
+          OR EXISTS (SELECT 1 FROM json_each(b.checks) c WHERE NOT EXISTS (
+              SELECT 1 FROM commit_checks k WHERE k.repo_id = b.repo_id AND k.commit_hash = ?3
+                  AND k.context = c.value AND k.state = 'success'))))
  RETURNING issue_id";
 
 async fn finish(

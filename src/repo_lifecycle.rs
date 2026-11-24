@@ -8,7 +8,9 @@ use crate::models::Repo;
 use crate::native_git::ImportCredential;
 use crate::pagination::{PageRequest, Pagination, PAGE_SIZE};
 use crate::templates::{render, Chrome};
-use crate::util::{form_bool, form_value, js_int, js_text, now, redirect, valid_slug};
+use crate::util::{
+    form_bool, form_value, js_int, js_text, now, redirect, valid_repository_description, valid_slug,
+};
 use crate::{crypto, db};
 use askama::Template;
 use serde::Deserialize;
@@ -504,7 +506,10 @@ impl Destination {
                 .unwrap_or_default()
                 .trim()
                 .to_owned(),
-            description: form_value(form, "description").unwrap_or_default(),
+            description: form_value(form, "description")
+                .unwrap_or_default()
+                .trim()
+                .to_owned(),
             private: form_bool(form, "private"),
         }
     }
@@ -747,6 +752,15 @@ async fn start_copy(
             destination,
             form_url,
             Some((Text::InvalidName, 400)),
+        );
+    }
+    if !valid_repository_description(&destination.description) {
+        return render_copy_form(
+            state,
+            source,
+            destination,
+            form_url,
+            Some((Text::DescriptionTooLong, 400)),
         );
     }
     let backend = if authenticated_import {
