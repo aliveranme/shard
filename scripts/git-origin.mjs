@@ -10,6 +10,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { createGunzip } from "node:zlib";
 
 const WINDOWS = process.platform === "win32";
 const ID = /^shard-[A-Za-z0-9._-]{1,245}$/;
@@ -17,6 +18,11 @@ const OID = /^[0-9a-f]{40}$/;
 const ZERO_OID = "0".repeat(40);
 const DEFAULT_IMPORT_HOSTS = ["github.com", "gitlab.com", "codeberg.org"];
 const MAX_BODY_BYTES = 8 * 1024;
+const MAX_UPLOAD_REQUEST_BYTES = 16 * 1024 * 1024;
+const SOCKET_IDLE_MS = 60_000;
+const MAX_CONNECTIONS = 128;
+const MERGE_PREP_TIMEOUT_MS = 60_000;
+const DEFAULT_IMPORT_TIMEOUT_MS = 5 * 60_000;
 const MAX_HOOK_BYTES = 256 * 1024;
 const CONTROL_TIMEOUT_MS = 15_000;
 const MAX_COMMIT_BYTES = 256 * 1024;
@@ -779,9 +785,60 @@ function setCgiHeaders(res, headers) {
   for (const [name, value] of responseHeaders) res.setHeader(name, value);
 }
 
+async function readBoundedUpload(req, encoding, signal) {
+  const chunks = [];
+  let total = 0;
+  const gunzip = encoding === "gzip" ? createGunzip() : null;
+  const forwardError = (error) => gunzip?.destroy(error);
+  if (gunzip) {
+    req.on("error", forwardError);
+    req.pipe(gunzip);
+  }
+  const source = gunzip ?? req;
+  try {
+    for await (const chunk of source) {
+      signal.throwIfAborted();
+      total += chunk.length;
+      if (total > MAX_UPLOAD_REQUEST_BYTES) {
+        if (gunzip) {
+          req.unpipe(gunzip);
+          gunzip.destroy();
+        }
+        req.resume();
+        throw new HttpError(413);
+      }
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks, total);
+  } catch (error) {
+    if (error instanceof HttpError || signal.aborted) throw error;
+    throw new HttpError(400);
+  } finally {
+    if (gunzip) {
+      req.off("error", forwardError);
+      req.unpipe(gunzip);
+      gunzip.destroy();
+    }
+  }
+}
+
 async function smartHttp(req, res, id, action, service, options) {
   options.signal.throwIfAborted();
   const pushing = action === "git-receive-pack";
+  const receiveBody = req.method === "POST";
+  const encoding = (req.headers["content-encoding"] ?? "").trim().toLowerCase();
+  if (receiveBody && encoding && encoding !== "identity" && encoding !== "gzip") {
+    throw new HttpError(415);
+  }
+  const boundedUpload = receiveBody && action === "git-upload-pack";
+  let uploadBody = null;
+  if (boundedUpload) {
+    const declared = Number(req.headers["content-length"] ?? "0");
+    if (Number.isFinite(declared) && declared > MAX_UPLOAD_REQUEST_BYTES) {
+      throw new HttpError(413);
+    }
+    uploadBody = await readBoundedUpload(req, encoding, options.signal);
+  }
   const cgi = {
     GIT_PROJECT_ROOT: WINDOWS ? options.cwd.replaceAll("\\", "/") : options.cwd,
     GIT_HTTP_EXPORT_ALL: "1",
@@ -793,11 +850,11 @@ async function smartHttp(req, res, id, action, service, options) {
   };
   for (const [header, key] of [
     ["git-protocol", "HTTP_GIT_PROTOCOL"], ["content-type", "CONTENT_TYPE"],
-    ["content-encoding", "HTTP_CONTENT_ENCODING"], ["content-length", "CONTENT_LENGTH"],
+    ...(boundedUpload ? [] : [["content-encoding", "HTTP_CONTENT_ENCODING"], ["content-length", "CONTENT_LENGTH"]]),
   ]) {
     if (req.headers[header] !== undefined) cgi[key] = req.headers[header];
   }
-  const receiveBody = req.method === "POST";
+  if (boundedUpload) cgi.CONTENT_LENGTH = String(uploadBody.length);
   // A receive-pack must finish before another operation can switch HEAD.
   const git = startGit("http-backend", [], {
     ...options, env: { ...cgi, ...options.env }, pipeInput: receiveBody, signal: pushing ? undefined : options.signal,
@@ -811,7 +868,9 @@ async function smartHttp(req, res, id, action, service, options) {
     git.child.stdin.end();
   }
   if (pushing) options.signal.addEventListener("abort", finishPushInput, { once: true });
-  if (receiveBody) {
+  if (boundedUpload) {
+    git.child.stdin.end(uploadBody);
+  } else if (receiveBody) {
     // With no Content-Length, CGI reads the dechunked stream to EOF.
     git.child.stdin.once("close", drainRequest);
     req.pipe(git.child.stdin);
@@ -848,7 +907,7 @@ async function smartHttp(req, res, id, action, service, options) {
     }
     res.end();
   } finally {
-    if (receiveBody) {
+    if (receiveBody && !boundedUpload) {
       git.child.stdin.off("close", drainRequest);
       drainRequest();
     }
@@ -1059,11 +1118,16 @@ export async function createGitOrigin({
 
   async function mirror(source, staging, repo, protocol, authorization) {
     const upstream = source.endsWith("/") ? source : `${source}/`;
+    const configuredTimeout = Number(process.env.SHARD_GIT_IMPORT_TIMEOUT_MS);
+    const timeoutMs = Number.isInteger(configuredTimeout) && configuredTimeout > 0
+      ? configuredTimeout
+      : DEFAULT_IMPORT_TIMEOUT_MS;
     const cloned = await gitOutput("clone", [
       "--mirror", "--no-local", "--template=", "--no-recurse-submodules", "--reject-shallow",
       "--", source, repo,
     ], {
       cwd: staging,
+      signal: AbortSignal.timeout(timeoutMs),
       missingMessage: protocol === "https" ? `fatal: repository '${upstream}' not found` : undefined,
       env: {
         HOME: staging,
@@ -1246,26 +1310,29 @@ export async function createGitOrigin({
     const sourceRepo = source === undefined ? targetRepo : artifactsRemote(source, allowedOrigins);
     signal.throwIfAborted();
     await withStaging(async (staging, repo) => {
+      const prepSignal = AbortSignal.any([signal, AbortSignal.timeout(MERGE_PREP_TIMEOUT_MS)]);
+      const prepOptions = { cwd: staging, repo, signal: prepSignal };
       const options = { cwd: staging, repo };
-      await validateRef(reference, true, { cwd: staging });
-      await gitOutput("init", ["--bare", "--initial-branch=main", "--object-format=sha1", "--template=", repo], { cwd: staging });
+      await validateRef(reference, true, { cwd: staging, signal: prepSignal });
+      await gitOutput("init", ["--bare", "--initial-branch=main", "--object-format=sha1", "--template=", repo], { cwd: staging, signal: prepSignal });
+      const targetPrepOptions = remoteOptions(targetRepo, prepOptions);
       const targetOptions = remoteOptions(targetRepo, options);
       const baseRef = "refs/shard/base";
       try {
-        await fetchObjects(targetRepo.url, `${reference}:${baseRef}`, targetOptions);
+        await fetchObjects(targetRepo.url, `${reference}:${baseRef}`, targetPrepOptions);
       } catch (error) {
-        if (error instanceof GitError && await remoteTip(targetRepo.url, reference, targetOptions) !== baseOid) {
+        if (error instanceof GitError && await remoteTip(targetRepo.url, reference, targetPrepOptions) !== baseOid) {
           throw new HttpError(412);
         }
         throw error;
       }
-      if (await refTip(baseRef, options) !== baseOid) throw new HttpError(412);
-      await exactObject(baseOid, "commit", options);
-      if (targetRepo.url !== sourceRepo.url || await resolveRevision(`${headOid}^{commit}`, options) !== headOid) {
-        await fetchObjects(sourceRepo.url, headOid, remoteOptions(sourceRepo, options));
+      if (await refTip(baseRef, prepOptions) !== baseOid) throw new HttpError(412);
+      await exactObject(baseOid, "commit", prepOptions);
+      if (targetRepo.url !== sourceRepo.url || await resolveRevision(`${headOid}^{commit}`, prepOptions) !== headOid) {
+        await fetchObjects(sourceRepo.url, headOid, remoteOptions(sourceRepo, prepOptions));
       }
-      await exactObject(headOid, "commit", options);
-      const oid = await mergeCommit(baseOid, headOid, options, canWriteTree);
+      await exactObject(headOid, "commit", prepOptions);
+      const oid = await mergeCommit(baseOid, headOid, prepOptions, canWriteTree);
       await pushMerge(targetRepo.url, reference, baseOid, oid, targetOptions);
       sendJson(res, 200, { oid });
     });
@@ -1330,21 +1397,21 @@ export async function createGitOrigin({
   }
 
   async function handle(req, res, signal, { url = req.url ?? "", stagedReceive } = {}) {
-    if (bridgeOnly) {
-      if (req.method === "GET" && req.url === "/healthz") {
-        return sendJson(res, 200, { protocol: 1, mergeEnabled: allowedOrigins.size > 0 });
-      }
-      if (req.method !== "POST" || req.url !== "/v1/artifacts/merge") throw new HttpError(404);
-    }
     const delimiter = url.indexOf("?");
     const path = delimiter < 0 ? url : url.slice(0, delimiter);
     const query = new URLSearchParams(delimiter < 0 ? "" : url.slice(delimiter + 1));
-    const direct = forge && DIRECT_GIT.exec(path);
+    const direct = !bridgeOnly && forge && DIRECT_GIT.exec(path);
     if (direct) return directGit(req, res, path, query, direct[1], signal);
     const auth = req.headersDistinct.authorization;
     if (auth?.length !== 1 || !timingSafeEqual(createHash("sha256").update(auth[0]).digest(), expectedToken)) {
       res.setHeader("WWW-Authenticate", "Bearer");
       throw new HttpError(401);
+    }
+    if (bridgeOnly) {
+      if (req.method === "GET" && req.url === "/healthz") {
+        return sendJson(res, 200, { protocol: 1, mergeEnabled: allowedOrigins.size > 0 });
+      }
+      if (req.method !== "POST" || req.url !== "/v1/artifacts/merge") throw new HttpError(404);
     }
     if (path === "/v1/artifacts/merge" && req.method === "POST" && query.size === 0) {
       return mergeArtifacts(req, res, signal);
@@ -1416,7 +1483,10 @@ export async function createGitOrigin({
   }
   if (workspaceOnly) return requestHandler;
   const serverOptions = forge ? { requestTimeout: 0, headersTimeout: 60_000 } : {};
-  return createServer(serverOptions, requestHandler);
+  const server = createServer(serverOptions, requestHandler);
+  server.setTimeout(SOCKET_IDLE_MS);
+  server.maxConnections = MAX_CONNECTIONS;
+  return server;
 }
 
 async function main() {

@@ -265,11 +265,16 @@ pub(crate) async fn git_author_ids<'a>(
     }
     let emails =
         serde_json::to_string(&emails).map_err(|error| Error::RustError(error.to_string()))?;
+    let require_verified = crate::recovery::configured(&state.env);
     let authors = db::all::<AuthorAvatar>(
         &state.db()?,
         "SELECT DISTINCT e.value AS email, a.user_id AS id FROM json_each(?1) e
-         JOIN users u ON u.email = e.value COLLATE NOCASE JOIN user_avatars a ON a.user_id = u.id",
-        &[util::js_text(&emails)],
+         JOIN users u ON u.email = e.value COLLATE NOCASE JOIN user_avatars a ON a.user_id = u.id
+         WHERE (?2 = 0 OR u.email_verified_at IS NOT NULL)",
+        &[
+            util::js_text(&emails),
+            util::js_int(i64::from(require_verified)),
+        ],
     )
     .await?;
     Ok(authors

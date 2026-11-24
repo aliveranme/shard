@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createCipheriv, createHash, randomBytes } from "node:crypto";
-import { deflateSync } from "node:zlib";
+import { deflateSync, gzipSync } from "node:zlib";
 import { once } from "node:events";
 import { chmod, mkdir, mkdtemp, open, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
@@ -818,6 +818,52 @@ test("native direct Git accepts large packs and reapplies forge policy before pu
     assert.match(deletion.body, /This branch is protected/);
 
     await exerciseLfs({ base: direct, repo, writeToken, readToken, canRunGitLfs: false });
+
+    // Unsupported Content-Encoding and >16 MiB gzip bombs on git-upload-pack must be rejected.
+    const badEncoding = await request(`${direct}${repo}.git/git-upload-pack`, {
+      method: "POST",
+      headers: {
+        ...bearer(readToken),
+        "Content-Type": "application/x-git-upload-pack-request",
+        "Content-Encoding": "br",
+      },
+      body: Buffer.from("0000"),
+    });
+    assert.equal(badEncoding.status, 415);
+    await badEncoding.arrayBuffer();
+
+    const uploadBomb = gzipSync(Buffer.alloc(17 * 1024 * 1024));
+    const bombReply = await request(`${direct}${repo}.git/git-upload-pack`, {
+      method: "POST",
+      headers: {
+        ...bearer(readToken),
+        "Content-Type": "application/x-git-upload-pack-request",
+        "Content-Encoding": "gzip",
+      },
+      body: uploadBomb,
+    });
+    assert.equal(bombReply.status, 413);
+    await bombReply.arrayBuffer();
+
+    // Bridge-only origin must require Bearer auth on /healthz.
+    const bridgeToken = randomBytes(24).toString("hex");
+    const bridge = await createGitOrigin({ bridgeOnly: true, token: bridgeToken });
+    bridge.listen(0, "127.0.0.1");
+    await once(bridge, "listening");
+    try {
+      const bridgeUrl = `http://127.0.0.1:${bridge.address().port}/healthz`;
+      const unauth = await request(bridgeUrl);
+      assert.equal(unauth.status, 401);
+      await unauth.arrayBuffer();
+      const authed = await request(bridgeUrl, { headers: bearer(bridgeToken) });
+      assert.equal(authed.status, 200);
+      assert.equal((await authed.json()).protocol, 1);
+    } finally {
+      const closed = once(bridge, "close");
+      bridge.close();
+      bridge.closeAllConnections();
+      await closed;
+    }
   } finally {
     try {
       await worker?.stop();

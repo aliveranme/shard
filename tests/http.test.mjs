@@ -635,6 +635,12 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
       const visitor = new Client();
       const avatarUrl = (await visitor.get("/suiteowner")).body.match(/src="(\/user\/avatar\/\d+)"/)?.[1];
       assert.ok(avatarUrl);
+      // When email verification is configured, unverified accounts do not receive commit avatar attribution.
+      assert.ok(!(await visitor.get(`${history}/commit/${featureCommit}`)).body.includes(`src="${avatarUrl}"`));
+      await cli([
+        "d1", "execute", "DB", "--local", "--persist-to", persistence, "--command",
+        `UPDATE users SET email_verified_at = ${Math.floor(Date.now() / 1000)} WHERE username = 'suiteowner'`,
+      ]);
       for (const path of [`${history}?branch=feature%2Freadme`, `${history}/commits?branch=feature%2Freadme`, `${history}/commit/${featureCommit}`]) {
         const page = await visitor.get(path);
         assert.ok(page.body.includes(`src="${avatarUrl}"`), path);
@@ -1767,6 +1773,35 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
         cli(["d1", "execute", "DB", "--local", "--persist-to", persistence, "--file", probeSql]),
         /pull repository unavailable/,
       );
+
+      // Untrusted X-Shard-Git-Origin-Token must return identical 404 for existing private and missing repos on LFS.
+      const lfsProbeBody = JSON.stringify({ operation: "download", objects: [{ oid: "0".repeat(64), size: 1 }] });
+      const lfsHeaders = {
+        "Content-Type": "application/vnd.git-lfs+json",
+        "X-Shard-Git-Origin-Token": "untrusted-probe-token",
+      };
+      const [probeExisting, probeMissing] = await Promise.all([
+        fetch(`${base}/suiteowner/private-repo.git/info/lfs/objects/batch`, {
+          method: "POST", headers: lfsHeaders, body: lfsProbeBody,
+        }),
+        fetch(`${base}/suiteowner/no-such-repo.git/info/lfs/objects/batch`, {
+          method: "POST", headers: lfsHeaders, body: lfsProbeBody,
+        }),
+      ]);
+      assert.equal(probeExisting.status, 404);
+      assert.equal(probeMissing.status, 404);
+      await Promise.all([probeExisting.arrayBuffer(), probeMissing.arrayBuffer()]);
+
+      // Concurrent login burst must enforce the 8-attempt cap atomically (no TOCTOU bypass).
+      const burstClient = new Client();
+      await burstClient.get("/user/login");
+      const burstResults = await Promise.all(
+        Array.from({ length: 12 }, (_, i) => burstClient.post("/user/login", {
+          login: "suiteowner", password: `wrong-burst-${i}`,
+        })),
+      );
+      const burst429 = burstResults.filter((r) => r.status === 429).length;
+      assert.ok(burst429 >= 4, `expected at least 4 throttled login responses in a 12-request burst, got ${burst429}`);
     });
   } finally {
     await worker?.stop();

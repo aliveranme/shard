@@ -461,6 +461,11 @@ async fn authorized(
     ctx: &RouteContext<AppState>,
     operation: Operation,
 ) -> std::result::Result<Repository, HttpError> {
+    if util::header(req, ORIGIN_TOKEN).is_some()
+        && trusted_direct_origin(&ctx.data.env, req).is_none()
+    {
+        return Err(HIDDEN);
+    }
     let owner = ctx.param("owner").ok_or(HIDDEN)?;
     let name = ctx
         .param("repo")
@@ -492,9 +497,7 @@ async fn authorized(
             HIDDEN
         });
     };
-    if util::header(req, ORIGIN_TOKEN).is_some()
-        && (!matches!(repo.git_backend, GitBackend::Native)
-            || trusted_direct_origin(&ctx.data.env, req).is_none())
+    if util::header(req, ORIGIN_TOKEN).is_some() && !matches!(repo.git_backend, GitBackend::Native)
     {
         return Err(HIDDEN);
     }

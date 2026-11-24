@@ -718,13 +718,23 @@ async function remoteHelper(remote, controller) {
     proxy: "", extraHeader: "", cookieFile: "", saveCookies: "false",
     followRedirects: "false", proactiveAuth: "none", version: "HTTP/1.1",
   };
-  const args = Object.entries(settings).flatMap(([key, value]) => ["-c", `http.${url}.${key}=${value}`]);
+  const baseCount = /^\d+$/.test(gitEnv.GIT_CONFIG_COUNT ?? "") ? Number.parseInt(gitEnv.GIT_CONFIG_COUNT, 10) : 0;
+  const configPairs = [
+    ["remote.shard-loopback.url", url],
+    ["remote.shard-loopback.proxy", ""],
+    ...Object.entries(settings).map(([key, value]) => [`http.${url}.${key}`, value]),
+  ];
+  const configEnv = { GIT_CONFIG_COUNT: String(baseCount + configPairs.length) };
+  configPairs.forEach(([key, value], index) => {
+    configEnv[`GIT_CONFIG_KEY_${baseCount + index}`] = key;
+    configEnv[`GIT_CONFIG_VALUE_${baseCount + index}`] = value;
+  });
   let exitCode = 1;
   try {
     signal.throwIfAborted();
     exitCode = await new Promise((resolve, reject) => {
-      const child = spawn("git", [...args, "-c", "remote.shard-loopback.proxy=", "remote-http", "shard-loopback", url], {
-        env: { ...gitEnv, GIT_HTTP_LOW_SPEED_LIMIT: "0", NO_PROXY: "127.0.0.1", no_proxy: "127.0.0.1" },
+      const child = spawn("git", ["remote-http", "shard-loopback"], {
+        env: { ...gitEnv, ...configEnv, GIT_HTTP_LOW_SPEED_LIMIT: "0", NO_PROXY: "127.0.0.1", no_proxy: "127.0.0.1" },
         signal,
         stdio: "inherit",
       });

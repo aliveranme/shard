@@ -303,7 +303,7 @@ export async function createR2GitOrigin({ directory, mount, token, importHosts, 
     workspaces.delete(job);
   }
 
-  return createServer({ requestTimeout: 0, headersTimeout: 60_000 }, (req, res) => {
+  const server = createServer({ requestTimeout: 0, headersTimeout: 60_000 }, (req, res) => {
     const cancellation = new AbortController();
     req.on("error", () => cancellation.abort());
     res.on("error", () => cancellation.abort());
@@ -317,6 +317,8 @@ export async function createR2GitOrigin({ directory, mount, token, importHosts, 
       else if (!res.destroyed) sendStatus(res, expected ? error.status : 502);
     }).finally(() => req.resume());
   });
+  server.setTimeout(60_000);
+  return server;
 }
 
 function rcloneConfig(env) {

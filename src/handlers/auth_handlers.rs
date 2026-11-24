@@ -51,9 +51,16 @@ pub async fn login_submit(req: Request, ctx: RouteContext<AppState>) -> Result<R
     }
     let key = auth::login_key(&req, &login).await?;
     let ip_key = auth::login_ip_key(&req).await?;
-    let retry_after = match auth::login_retry_after(&state.env, &key).await? {
+    let retry_after = match auth::reserve_login_attempt(&state.env, &key).await? {
         Some(seconds) => Some(seconds),
-        None => auth::login_retry_after_limit(&state.env, &ip_key, IP_LOGIN_FAILURES).await?,
+        None => {
+            let ip_retry =
+                auth::reserve_login_attempt_limit(&state.env, &ip_key, IP_LOGIN_FAILURES).await?;
+            if ip_retry.is_some() {
+                auth::release_login_attempt(&state.env, &key).await?;
+            }
+            ip_retry
+        }
     };
     if let Some(seconds) = retry_after {
         let mut response = error_response(
@@ -70,14 +77,13 @@ pub async fn login_submit(req: Request, ctx: RouteContext<AppState>) -> Result<R
     match auth::login_session(&state.env, &login, &password).await? {
         Some(token) => {
             auth::reset_login_failures(&state.env, &key).await?;
+            auth::release_login_attempt(&state.env, &ip_key).await?;
             let cookie = util::set_cookie(&token, 30 * 24 * 3600, util::is_secure(&req))?;
             let mut response = util::redirect(&next)?;
             response.headers_mut().append("Set-Cookie", &cookie)?;
             Ok(response)
         }
         None => {
-            auth::record_login_failure(&state.env, &key).await?;
-            auth::record_login_failure_limit(&state.env, &ip_key, IP_LOGIN_FAILURES).await?;
             let page = AuthPage {
                 chrome: Chrome::new(&state),
                 title: page_title(&[state.locale.t(CommonText::SignIn)]),
@@ -456,8 +462,21 @@ pub async fn update_email(_req: Request, ctx: RouteContext<AppState>) -> Result<
         )
         .await;
     }
+    let email_key = crate::crypto::sha256_hex(&format!("email-change:{}", user.id)).await?;
+    if let Some(seconds) = auth::reserve_login_attempt(&state.env, &email_key).await? {
+        let mut response = error_response(
+            &Chrome::new(&state),
+            429,
+            state.locale.t(CommonText::RateLimit),
+        )?;
+        response
+            .headers_mut()
+            .set("Retry-After", &seconds.to_string())?;
+        return Ok(response);
+    }
     let Some(verified_hash) = auth::verified_password_hash(&state.env, user.id, &password).await?
     else {
+        auth::release_login_attempt(&state.env, &email_key).await?;
         return render_account(
             &state,
             email,
@@ -478,7 +497,10 @@ pub async fn update_email(_req: Request, ctx: RouteContext<AppState>) -> Result<
     )
     .await
     {
-        Ok(Some(_)) => util::redirect("/user/settings?updated=email"),
+        Ok(Some(_)) => {
+            auth::reset_login_failures(&state.env, &email_key).await?;
+            util::redirect("/user/settings?updated=email")
+        }
         Ok(None) => {
             render_account(
                 &state,

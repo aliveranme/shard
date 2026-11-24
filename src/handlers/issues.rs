@@ -511,7 +511,9 @@ async fn detail(req: Request, ctx: RouteContext<AppState>, kind: &str) -> Result
     let source = match &pull {
         Some(pull) if pull.source_repo_id(repo.id) != repo.id => {
             source_repo = visible_repo_by_id(&state, pull.source_repo_id(repo.id)).await?;
-            source_repo.as_ref()
+            source_repo
+                .as_ref()
+                .filter(|candidate| !candidate.is_private() || repo.is_private())
         }
         Some(_) => Some(&repo),
         None => None,

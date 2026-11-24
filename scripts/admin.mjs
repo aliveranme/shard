@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Grant, revoke or list Shard administrators through the selected D1 database.
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -28,14 +28,32 @@ Options:
   --replace          With grant: demote every other administrator first`);
 }
 
+let activeChild = null;
+
 function runWrangler(args) {
-  const result = spawnSync(process.execPath, [wrangler, ...args], { encoding: "utf8" });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    process.stderr.write(result.stderr || "");
-    throw new Error(`wrangler ${args[0]} failed with status ${result.status}`);
-  }
-  return result.stdout.trim();
+  return new Promise((resolveRun, rejectRun) => {
+    const child = spawn(process.execPath, [wrangler, ...args], { stdio: ["ignore", "pipe", "pipe"] });
+    activeChild = child;
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", (error) => {
+      if (activeChild === child) activeChild = null;
+      rejectRun(error);
+    });
+    child.once("close", (status) => {
+      if (activeChild === child) activeChild = null;
+      if (status !== 0) {
+        process.stderr.write(stderr);
+        rejectRun(new Error(`wrangler ${args[0]} failed with status ${status}`));
+        return;
+      }
+      resolveRun(stdout.trim());
+    });
+  });
 }
 
 function parseJsonOutput(output) {
@@ -47,7 +65,7 @@ function parseJsonOutput(output) {
   return JSON.parse(output.slice(match.index));
 }
 
-function resolveRemoteConfig(values) {
+async function resolveRemoteConfig(values) {
   const env = values.env ?? (process.env.CLOUDFLARE_ENV || undefined);
   const { rawConfig, configPath } = experimental_readRawConfig({ config: values.config, env });
   if (!configPath) return { config: values.config, env, cleanup: null };
@@ -61,7 +79,7 @@ function resolveRemoteConfig(values) {
   if (!name) throw new Error("Set database_name or database_id on the DB binding.");
   const listArgs = ["d1", "list", "--json", "--config", configPath];
   if (env) listArgs.push("--env", env);
-  const databases = parseJsonOutput(runWrangler(listArgs));
+  const databases = parseJsonOutput(await runWrangler(listArgs));
   if (!Array.isArray(databases) || !databases.every((candidate) =>
     typeof candidate?.name === "string" && candidate.name &&
     typeof candidate.uuid === "string" && databaseIdPattern.test(candidate.uuid) &&
@@ -77,15 +95,24 @@ function resolveRemoteConfig(values) {
   }
   database.database_id = existing.uuid;
   const copy = join(dirname(configPath), `.wrangler.admin-${randomUUID()}.json`);
-  writeFileSync(copy, JSON.stringify(rawConfig, null, 2) + "\n", { flag: "wx" });
-  return { config: copy, env, cleanup: () => rmSync(copy, { force: true }) };
+  writeFileSync(copy, JSON.stringify(rawConfig, null, 2) + "\n", { flag: "wx", mode: 0o600 });
+  let cleaned = false;
+  return {
+    config: copy,
+    env,
+    cleanup: () => {
+      if (cleaned) return;
+      cleaned = true;
+      rmSync(copy, { force: true });
+    },
+  };
 }
 
-function execute(sql, values, resolved) {
+async function execute(sql, values, resolved) {
   const args = ["d1", "execute", "DB", values.local ? "--local" : "--remote", "--json", "--command", sql];
   if (resolved.config) args.push("--config", resolved.config);
   if (resolved.env) args.push("--env", resolved.env);
-  const payload = parseJsonOutput(runWrangler(args));
+  const payload = parseJsonOutput(await runWrangler(args));
   if (!Array.isArray(payload) || payload.some((entry) => entry?.success !== true)) {
     throw new Error("D1 reported a failed statement");
   }
@@ -99,7 +126,7 @@ function validUsername(command, username) {
   return username;
 }
 
-function main() {
+async function main() {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
     options: {
@@ -128,10 +155,19 @@ function main() {
 
   const resolved = values.local
     ? { config: values.config, env: values.env ?? (process.env.CLOUDFLARE_ENV || undefined), cleanup: null }
-    : resolveRemoteConfig(values);
+    : await resolveRemoteConfig(values);
+  const cleanup = () => resolved.cleanup?.();
+  const onSignal = (signal) => {
+    try { activeChild?.kill(signal); } catch {}
+    cleanup();
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  };
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+  process.on("exit", cleanup);
   try {
     if (command === "list") {
-      const rows = execute(
+      const rows = await execute(
         "SELECT username, email FROM users WHERE is_admin = 1 ORDER BY username COLLATE NOCASE",
         values,
         resolved,
@@ -145,7 +181,7 @@ function main() {
     }
     const username = validUsername(command, raw);
     if (values.replace) {
-      const rows = execute(
+      const rows = await execute(
         `UPDATE users
             SET is_admin = CASE WHEN username = '${username}' COLLATE NOCASE THEN 1 ELSE 0 END
           WHERE (is_admin = 1 OR username = '${username}' COLLATE NOCASE)
@@ -160,7 +196,7 @@ function main() {
       return;
     }
     const isAdmin = command === "grant" ? 1 : 0;
-    const rows = execute(
+    const rows = await execute(
       `UPDATE users SET is_admin = ${isAdmin} WHERE username = '${username}' COLLATE NOCASE RETURNING id, username`,
       values,
       resolved,
@@ -168,13 +204,14 @@ function main() {
     if (rows.length === 0) throw new Error(`User '${username}' was not found.`);
     console.log(`${rows[0].username} is ${isAdmin === 1 ? "now an administrator" : "no longer an administrator"}.`);
   } finally {
-    resolved.cleanup?.();
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+    process.off("exit", cleanup);
+    cleanup();
   }
 }
 
-try {
-  main();
-} catch (error) {
+main().catch((error) => {
   console.error(`Shard admin: ${error.message}`);
   process.exitCode = 1;
-}
+});

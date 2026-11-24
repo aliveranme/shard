@@ -488,7 +488,21 @@ async fn start(state: &AppState, database: &D1Database, target: &Transfer<'_>) -
         )
         .await?
         .is_some();
-        if has_staged || has_parts {
+        let confirmed_parts = if !has_staged && has_parts {
+            match S3::read(&state.env) {
+                Ok(s3) => match s3.list_parts(&old_stage, &mismatched.upload_id).await {
+                    Ok(Some(actual)) => actual.iter().any(|part| {
+                        part_length(mismatched.size, part.part_number) == Some(part.size)
+                    }),
+                    Ok(None) => false,
+                    Err(_) => true,
+                },
+                Err(_) => true,
+            }
+        } else {
+            has_parts
+        };
+        if has_staged || confirmed_parts {
             return failure(WRONG_SIZE);
         }
         // Replace an unused wrong-size session so a mistyped start does not lock out the OID.

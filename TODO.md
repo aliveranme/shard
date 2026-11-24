@@ -15,12 +15,24 @@ Tracked findings from the full-repository code reviews.
 - [x] R2 multipart LFS `finish()` no longer short-circuits R2 error `10025` (`InvalidPart`), allowing authoritative `ListParts` reconciliation and abort cleanup (`src/lfs_remote.rs`).
 - [x] Pull request creation batch guards `INSERT INTO pulls` (and `issue_labels`) with visibility, `kind`, author, and timestamp checks; migration `0037_pull_creation_hardening.sql` tightens `pull_source_at_creation` to require `issues.kind = 'pull'`.
 
-### Remaining Medium/Low follow-ups
-- [ ] LFS `X-Shard-Git-Origin-Token` existence oracle (`src/lfs.rs`) and 6-day wrong-size multipart lockout (`src/lfs_remote.rs`).
-- [ ] Webhook per-repo time/timeout fairness budget (`src/webhooks.rs`) and private-source-to-public-target guard in `src/pull_review.rs`.
-- [ ] Atomic pre-PBKDF2 login/re-auth throttling (`src/auth.rs`) and verified-email gating for commit avatars (`src/avatar.rs`).
-- [ ] R2 pack-size cap in `buildR2PackStore`, split delta-base budget in `buildSourceTar`, pre-lock receive buffering in `R2GitRepository.fetch`, and `ArtifactsMergeContainer` `/healthz` auth/timeouts.
-- [ ] Direct native Git origin socket idle timeout / concurrency / gzip bounds (`scripts/git-origin.mjs`), loopback proxy secret via `GIT_CONFIG_*` env vars (`scripts/git-remote-shard.mjs`), and signal-safe temp secret cleanup (`scripts/deploy.mjs`, `scripts/admin.mjs`).
+### Medium (complete)
+- [x] Untrusted `X-Shard-Git-Origin-Token` rejected before D1 repository lookup on LFS endpoints to remove the existence oracle (`src/lfs.rs`).
+- [x] Wrong-size multipart LFS replacement reconciles against R2 `ListParts` when `repo_lfs_parts` has rows, preventing 6-day OID lockouts from bogus `Record` receipts (`src/lfs_remote.rs`).
+- [x] Webhook delivery loop tracks per-repository elapsed time (4.5 s cap) and network/timeout failures alongside delivery counts to prevent slow endpoints from starving other repositories (`src/webhooks.rs`).
+- [x] Pull request comparison refresh, review submission, and detail rendering enforce the private-source-to-public-target visibility direction (`src/pull_review.rs`, `src/handlers/issues.rs`).
+- [x] Login and re-authentication throttling atomically reserves attempts in D1 before PBKDF2 (`reserve_login_attempt_limit`), preventing concurrent burst bypasses (`src/auth.rs`, `src/handlers/auth_handlers.rs`).
+- [x] Commit author avatar matching requires verified emails when email verification is configured (`src/avatar.rs`), and `update_email` throttles repeated collision probes per user (`src/handlers/auth_handlers.rs`).
+- [x] `buildR2PackStore` enforces a 128 MiB total pack-size cap right after `head()` before reading pack chunks (`worker/git-r2-packstore.mjs`).
+- [x] `readPackedObject` / `R2GitRepository.#readObject` separates base/delta-chain inflation budget from final `maxResultBytes` for `buildSourceTar` (`worker/git-r2-pack.mjs`, `worker/git-r2-repository.mjs`).
+- [x] `R2GitRepository.fetch` checks `this.#writer` before pre-buffering 16 MiB receive-pack bodies (`worker/git-r2-repository.mjs`).
+- [x] `ArtifactsMergeContainer` authenticates `/healthz`, cleans up `container-token` if `start()` throws, and bounds merge preparation/requests with timeouts (`worker/git-container.mjs`, `scripts/git-origin.mjs`, `scripts/ci.mjs`).
+- [x] Direct Native Git origin enforces 60 s socket idle timeout, 128 max connections, bounded 16 MiB `git-upload-pack` (including gzip decompression) and `mirror()` timeout; R2 origin sets 60 s socket idle timeout (`scripts/git-origin.mjs`, `scripts/git-r2-origin.mjs`).
+- [x] `git-remote-shard.mjs` passes loopback proxy URL and `http.*` settings through `GIT_CONFIG_*` environment variables instead of `argv` (`scripts/git-remote-shard.mjs`).
+- [x] `deploy.mjs` defers writing temporary R2 secrets until immediately before `wrangler deploy`, writes temp configs with `0o600`, and both `deploy.mjs` and `admin.mjs` use async `spawn` with `SIGINT`/`SIGTERM` cleanup; `.gitignore` ignores `.wrangler.admin-*.json`.
+
+### Remaining Low/Info follow-ups
+- [ ] Clean up `.receive` spool files on terminal rejected pushes (`ng`) in `scripts/git-remote-shard.mjs`.
+- [ ] Add `issue_labels(repo_id, issue_id)` index, `__Host-` cookie prefix on HTTPS, character-based password minimum check, and static asset / 429 security headers.
 
 ## Third review (2026-11-24)
 

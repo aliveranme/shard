@@ -123,7 +123,13 @@ class PackHeaders {
   }
 }
 
-export async function buildR2PackStore(bucket, packs, getIndex, maxObjects = 200_000) {
+export async function buildR2PackStore(
+  bucket,
+  packs,
+  getIndex,
+  maxObjects = 200_000,
+  maxPackBytes = 128 * 1024 * 1024,
+) {
   const indexes = [];
   let count = 0;
   for (const key of packs) {
@@ -133,19 +139,23 @@ export async function buildR2PackStore(bucket, packs, getIndex, maxObjects = 200
     if (count > maxObjects) return null;
   }
   const sizes = [];
-  const entries = new Map();
-  const cache = new Map();
   let total = 0;
-  for (let position = 0; position < packs.length; position++) {
-    const key = packs[position];
-    const index = indexes[position];
+  for (const key of packs) {
     const pack = await bucket.head(`${key}.pack`);
     if (!pack || !Number.isSafeInteger(pack.size) || pack.size < 32) return null;
     sizes.push(pack.size);
     total += pack.size;
+    if (total > maxPackBytes) return null;
+  }
+  const entries = new Map();
+  const cache = new Map();
+  for (let position = 0; position < packs.length; position++) {
+    const key = packs[position];
+    const index = indexes[position];
+    const packSize = sizes[position];
     const headers = new PackHeaders(bucket, key);
     const order = index.offsetsAscending();
-    const packEnd = pack.size - 20;
+    const packEnd = packSize - 20;
     const offsetOids = new Map();
     for (const entry of order) offsetOids.set(entry.offset, index.oidAt(entry.index));
     const types = new Map();

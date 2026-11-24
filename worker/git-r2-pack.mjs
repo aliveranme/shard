@@ -257,11 +257,16 @@ export async function readPackedObject(index, oid, {
   readBase,
   cache = new Map(),
   maxBytes = 64 * 1024 * 1024,
+  maxResultBytes = maxBytes,
   verify = true,
   initialDepth = 0,
 } = {}) {
   if (!OID.test(oid) || typeof readRange !== "function") return null;
-  if (cache.has(`oid:${oid}`)) return cache.get(`oid:${oid}`);
+  if (cache.has(`oid:${oid}`)) {
+    const hit = cache.get(`oid:${oid}`);
+    if (hit && hit.data.length > maxResultBytes) throw new Error("Git object exceeds the read limit");
+    return hit;
+  }
   let cacheBytes = cache.__bytes ?? 0;
   const remember = (key, value) => {
     const size = value?.data?.length ?? 0;
@@ -272,6 +277,7 @@ export async function readPackedObject(index, oid, {
   };
   const readAt = async (startOffset, startDepth) => {
     const chain = [];
+    let chainBytes = 0;
     const seenOffsets = new Set();
     let curOffset = startOffset;
     let curDepth = startDepth;
@@ -296,13 +302,16 @@ export async function readPackedObject(index, oid, {
         remember(`at:${curOffset}`, current);
         break;
       } else if (parsed.type === 6) {
+        chainBytes += data.length;
+        if (chainBytes > maxBytes) throw new Error("Git object exceeds the read limit");
         chain.push({ offset: curOffset, data });
         curOffset = parsed.baseOffset;
         curDepth += 1;
       } else if (parsed.type === 7) {
         const base = typeof readBase === "function" ? await readBase(parsed.baseOid, curDepth + 1) : null;
         if (!base) return null;
-        current = { type: base.type, data: applyDelta(base.data, data, maxBytes) };
+        const stepLimit = chain.length === 0 ? Math.min(maxBytes, maxResultBytes) : maxBytes;
+        current = { type: base.type, data: applyDelta(base.data, data, stepLimit) };
         remember(`at:${curOffset}`, current);
         break;
       } else {
@@ -311,10 +320,12 @@ export async function readPackedObject(index, oid, {
     }
     for (let i = chain.length - 1; i >= 0; i--) {
       const step = chain[i];
-      current = { type: current.type, data: applyDelta(current.data, step.data, maxBytes) };
+      const stepLimit = i === 0 ? Math.min(maxBytes, maxResultBytes) : maxBytes;
+      current = { type: current.type, data: applyDelta(current.data, step.data, stepLimit) };
       chain[i] = null;
       remember(`at:${step.offset}`, current);
     }
+    if (current.data.length > maxResultBytes) throw new Error("Git object exceeds the read limit");
     return current;
   };
   const offset = index.find(oid);

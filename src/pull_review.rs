@@ -21,6 +21,8 @@ const TARGET_READ: &str = "(t.visibility = 'public' OR t.owner_id = u.id OR u.is
     OR EXISTS (SELECT 1 FROM repo_member_roles m WHERE m.repo_id = t.id AND m.user_id = u.id))";
 const SOURCE_READ: &str = "(s.visibility = 'public' OR s.owner_id = u.id OR u.is_admin = 1
     OR EXISTS (SELECT 1 FROM repo_member_roles m WHERE m.repo_id = s.id AND m.user_id = u.id))";
+const SOURCE_DIRECTION: &str =
+    "(s.id = t.id OR s.visibility = 'public' OR t.visibility <> 'public')";
 const TARGET_WRITE: &str = "(t.owner_id = u.id OR u.is_admin = 1 OR EXISTS (
     SELECT 1 FROM repo_member_roles m WHERE m.repo_id = t.id AND m.user_id = u.id AND m.role = 'write'))";
 
@@ -83,7 +85,10 @@ async fn mutate(ctx: RouteContext<AppState>, operation: Operation) -> Result<Res
         &repo
     } else {
         source_repo = visible_repo_by_id(state, source_id).await?;
-        let Some(source) = source_repo.as_ref() else {
+        let Some(source) = source_repo
+            .as_ref()
+            .filter(|candidate| !candidate.is_private() || repo.is_private())
+        else {
             return not_found(state, state.locale.t(CommonText::NotFound));
         };
         source
@@ -188,7 +193,7 @@ async fn mutate(ctx: RouteContext<AppState>, operation: Operation) -> Result<Res
           JOIN repos t ON t.id = i.repo_id JOIN repos s ON s.id = COALESCE(p.source_repo_id, i.repo_id)
           JOIN users u ON u.id = ?1
           WHERE p.issue_id = ?8 AND p.comparison_version = ?9 AND p.merged = 0 AND i.state = 'open'
-            AND {TARGET_READ} AND {SOURCE_READ}
+            AND {TARGET_READ} AND {SOURCE_READ} AND {SOURCE_DIRECTION}
             AND (?2 = 'line_comment' OR (i.author_id IS NOT u.id AND {TARGET_WRITE}))
           RETURNING id"),
         &[
@@ -356,7 +361,7 @@ async fn save_comparison(
                SELECT 1 FROM issues i JOIN repos t ON t.id = i.repo_id
                JOIN repos s ON s.id = COALESCE(p.source_repo_id, i.repo_id)
                LEFT JOIN users u ON u.id = ?6
-               WHERE i.id = p.issue_id AND i.state = 'open'
+               WHERE i.id = p.issue_id AND i.state = 'open' AND {SOURCE_DIRECTION}
                  AND ((?7 IS NOT NULL AND i.author_id IS u.id AND (s.id = t.id OR ({TARGET_READ} AND {SOURCE_READ})))
                      OR (u.id IS NOT NULL AND {TARGET_READ} AND {SOURCE_READ} AND (i.author_id = u.id OR {TARGET_WRITE})))
            )"
@@ -443,7 +448,7 @@ async fn refresh_pending_comparison(
         database,
         &format!("SELECT i.repo_id, i.author_id FROM issues i JOIN repos t ON t.id = i.repo_id
                   JOIN repos s ON s.id = COALESCE(?2, i.repo_id) LEFT JOIN users u ON u.id = i.author_id
-                  WHERE i.id = ?1 AND i.state = 'open' AND (s.id = t.id OR ({TARGET_READ} AND {SOURCE_READ}))"),
+                  WHERE i.id = ?1 AND i.state = 'open' AND {SOURCE_DIRECTION} AND (s.id = t.id OR ({TARGET_READ} AND {SOURCE_READ}))"),
         &[util::js_int(pull.issue_id), pull.source_repo_id.map_or_else(util::js_null, util::js_int)],
     ).await?;
     let Some(target) = target else {

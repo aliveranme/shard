@@ -29,18 +29,24 @@ function checkMergeContainer(name, image) {
     import assert from "node:assert/strict";
     import { setTimeout } from "node:timers/promises";
     const origin = "http://127.0.0.1:8793";
+    const token = "isolated-container-smoke-test";
     const deadline = Date.now() + 25_000;
     let health;
     do {
-      health = await fetch(origin + "/healthz", { signal: AbortSignal.timeout(1000) }).catch(() => null);
+      health = await fetch(origin + "/healthz", {
+        headers: { Authorization: "Bearer " + token },
+        signal: AbortSignal.timeout(1000),
+      }).catch(() => null);
       if (health) break;
       await setTimeout(250);
     } while (Date.now() < deadline);
     assert.equal(health?.status, 200);
     assert.equal((await health.json()).protocol, 1);
+    const unauthHealth = await fetch(origin + "/healthz", { signal: AbortSignal.timeout(5000) });
+    assert.equal(unauthHealth.status, 401);
     const unauthorized = await fetch(origin + "/v1/artifacts/merge", { method: "POST", signal: AbortSignal.timeout(5000) });
     assert.equal(unauthorized.status, 401);
-    console.log("Git merge container answered its health check and rejected an unauthenticated merge.");
+    console.log("Git merge container answered its authenticated health check and rejected unauthenticated requests.");
   `);
 }
 

@@ -456,4 +456,72 @@ test("parseReceivedPack resolves REF_DELTA with exact Git OID and rejects trunca
   // R2GitRepository must import parseTagTarget for annotated-tag direct reads/advertisements.
   const r2RepoSource = readFileSync(new URL("../worker/git-r2-repository.mjs", import.meta.url), "utf8");
   assert.match(r2RepoSource, /import\s*\{[^}]*\bparseTagTarget\b[^}]*\}\s*from\s*"\.\/git-r2-pack\.mjs"/);
+
+  // buildR2PackStore must reject oversized packs after head() without reading any 1 MiB pack chunks.
+  let getCalls = 0;
+  const fakeBucket = {
+    async head() { return { size: 64 * 1024 * 1024 }; },
+    async get() { getCalls++; throw new Error("should not fetch pack chunks over maxPackBytes"); },
+  };
+  const rejectedStore = await buildR2PackStore(
+    fakeBucket,
+    ["pack-a", "pack-b"],
+    async () => ({ count: 1 }),
+    200_000,
+    100 * 1024 * 1024,
+  );
+  assert.equal(rejectedStore, null);
+  assert.equal(getCalls, 0);
+
+  // readPackedObject must allow a small delta result even when its base exceeds maxResultBytes.
+  const largeBase = new Uint8Array(4096).fill(0x61);
+  const largeBaseOid = createHash("sha1")
+    .update(new TextEncoder().encode(`blob ${largeBase.length}\0`))
+    .update(largeBase)
+    .digest("hex");
+  const smallTarget = new TextEncoder().encode("tiny\n");
+  const smallTargetOid = createHash("sha1")
+    .update(new TextEncoder().encode(`blob ${smallTarget.length}\0`))
+    .update(smallTarget)
+    .digest("hex");
+  const shrinkDelta = new Uint8Array([
+    ...varint(largeBase.length),
+    ...varint(smallTarget.length),
+    smallTarget.length,
+    ...smallTarget,
+  ]);
+  const shrinkDeflated = pako.deflate(shrinkDelta);
+  const shrinkHead = [];
+  let ssz = shrinkDelta.length;
+  shrinkHead.push((7 << 4) | (ssz & 0x0f) | (ssz >= 16 ? 0x80 : 0));
+  ssz >>= 4;
+  while (ssz > 0) {
+    shrinkHead.push((ssz & 0x7f) | (ssz >= 128 ? 0x80 : 0));
+    ssz >>= 7;
+  }
+  const shrinkBody = Buffer.concat([
+    Buffer.from("PACK"),
+    Buffer.from([0, 0, 0, 2, 0, 0, 0, 1]),
+    Buffer.from(shrinkHead),
+    Buffer.from(largeBaseOid, "hex"),
+    Buffer.from(shrinkDeflated),
+  ]);
+  const shrinkPack = new Uint8Array(Buffer.concat([shrinkBody, createHash("sha1").update(shrinkBody).digest()]));
+  const fakeIdx = { find: (oid) => (oid === smallTargetOid ? 12 : null) };
+  const resolvedSmall = await readPackedObject(fakeIdx, smallTargetOid, {
+    readRange: async (offset, length) => shrinkPack.subarray(offset, offset + length),
+    readBase: async (oid) => (oid === largeBaseOid ? { type: 3, data: largeBase } : null),
+    maxBytes: 64 * 1024,
+    maxResultBytes: 64,
+  });
+  assert.deepEqual(resolvedSmall.data, smallTarget);
+  await assert.rejects(
+    readPackedObject(fakeIdx, smallTargetOid, {
+      readRange: async (offset, length) => shrinkPack.subarray(offset, offset + length),
+      readBase: async (oid) => (oid === largeBaseOid ? { type: 3, data: largeBase } : null),
+      maxBytes: 64 * 1024,
+      maxResultBytes: 2,
+    }),
+    /exceeds the read limit|delta sizes/i,
+  );
 });

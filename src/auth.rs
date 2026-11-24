@@ -282,11 +282,11 @@ pub async fn login_ip_key(req: &Request) -> Result<String> {
     crypto::sha256_hex(&format!("ip:{}:{}", source.len(), source)).await
 }
 
-pub async fn login_retry_after(env: &Env, key: &str) -> Result<Option<i64>> {
-    login_retry_after_limit(env, key, 8).await
+pub async fn reserve_login_attempt(env: &Env, key: &str) -> Result<Option<i64>> {
+    reserve_login_attempt_limit(env, key, 8).await
 }
 
-pub async fn login_retry_after_limit(
+pub async fn reserve_login_attempt_limit(
     env: &Env,
     key: &str,
     max_failures: i64,
@@ -297,37 +297,34 @@ pub async fn login_retry_after_limit(
         window_started: i64,
     }
     let database = env.d1("DB")?;
-    let row: Option<Window> = db::first(
-        &database,
-        "SELECT failures, window_started FROM login_throttle WHERE key_hash = ?",
-        &[util::js_text(key)],
-    )
-    .await?;
-    Ok(row
-        .filter(|row| row.failures >= max_failures && row.window_started + 900 > util::now())
-        .map(|row| (row.window_started + 900 - util::now()).max(1)))
-}
-
-pub async fn record_login_failure(env: &Env, key: &str) -> Result<()> {
-    record_login_failure_limit(env, key, 8).await
-}
-
-pub async fn record_login_failure_limit(env: &Env, key: &str, max_failures: i64) -> Result<()> {
-    let database = env.d1("DB")?;
     let now = util::now();
-    db::run(
+    let row: Option<Window> = db::first(
         &database,
         "INSERT INTO login_throttle (key_hash, failures, window_started) VALUES (?, 1, ?)
          ON CONFLICT(key_hash) DO UPDATE SET
          failures = CASE WHEN window_started <= ? THEN 1 ELSE MIN(failures + 1, ?) END,
-         window_started = CASE WHEN window_started <= ? THEN excluded.window_started ELSE window_started END",
+         window_started = CASE WHEN window_started <= ? THEN excluded.window_started ELSE window_started END
+         RETURNING failures, window_started",
         &[
             util::js_text(key),
             util::js_int(now),
             util::js_int(now - 900),
-            util::js_int(max_failures),
+            util::js_int(max_failures + 1),
             util::js_int(now - 900),
         ],
+    )
+    .await?;
+    Ok(row
+        .filter(|row| row.failures > max_failures && row.window_started + 900 > now)
+        .map(|row| (row.window_started + 900 - now).max(1)))
+}
+
+pub async fn release_login_attempt(env: &Env, key: &str) -> Result<()> {
+    let database = env.d1("DB")?;
+    db::run(
+        &database,
+        "UPDATE login_throttle SET failures = MAX(failures - 1, 0) WHERE key_hash = ?",
+        &[util::js_text(key)],
     )
     .await
 }
@@ -351,7 +348,7 @@ pub(crate) async fn verified_password_hash(
         return Ok(None);
     }
     let reauth_key = crypto::sha256_hex(&format!("reauth:{user_id}")).await?;
-    if login_retry_after(env, &reauth_key).await?.is_some() {
+    if reserve_login_attempt(env, &reauth_key).await?.is_some() {
         return Ok(None);
     }
     let database = env.d1("DB")?;
@@ -366,7 +363,6 @@ pub(crate) async fn verified_password_hash(
         reset_login_failures(env, &reauth_key).await?;
         Ok(Some(row.password_hash))
     } else {
-        record_login_failure(env, &reauth_key).await?;
         Ok(None)
     }
 }

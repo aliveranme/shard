@@ -869,11 +869,11 @@ export class R2GitRepository extends DurableObject {
       oid, object.type, data.length, stored);
   }
 
-  async #readObject(oid, depth = 0, packs, maxBytes = MAX_DIRECT_FILE) {
+  async #readObject(oid, depth = 0, packs, maxBytes = MAX_DIRECT_FILE, maxResultBytes = maxBytes) {
     if (!OID.test(oid) || depth > 64) return null;
     const cached = this.#cachedObject(oid);
     if (cached) {
-      if (cached.data.length > maxBytes) throw new Error("Git object exceeds the read limit");
+      if (cached.data.length > maxResultBytes) throw new Error("Git object exceeds the read limit");
       return cached;
     }
     const keys = packs ?? this.#repository().packs;
@@ -886,8 +886,9 @@ export class R2GitRepository extends DurableObject {
       }
       const object = await readPackedObject(index, oid, {
         readRange: (offset, length) => this.#packRange(key, offset, length),
-        readBase: (base, nextDepth) => this.#readObject(base, nextDepth, keys, maxBytes),
+        readBase: (base, nextDepth) => this.#readObject(base, nextDepth, keys, maxBytes, maxBytes),
         maxBytes,
+        maxResultBytes,
         initialDepth: depth,
       });
       if (object) {
@@ -967,7 +968,7 @@ export class R2GitRepository extends DurableObject {
       if (!object || object.type !== 1) throw new GitHttpError(404, "Git object not found");
       try {
         const tar = await buildSourceTar(parseCommit(oid, object.data),
-          (id, maxBytes) => this.#readObject(id, 0, packs, maxBytes ?? MAX_DIRECT_FILE));
+          (id, maxBytes) => this.#readObject(id, 0, packs, MAX_DIRECT_FILE, maxBytes ?? MAX_DIRECT_FILE));
         const filename = encodeURIComponent(`${name}-${oid}.tar`);
         return binary(tar, { "Content-Type": "application/x-tar", "Content-Length": String(tar.length),
           "Content-Disposition": `attachment; filename*=UTF-8''${filename}`,
@@ -1890,6 +1891,7 @@ export class R2GitRepository extends DurableObject {
         }
       }
       if (smart && action === "git-receive-pack" && request.method === "POST" && !url.search) {
+        if (this.#writer) return busy();
         const encoding = (request.headers.get("content-encoding") ?? "").trim().toLowerCase();
         const declared = Number(request.headers.get("content-length") ?? "0");
         const canDirect = this.#directReads

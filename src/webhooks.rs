@@ -788,7 +788,9 @@ async fn deliver_subscriptions(env: &Env, database: &D1Database, limit: usize) -
     let max_attempts = util::js_int(MAX_ATTEMPTS);
     let deadline = util::now() + 20;
     let max_per_repo = (limit / 4).max(1);
+    const MAX_REPO_MS: f64 = 4_500.0;
     let mut repo_counts = std::collections::HashMap::<i64, usize>::new();
+    let mut repo_ms = std::collections::HashMap::<i64, f64>::new();
     let mut saturated = Vec::<i64>::new();
     for _ in 0..limit {
         if util::now() >= deadline {
@@ -839,10 +841,18 @@ async fn deliver_subscriptions(env: &Env, database: &D1Database, limit: usize) -
         let repo_id = event.repo_id;
         let count = repo_counts.entry(repo_id).or_insert(0);
         *count += 1;
-        if *count >= max_per_repo {
+        let started = js_sys::Date::now();
+        let outcome = try_subscription(env, database, &key, &claim, event).await?;
+        let elapsed = (js_sys::Date::now() - started).max(0.0);
+        let spent = repo_ms.entry(repo_id).or_insert(0.0);
+        *spent += elapsed;
+        if (*count >= max_per_repo
+            || *spent >= MAX_REPO_MS
+            || matches!(outcome, SubscriptionOutcome::Finished(None)))
+            && !saturated.contains(&repo_id)
+        {
             saturated.push(repo_id);
         }
-        let outcome = try_subscription(env, database, &key, &claim, event).await?;
         let SubscriptionOutcome::Finished(status) = outcome else {
             continue;
         };
