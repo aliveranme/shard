@@ -335,6 +335,221 @@ export function isForbiddenDotGit(name) {
   return /^(?:\.git|git~[1-9]\d*)$/i.test(base);
 }
 
+function isForbiddenGitmodules(name) {
+  const stripped = name.replace(IGNORABLE_GIT_CHARS, "");
+  const base = stripped.split(":", 1)[0].replace(/[. ]+$/, "");
+  return /^(?:\.gitmodules|gitmod~[1-9]\d*)$/i.test(base);
+}
+
+export class PackLimitError extends Error {}
+
+export class PackStreamValidator {
+  #maxObjectBytes;
+  #maxTotalInflated;
+  #maxObjects;
+  #state = "header";
+  #seenBytes = 0;
+  #header = new Uint8Array(12);
+  #headerLen = 0;
+  #count = 0;
+  #index = 0;
+  #entryFirst = true;
+  #entryType = 0;
+  #entrySize = 0;
+  #entryShift = 4;
+  #ofsBytes = 0;
+  #refBytes = 0;
+  #inflater = null;
+  #inflated = 0;
+  #stall = 0;
+  #onDataError = null;
+  #deltaBuf = new Uint8Array(20);
+  #deltaLen = 0;
+  #deltaTerminators = 0;
+  #deltaParsed = false;
+  #totalInflated = 0;
+  #totalOutput = 0;
+  #trailerBytes = 0;
+
+  constructor({
+    maxObjectBytes = 32 * 1024 * 1024,
+    maxTotalInflated = 64 * 1024 * 1024,
+    maxObjects = 200_000,
+  } = {}) {
+    this.#maxObjectBytes = maxObjectBytes;
+    this.#maxTotalInflated = maxTotalInflated;
+    this.#maxObjects = maxObjects;
+  }
+
+  #startInflate() {
+    this.#inflated = 0;
+    this.#stall = 0;
+    this.#onDataError = null;
+    this.#deltaLen = 0;
+    this.#deltaTerminators = 0;
+    this.#deltaParsed = false;
+    const isDelta = this.#entryType === 6 || this.#entryType === 7;
+    const inflater = new Inflate({ chunkSize: 8192, windowBits: 15 });
+    inflater.onData = (out) => {
+      if (this.#onDataError) return;
+      this.#inflated += out.length;
+      if (this.#inflated > this.#entrySize || this.#inflated > this.#maxObjectBytes ||
+          this.#totalInflated + this.#inflated > this.#maxTotalInflated) {
+        this.#onDataError = new PackLimitError("Git pack inflated size exceeds limit");
+        return;
+      }
+      if (isDelta && !this.#deltaParsed) {
+        for (let i = 0; i < out.length && !this.#deltaParsed; i++) {
+          if (this.#deltaLen >= this.#deltaBuf.length) {
+            this.#onDataError = new Error("Invalid Git delta header");
+            return;
+          }
+          const byte = out[i];
+          this.#deltaBuf[this.#deltaLen++] = byte;
+          if ((byte & 0x80) === 0) {
+            this.#deltaTerminators++;
+            if (this.#deltaTerminators === 2) {
+              try {
+                const state = { cursor: 0 };
+                const slice = this.#deltaBuf.subarray(0, this.#deltaLen);
+                const srcSize = deltaVarint(slice, state);
+                const tgtSize = deltaVarint(slice, state);
+                if (srcSize > this.#maxObjectBytes || tgtSize > this.#maxObjectBytes) {
+                  this.#onDataError = new PackLimitError("Git delta object exceeds size limit");
+                  return;
+                }
+                this.#totalOutput += tgtSize;
+                if (this.#totalOutput > this.#maxTotalInflated) {
+                  this.#onDataError = new PackLimitError("Git pack inflated size exceeds limit");
+                  return;
+                }
+                this.#deltaParsed = true;
+              } catch (error) {
+                this.#onDataError = error;
+                return;
+              }
+            }
+          }
+        }
+      }
+    };
+    this.#inflater = inflater;
+    this.#state = "inflate";
+  }
+
+  push(chunk) {
+    if (!chunk?.length) return;
+    this.#seenBytes += chunk.length;
+    let pos = 0;
+    while (pos < chunk.length) {
+      if (this.#state === "header") {
+        const take = Math.min(12 - this.#headerLen, chunk.length - pos);
+        this.#header.set(chunk.subarray(pos, pos + take), this.#headerLen);
+        this.#headerLen += take;
+        pos += take;
+        if (this.#headerLen === 12) {
+          if (this.#header[0] !== 80 || this.#header[1] !== 65 || this.#header[2] !== 67 || this.#header[3] !== 75) {
+            throw new Error("Invalid Git pack header");
+          }
+          const version = be32(this.#header, 4);
+          if (version !== 2 && version !== 3) throw new Error("Unsupported Git pack version");
+          this.#count = be32(this.#header, 8);
+          if (this.#count > this.#maxObjects) throw new PackLimitError("Git pack has too many objects");
+          this.#index = 0;
+          this.#state = this.#count === 0 ? "trailer" : "entry_head";
+          this.#entryFirst = true;
+        }
+      } else if (this.#state === "entry_head") {
+        const byte = chunk[pos++];
+        if (this.#entryFirst) {
+          this.#entryType = (byte >> 4) & 7;
+          if (!((this.#entryType >= 1 && this.#entryType <= 4) || this.#entryType === 6 || this.#entryType === 7)) {
+            throw new Error(`Invalid Git pack entry type ${this.#entryType}`);
+          }
+          this.#entrySize = byte & 0x0f;
+          this.#entryShift = 4;
+          this.#entryFirst = false;
+        } else {
+          if (this.#entryShift > 56) throw new Error("Invalid Git pack entry header");
+          this.#entrySize += (byte & 0x7f) * 2 ** this.#entryShift;
+          this.#entryShift += 7;
+        }
+        if ((byte & 0x80) === 0) {
+          if (!Number.isSafeInteger(this.#entrySize) || this.#entrySize < 0 || this.#entrySize > this.#maxObjectBytes) {
+            throw new PackLimitError("Git object exceeds size limit");
+          }
+          if (this.#totalInflated + this.#entrySize > this.#maxTotalInflated) {
+            throw new PackLimitError("Git pack inflated size exceeds limit");
+          }
+          if (this.#entryType >= 1 && this.#entryType <= 4 &&
+              this.#totalOutput + this.#entrySize > this.#maxTotalInflated) {
+            throw new PackLimitError("Git pack inflated size exceeds limit");
+          }
+          if (this.#entryType === 6) {
+            this.#ofsBytes = 0;
+            this.#state = "ofs_base";
+          } else if (this.#entryType === 7) {
+            this.#refBytes = 0;
+            this.#state = "ref_base";
+          } else {
+            this.#startInflate();
+          }
+        }
+      } else if (this.#state === "ofs_base") {
+        const byte = chunk[pos++];
+        if (++this.#ofsBytes > 10) throw new Error("Invalid Git delta base");
+        if ((byte & 0x80) === 0) this.#startInflate();
+      } else if (this.#state === "ref_base") {
+        const take = Math.min(20 - this.#refBytes, chunk.length - pos);
+        this.#refBytes += take;
+        pos += take;
+        if (this.#refBytes === 20) this.#startInflate();
+      } else if (this.#state === "inflate") {
+        const slice = chunk.subarray(pos);
+        const before = slice.length;
+        this.#inflater.push(slice, false);
+        if (this.#onDataError) throw this.#onDataError;
+        if (this.#inflater.err) throw new Error(`Corrupt Git pack entry: ${this.#inflater.msg || this.#inflater.err}`);
+        const consumed = before - this.#inflater.strm.avail_in;
+        pos += consumed;
+        if (this.#inflater.ended) {
+          if (this.#inflated !== this.#entrySize) throw new Error("Git pack entry size mismatch");
+          if ((this.#entryType === 6 || this.#entryType === 7) && !this.#deltaParsed) {
+            throw new Error("Invalid Git delta header");
+          }
+          this.#totalInflated += this.#inflated;
+          if (this.#entryType >= 1 && this.#entryType <= 4) {
+            this.#totalOutput += this.#inflated;
+          }
+          this.#inflater = null;
+          this.#index++;
+          if (this.#index === this.#count) {
+            this.#state = "trailer";
+          } else {
+            this.#state = "entry_head";
+            this.#entryFirst = true;
+          }
+        } else if (consumed === 0) {
+          if (++this.#stall > 2) throw new Error("Git pack inflation stalled");
+        } else {
+          this.#stall = 0;
+        }
+      } else {
+        this.#trailerBytes += chunk.length - pos;
+        pos = chunk.length;
+        if (this.#trailerBytes > 20) throw new Error("Unexpected bytes after Git pack entries");
+      }
+    }
+  }
+
+  finish(allowEmpty = false) {
+    if (allowEmpty && this.#seenBytes === 0) return;
+    if (this.#state !== "trailer" || this.#trailerBytes !== 20) {
+      throw new Error("Truncated Git pack");
+    }
+  }
+}
+
 function compareTreeEntryBytes(leftBytes, leftIsDir, rightBytes, rightIsDir) {
   const len = Math.min(leftBytes.length, rightBytes.length);
   for (let i = 0; i < len; i++) {
@@ -404,6 +619,7 @@ export function parseCommit(oid, data) {
 
 export function parseTree(data) {
   const entries = [];
+  const seenNames = new Set();
   let cursor = 0;
   let prevNameBytes = null;
   let prevIsDir = false;
@@ -417,9 +633,14 @@ export function parseTree(data) {
     if (!CANONICAL_TREE_MODES.has(mode)) throw new Error("Invalid Git tree mode");
     const nameBytes = headerBytes.subarray(space + 1);
     const name = new TextDecoder("utf-8", { fatal: false }).decode(nameBytes);
-    if (!name || name === "." || name === ".." || name.includes("/") || isForbiddenDotGit(name)) {
+    if (!name || name === "." || name === ".." || name.includes("/") || isForbiddenDotGit(name) ||
+        (mode === "120000" && isForbiddenGitmodules(name))) {
       throw new Error("Invalid Git tree name");
     }
+    let nameKey = "";
+    for (let i = 0; i < nameBytes.length; i++) nameKey += String.fromCharCode(nameBytes[i]);
+    if (seenNames.has(nameKey)) throw new Error("Duplicate Git tree entry");
+    seenNames.add(nameKey);
     const isDir = mode === "40000";
     if (prevNameBytes !== null && compareTreeEntryBytes(prevNameBytes, prevIsDir, nameBytes, isDir) >= 0) {
       throw new Error("Invalid Git tree entry order");

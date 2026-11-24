@@ -6,6 +6,7 @@ import { applyDelta as applyGitDelta, parsePackEntry } from "./git-r2-pack.mjs";
 const TYPES = [null, "commit", "tree", "blob", "tag"];
 const MAX_OBJECT_BYTES = 32 * 1024 * 1024;
 const MAX_TOTAL_INFLATED = 32 * 1024 * 1024;
+const MAX_EXTERNAL_BASE_BYTES = 32 * 1024 * 1024;
 
 export class ThinPackError extends Error {}
 export class PackTooLargeError extends Error {}
@@ -38,6 +39,11 @@ export function parseReceiveBytes(bytes) {
     }
     const match = /^([a-f0-9]{40}) ([a-f0-9]{40}) (refs\/[^\x00-\x20\x7f]+)$/.exec(command);
     if (!match || seen.has(match[3])) throw new Error("Invalid Git receive command");
+    const lowerName = match[3].toLowerCase();
+    if (((lowerName === "refs/heads" || lowerName.startsWith("refs/heads/")) && !match[3].startsWith("refs/heads/")) ||
+        ((lowerName === "refs/tags" || lowerName.startsWith("refs/tags/")) && !match[3].startsWith("refs/tags/"))) {
+      throw new Error("Invalid Git receive command");
+    }
     const short = match[3].startsWith("refs/heads/")
       ? match[3].slice("refs/heads/".length)
       : match[3].startsWith("refs/tags/")
@@ -245,6 +251,8 @@ export async function parseReceivedPack(pack, maxObjects = 20_000, readBase = nu
   const byOffset = new Map();
   const pending = [];
   const missingBases = new Set();
+  const externalBases = new Map();
+  let externalBaseBudget = MAX_EXTERNAL_BASE_BYTES;
   let thin = false;
   let remainingBudget = MAX_TOTAL_INFLATED;
   const consumeBudget = (size) => {
@@ -317,15 +325,26 @@ export async function parseReceivedPack(pack, maxObjects = 20_000, readBase = nu
         ? byOffset.get(item.baseOffset)
         : byOid.get(item.baseOid);
       if (!base && item.baseOid && typeof readBase === "function" && !missingBases.has(item.baseOid)) {
-        const external = await readBase(item.baseOid);
-        if (external) {
-          const type = typeof external.type === "number" ? external.type : TYPES.indexOf(external.type);
-          if (type >= 1 && type <= 4) {
-            base = { type, data: external.data, depth: 0 };
-            thin = true;
-          }
+        if (externalBases.has(item.baseOid)) {
+          base = externalBases.get(item.baseOid);
+          thin = true;
         } else {
-          missingBases.add(item.baseOid);
+          const external = await readBase(item.baseOid);
+          if (external) {
+            const type = typeof external.type === "number" ? external.type : TYPES.indexOf(external.type);
+            if (type >= 1 && type <= 4) {
+              const size = external.data?.length ?? 0;
+              if (size > MAX_OBJECT_BYTES || size > externalBaseBudget) {
+                throw new PackTooLargeError("Git external delta base exceeds the direct-push limit");
+              }
+              externalBaseBudget -= size;
+              base = { type, data: external.data, depth: 0 };
+              externalBases.set(item.baseOid, base);
+              thin = true;
+            }
+          } else {
+            missingBases.add(item.baseOid);
+          }
         }
       }
       if (!base) {

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { createCipheriv, randomBytes } from "node:crypto";
+import { createCipheriv, createHash, randomBytes } from "node:crypto";
+import { deflateSync } from "node:zlib";
 import { once } from "node:events";
 import { chmod, mkdir, mkdtemp, open, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
@@ -782,6 +783,7 @@ test("native direct Git accepts large packs and reapplies forge policy before pu
     redirected(await owner.post(`${repo}/settings/branches`, { action: "save", branch: "main", approvals: "1" }));
     await local("commit", "--allow-empty", "-m", "Must use a reviewed branch");
     await assert.rejects(git(writeToken, "-C", source, "push", "--atomic", remote, "main", "HEAD:refs/heads/also-blocked"), /HTTP 403/);
+    await assert.rejects(git(writeToken, "-C", source, "push", remote, "HEAD:refs/HEADS/main"), /remote rejected|HTTP 400|HTTP 403|failed to push/);
     assert.equal(await git(readToken, "ls-remote", remote), `${oid}\tHEAD\n${oid}\trefs/heads/main`);
 
     const collaborators = `${repo}/settings/collaborators`;
@@ -872,6 +874,93 @@ test("default Free deployment serves and persists repositories without paid bind
     await git(writeToken, "-C", worktree, "push", remoteUrl(base, privateRepo), "main");
     assert.equal(await git(readToken, "ls-remote", remoteUrl(base, privateRepo), "refs/heads/main"), `${original}\trefs/heads/main`);
     assert.equal((await guest.get(`${repo}/raw/README.md`)).body, readme);
+
+    // Warm the Free Git reachable cache, then push a pack with a bad commit tree
+    // target alongside a no-op ref update, a 512 MiB delta target bomb, and a
+    // mixed-case refs/HEADS/main update. All must be rejected and subsequent clones
+    // must still receive all objects (reachable-version invalidated on rollback).
+    const warmClone = join(temporary, "warm-clone");
+    await git(null, "clone", remote, warmClone);
+    const pktLine = (text) => {
+      const payload = Buffer.from(text, "utf8");
+      return Buffer.concat([Buffer.from((payload.length + 4).toString(16).padStart(4, "0")), payload]);
+    };
+    const packEntryHeader = (type, len) => {
+      const out = [];
+      let rem = len;
+      out.push((type << 4) | (rem & 0x0f) | (rem >= 16 ? 0x80 : 0));
+      rem >>= 4;
+      while (rem > 0) {
+        out.push((rem & 0x7f) | (rem >= 128 ? 0x80 : 0));
+        rem >>= 7;
+      }
+      return Buffer.from(out);
+    };
+    const encodeVarint = (n) => {
+      const out = [];
+      let rem = n;
+      do {
+        let byte = rem & 0x7f;
+        rem = Math.floor(rem / 128);
+        if (rem > 0) byte |= 0x80;
+        out.push(byte);
+      } while (rem > 0);
+      return Buffer.from(out);
+    };
+    const buildPack = (entries) => {
+      const header = Buffer.alloc(12);
+      header.write("PACK", 0, "ascii");
+      header.writeUInt32BE(2, 4);
+      header.writeUInt32BE(entries.length, 8);
+      const body = Buffer.concat([header, ...entries]);
+      return Buffer.concat([body, createHash("sha1").update(body).digest()]);
+    };
+    const sendRawPush = (refName, before, after, packBytes) => request(`${remote}/git-receive-pack`, {
+      method: "POST",
+      headers: { ...bearer(writeToken), "Content-Type": "application/x-git-receive-pack-request" },
+      body: Buffer.concat([
+        pktLine(`${before} ${after} ${refName}\0report-status\n`),
+        Buffer.from("0000"),
+        packBytes,
+      ]),
+    });
+
+    // 1. Mixed-case refs/HEADS/main must be rejected at wire parsing.
+    const mixedCase = await sendRawPush("refs/HEADS/main", original, original, buildPack([]));
+    assert.equal(mixedCase.status, 400);
+    await mixedCase.arrayBuffer();
+
+    // 2. Commit whose tree points to a blob (type mismatch) with a no-op ref update
+    //    must fail fsck and invalidate reachable-version so clones never become empty.
+    const badBlob = Buffer.from("not a tree\n");
+    const badBlobOid = createHash("sha1").update(`blob ${badBlob.length}\0`).update(badBlob).digest("hex");
+    const badCommit = Buffer.from(
+      `tree ${badBlobOid}\nauthor A <a@example.test> 100 +0000\ncommitter A <a@example.test> 100 +0000\n\nbad tree type\n`,
+    );
+    const badPack = buildPack([
+      Buffer.concat([packEntryHeader(3, badBlob.length), deflateSync(badBlob)]),
+      Buffer.concat([packEntryHeader(1, badCommit.length), deflateSync(badCommit)]),
+    ]);
+    const badTypePush = await sendRawPush("refs/heads/main", original, original, badPack);
+    assert.equal(badTypePush.status, 200);
+    assert.match(await badTypePush.text(), /ng refs\/heads\/main object validation failed/);
+
+    // 3. Tiny delta declaring a 512 MiB target must be rejected before applyDelta allocates.
+    const readmeBlobOid = await localGit("rev-parse", "HEAD:README.md");
+    const hugeDelta = Buffer.concat([encodeVarint(readme.length), encodeVarint(512 * 1024 * 1024)]);
+    const hugeDeltaPack = buildPack([
+      Buffer.concat([packEntryHeader(7, hugeDelta.length), Buffer.from(readmeBlobOid, "hex"), deflateSync(hugeDelta)]),
+    ]);
+    const hugeDeltaPush = await sendRawPush("refs/heads/main", original, original, hugeDeltaPack);
+    assert.equal(hugeDeltaPush.status, 200);
+    assert.match(await hugeDeltaPush.text(), /ng refs\/heads\/main pack exceeds size limits/);
+
+    // Verify clones still receive every object after both rejected pushes.
+    const postRollbackClone = join(temporary, "post-rollback-clone");
+    await git(null, "clone", remote, postRollbackClone);
+    assert.equal(await git(null, "-C", postRollbackClone, "rev-parse", "HEAD"), original);
+    assert.equal(await readFile(join(postRollbackClone, "README.md"), "utf8"), readme);
+    await git(null, "-C", postRollbackClone, "fsck", "--full");
 
     await localGit("switch", "-c", "topic/notes");
     await writeFile(join(worktree, "notes.txt"), "Review the stored notes.\n");

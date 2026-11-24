@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { PackIndex, parseCommit, parseTag, parseTree, readPackedObject } from "./git-r2-pack.mjs";
+import { PackIndex, parseCommit, parseTag, parseTagTarget, parseTree, readPackedObject } from "./git-r2-pack.mjs";
 import { buildR2PackStore } from "./git-r2-packstore.mjs";
 import { ArchiveLimitError, ArchiveUnsupportedError, buildSourceTar } from "./git-r2-archive.mjs";
 import { parseReceiveBytes, parseReceivedPack, PackTooLargeError, ThinPackError } from "./git-r2-receive.mjs";

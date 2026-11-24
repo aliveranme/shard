@@ -949,6 +949,11 @@ async function hookUpdates() {
     const match = /^([a-f0-9]{40}) ([a-f0-9]{40}) (refs\/[^\x00-\x20\x7f]+)$/.exec(line);
     if (!match) throw new Error("Invalid Git hook input");
     const [, before, after, name] = match;
+    const lowerName = name.toLowerCase();
+    if (((lowerName === "refs/heads" || lowerName.startsWith("refs/heads/")) && !name.startsWith("refs/heads/")) ||
+        ((lowerName === "refs/tags" || lowerName.startsWith("refs/tags/")) && !name.startsWith("refs/tags/"))) {
+      throw new Error("Invalid Git hook input");
+    }
     return { before, after, name };
   });
 }

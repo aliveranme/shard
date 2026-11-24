@@ -635,6 +635,7 @@ pub(crate) async fn direct_control(req: Request, ctx: RouteContext<AppState>) ->
                     || !is_object_id(&update.after)
                     || !update.name.starts_with("refs/")
                     || update.name.bytes().any(|byte| byte <= 32 || byte == 127)
+                    || crate::git_wire::has_noncanonical_ref_namespace(&update.name)
                     || update
                         .name
                         .strip_prefix("refs/heads/")

@@ -1746,6 +1746,27 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
       redirected(await member.post(orgPath, { action: "leave" }), "/user/organizations");
       assert.equal((await member.get(orgPath)).status, 404);
       assert.doesNotMatch((await owner.get(orgPath)).body, /orgleaver\/member-repo/);
+
+      // Migration 0037 trigger must reject attaching a pulls row to a regular issue (both with and without source_repo_id).
+      const probeSql = join(temporary, "pull-trigger-probe.sql");
+      await writeFile(probeSql, `
+        INSERT INTO pulls (issue_id, source_repo_id, head_branch, base_branch, head_commit, base_commit, merge_base)
+        SELECT id, repo_id, 'main', 'main', '${"a".repeat(40)}', '${"a".repeat(40)}', '${"a".repeat(40)}'
+          FROM issues WHERE kind = 'issue' LIMIT 1;
+      `);
+      await assert.rejects(
+        cli(["d1", "execute", "DB", "--local", "--persist-to", persistence, "--file", probeSql]),
+        /pull repository unavailable/,
+      );
+      await writeFile(probeSql, `
+        INSERT INTO pulls (issue_id, source_repo_id, head_branch, base_branch, head_commit, base_commit, merge_base)
+        SELECT id, NULL, 'main', 'main', '${"a".repeat(40)}', '${"a".repeat(40)}', '${"a".repeat(40)}'
+          FROM issues WHERE kind = 'issue' LIMIT 1;
+      `);
+      await assert.rejects(
+        cli(["d1", "execute", "DB", "--local", "--persist-to", persistence, "--file", probeSql]),
+        /pull repository unavailable/,
+      );
     });
   } finally {
     await worker?.stop();

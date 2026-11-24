@@ -394,17 +394,23 @@ async fn create(_req: Request, ctx: RouteContext<AppState>, kind: &str) -> Resul
         )).bind(&[
             viewer.clone(), admin.clone(), util::js_int(repo.id),
             util::js_text(kind), util::js_text(trimmed_title), util::js_text(&body),
-            util::js_int(user.id), now.clone(), now,
+            util::js_int(user.id), now.clone(), now.clone(),
         ])?,
     ];
     if let Some((source_id, base, head, merge_base)) = snapshot {
-        statements.push(database.prepare(
+        statements.push(database.prepare(format!(
             "INSERT INTO pulls (issue_id, source_repo_id, head_branch, base_branch, head_commit, base_commit, merge_base)
-             SELECT i.id, ?, ?, ?, ?, ?, ? FROM issues i JOIN repos r ON r.id = i.repo_id
-              WHERE r.id = ? AND i.number = r.next_issue_number - 1",
-        ).bind(&[
-            util::js_int(source_id), util::js_text(&head_branch), util::js_text(&base_branch), util::js_text(&head),
-            util::js_text(&base), util::js_text(&merge_base), util::js_int(repo.id),
+             SELECT i.id, ?4, ?5, ?6, ?7, ?8, ?9 FROM issues i JOIN repos r ON r.id = i.repo_id
+              WHERE r.id = ?3 AND i.number = r.next_issue_number - 1
+                AND i.kind = 'pull' AND i.author_id = ?10 AND i.created_at = ?11
+                AND NOT EXISTS (SELECT 1 FROM pulls p WHERE p.issue_id = i.id)
+                AND {}",
+            crate::handlers::common::VISIBLE_REPO_SQL,
+        )).bind(&[
+            viewer.clone(), admin.clone(), util::js_int(repo.id),
+            util::js_int(source_id), util::js_text(&head_branch), util::js_text(&base_branch),
+            util::js_text(&head), util::js_text(&base), util::js_text(&merge_base),
+            util::js_int(user.id), now.clone(),
         ])?);
     }
     if !selected_labels.is_empty() {
@@ -419,13 +425,21 @@ async fn create(_req: Request, ctx: RouteContext<AppState>, kind: &str) -> Resul
                JOIN repo_labels l ON l.repo_id = i.repo_id
                 AND l.id IN (SELECT value FROM json_each(?1))
               WHERE i.repo_id = ?2 AND i.number = r.next_issue_number - 1
+                AND i.kind = ?5 AND i.author_id = ?3 AND i.created_at = ?6
                 AND (r.owner_id = ?3 OR ?4 = 1 OR EXISTS (
                     SELECT 1 FROM repo_member_roles c
                     WHERE c.repo_id = r.id AND c.user_id = ?3 AND c.role = 'write'
                 ))
              ON CONFLICT(issue_id, label_id) DO NOTHING",
                 )
-                .bind(&[util::js_text(&labels), util::js_int(repo.id), viewer, admin])?,
+                .bind(&[
+                    util::js_text(&labels),
+                    util::js_int(repo.id),
+                    viewer,
+                    admin,
+                    util::js_text(kind),
+                    now,
+                ])?,
         );
     }
     let results = database.batch(statements).await?;

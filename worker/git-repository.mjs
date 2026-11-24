@@ -9,7 +9,13 @@ import { advertisement, renderStatus, validatePush } from "../node_modules/durab
 import { GitStore } from "../node_modules/durable-git/src/git/store.ts";
 import { concat, isOid, td, te, ZERO_OID } from "../node_modules/durable-git/src/git/util.ts";
 import { shard_receive_request } from "../src/git_wire.js";
-import { parseCommit as parseStrictCommit, parseTag as parseStrictTag, parseTree as parseStrictTree } from "./git-r2-pack.mjs";
+import {
+  PackLimitError,
+  PackStreamValidator,
+  parseCommit as parseStrictCommit,
+  parseTag as parseStrictTag,
+  parseTree as parseStrictTree,
+} from "./git-r2-pack.mjs";
 
 const ID = /^shard-[A-Za-z0-9._-]{1,245}$/;
 const HEADS = "refs/heads/";
@@ -729,7 +735,20 @@ export class GitRepository extends RepoCell {
       if (acknowledgement !== "NAK\n" && acknowledgement !== "NAK") throw new HttpError(422);
       const magic = await pack.take(4);
       if (td.decode(magic) !== "PACK") throw new HttpError(422);
-      const { packId } = await this.store.packs.ingest(magic, pack, {
+      const validator = new PackStreamValidator({
+        maxObjectBytes: MAX_FILE_BYTES,
+        maxTotalInflated: MAX_TOTAL_INFLATED,
+      });
+      validator.push(magic);
+      const guardedPack = {
+        async read() {
+          const next = await pack.read();
+          if (next.done) validator.finish(false);
+          else if (next.value?.length) validator.push(next.value);
+          return next;
+        },
+      };
+      const { packId } = await this.store.packs.ingest(magic, guardedPack, {
         maxBytes: this.#maxPush,
         cache: new ObjCache(Number(this.env.INGEST_CACHE_MB) * MIB),
         collisionDetect: this.env.SHA1DC === "1",
@@ -860,9 +879,20 @@ export class GitRepository extends RepoCell {
       if (!object || object.type !== row.type) return false;
       try {
         if (row.type === "commit") {
-          parseStrictCommit(row.oid, object.data);
+          const commit = parseStrictCommit(row.oid, object.data);
+          if (this.store.typeAndSize(commit.tree)?.type !== "tree") return false;
+          for (const parent of commit.parents) {
+            if (this.store.typeAndSize(parent)?.type !== "commit") return false;
+          }
         } else if (row.type === "tree") {
-          parseStrictTree(object.data);
+          const entries = parseStrictTree(object.data);
+          for (const entry of entries) {
+            if (entry.mode === "040000") {
+              if (this.store.typeAndSize(entry.hash)?.type !== "tree") return false;
+            } else if (entry.mode !== "160000") {
+              if (this.store.typeAndSize(entry.hash)?.type !== "blob") return false;
+            }
+          }
         } else if (row.type === "tag") {
           const tag = parseStrictTag(object.data);
           const target = this.store.typeAndSize(tag.target);
@@ -1113,30 +1143,89 @@ export class GitRepository extends RepoCell {
       return gitResponse(RECEIVE, "result", renderStatus(results, null, push.sideband));
     }
     const priorLastPack = this.ctx.storage.sql.exec("SELECT COALESCE(MAX(pack_id), 0) AS id FROM pack_meta").one().id;
+    const validator = new PackStreamValidator({
+      maxObjectBytes: MAX_FILE_BYTES,
+      maxTotalInflated: MAX_TOTAL_INFLATED,
+    });
+    let packError = null;
+    const guardedBody = ReadableStream.from((async function* () {
+      const pktBuf = new Uint8Array(4);
+      let pktLen = 0;
+      let pktSkip = 0;
+      let inPack = false;
+      try {
+        for await (const chunk of push.body) {
+          let pos = 0;
+          while (!inPack && pos < chunk.length) {
+            if (pktSkip > 0) {
+              const take = Math.min(pktSkip, chunk.length - pos);
+              pktSkip -= take;
+              pos += take;
+            } else {
+              const take = Math.min(4 - pktLen, chunk.length - pos);
+              pktBuf.set(chunk.subarray(pos, pos + take), pktLen);
+              pktLen += take;
+              pos += take;
+              if (pktLen === 4) {
+                const len = Number.parseInt(td.decode(pktBuf), 16);
+                pktLen = 0;
+                if (len === 0) inPack = true;
+                else if (len >= 4) pktSkip = len - 4;
+                else throw new Error("Invalid Git packet length");
+              }
+            }
+          }
+          if (inPack && pos < chunk.length) validator.push(chunk.subarray(pos));
+          yield chunk;
+        }
+        if (inPack) validator.finish(true);
+      } catch (error) {
+        if (!oversized) packError = error;
+        throw error;
+      }
+    })());
+    const rollback = () => {
+      this.ctx.storage.transactionSync(() => {
+        const sql = this.ctx.storage.sql;
+        sql.exec("DELETE FROM refs WHERE name != 'HEAD'");
+        for (const [refName, target] of priorRefs) {
+          sql.exec("INSERT INTO refs (name, target) VALUES (?, ?)", refName, target);
+        }
+        for (const table of ["pack_meta", "pack_objects", "pack_data", "pack_pending"]) {
+          sql.exec(`DELETE FROM ${table} WHERE pack_id > ?`, priorLastPack);
+        }
+        sql.exec("DELETE FROM reachable; DELETE FROM peeled; DELETE FROM meta WHERE key = 'reachable-version';");
+        this.store = new GitStore(sql);
+      });
+    };
     try {
-      const response = await super.fetch(new Request(`${INTERNAL}/${RECEIVE}`, {
-        method: "POST",
-        headers: { "x-repo": name },
-        body: push.body,
-      }));
-      if (oversized) return empty(413);
+      let response;
+      try {
+        response = await super.fetch(new Request(`${INTERNAL}/${RECEIVE}`, {
+          method: "POST",
+          headers: { "x-repo": name },
+          body: guardedBody,
+        }));
+      } catch (error) {
+        if (!oversized && !packError) throw error;
+      }
+      if (oversized) {
+        rollback();
+        return empty(413);
+      }
+      if (packError) {
+        rollback();
+        if (!push.report) return empty(packError instanceof PackLimitError ? 413 : 422);
+        const msg = packError instanceof PackLimitError ? "pack exceeds size limits" : "object validation failed";
+        const results = updates.map(({ name: refName }) => ({ ref: refName, ok: false, msg }));
+        return gitResponse(RECEIVE, "result", renderStatus(results, null, push.sideband));
+      }
       const badBranch = this.store.refs().some(
         ({ name: refName, target }) => refName.startsWith(HEADS) && this.store.typeAndSize(target)?.type !== "commit",
       );
       const fsckOk = !badBranch && await this.#fsckPacksAfter(priorLastPack);
       if (!fsckOk) {
-        this.ctx.storage.transactionSync(() => {
-          const sql = this.ctx.storage.sql;
-          sql.exec("DELETE FROM refs WHERE name != 'HEAD'");
-          for (const [refName, target] of priorRefs) {
-            sql.exec("INSERT INTO refs (name, target) VALUES (?, ?)", refName, target);
-          }
-          for (const table of ["pack_meta", "pack_objects", "pack_data", "pack_pending"]) {
-            sql.exec(`DELETE FROM ${table} WHERE pack_id > ?`, priorLastPack);
-          }
-          sql.exec("DELETE FROM reachable; DELETE FROM peeled;");
-          this.store = new GitStore(sql);
-        });
+        rollback();
         if (!push.report) return empty(422);
         const msg = badBranch ? "branches must reference a commit" : "object validation failed";
         const results = updates.map(({ name: refName }) => ({ ref: refName, ok: false, msg }));

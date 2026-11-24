@@ -110,3 +110,11 @@ pub(crate) fn valid_ref(name: &str) -> bool {
             .split('/')
             .all(|part| !part.is_empty() && !part.starts_with('.') && !part.ends_with(".lock"))
 }
+
+pub(crate) fn has_noncanonical_ref_namespace(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    ((lower == "refs/heads" || lower.starts_with("refs/heads/"))
+        && !name.starts_with("refs/heads/"))
+        || ((lower == "refs/tags" || lower.starts_with("refs/tags/"))
+            && !name.starts_with("refs/tags/"))
+}

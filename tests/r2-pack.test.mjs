@@ -5,9 +5,21 @@ import { open } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { applyDelta, isForbiddenDotGit, PackIndex, parseCommit, parseTag, parseTagTarget, parseTree, readPackedObject } from "../worker/git-r2-pack.mjs";
+import {
+  applyDelta,
+  isForbiddenDotGit,
+  PackIndex,
+  PackLimitError,
+  PackStreamValidator,
+  parseCommit,
+  parseTag,
+  parseTagTarget,
+  parseTree,
+  readPackedObject,
+} from "../worker/git-r2-pack.mjs";
 import { buildR2PackStore } from "../worker/git-r2-packstore.mjs";
-import { parseReceivedPack } from "../worker/git-r2-receive.mjs";
+import { PackTooLargeError, parseReceiveBytes, parseReceivedPack } from "../worker/git-r2-receive.mjs";
+import { shard_receive_request } from "../src/git_wire.js";
 import { createHash } from "node:crypto";
 import pako from "pako";
 
@@ -316,5 +328,132 @@ test("parseReceivedPack resolves REF_DELTA with exact Git OID and rejects trunca
   assert.equal(validTag.target, baseOid);
   assert.equal(validTag.type, 1);
   assert.throws(() => parseTag(new TextEncoder().encode(`object ${baseOid}\n\nmissing type and tag\n`)), /Invalid Git tag/);
+  assert.throws(() => parseTag(new TextEncoder().encode(`object ${baseOid}\n\nmissing type and tag\n`)), /Invalid Git tag/);
   assert.throws(() => parseTag(new TextEncoder().encode(`object ${baseOid}\ntype bogus\ntag v1\n\n`)), /Invalid Git tag/);
+
+  // Non-adjacent duplicate tree entry names (file `foo`, file `foo.txt`, dir `foo`) must be rejected.
+  assert.throws(() => parseTree(new Uint8Array(Buffer.concat([
+    rawTreeEntry("100644", "foo", baseOid),
+    rawTreeEntry("100644", "foo.txt", expectedOid),
+    rawTreeEntry("40000", "foo", baseOid),
+  ]))), /Duplicate Git tree entry/);
+
+  // Symlink .gitmodules (mode 120000) must be rejected while regular .gitmodules is allowed.
+  assert.equal(parseTree(new Uint8Array(rawTreeEntry("100644", ".gitmodules", baseOid))).length, 1);
+  for (const badGitmodules of [".gitmodules", ".gitmodules ", ".git\u200bmodules", "gitmod~1"]) {
+    assert.throws(
+      () => parseTree(new Uint8Array(rawTreeEntry("120000", badGitmodules, baseOid))),
+      /Invalid Git tree name/,
+      badGitmodules,
+    );
+  }
+
+  // Repeated external REF_DELTA lookups must be memoized and bounded by external base budget.
+  const secondFromExternalExtra = new TextEncoder().encode("second-delta\n");
+  const secondFromExternalResult = new Uint8Array(baseData.length + secondFromExternalExtra.length);
+  secondFromExternalResult.set(baseData, 0);
+  secondFromExternalResult.set(secondFromExternalExtra, baseData.length);
+  const secondFromExternalDelta = new Uint8Array([
+    ...varint(baseData.length),
+    ...varint(secondFromExternalResult.length),
+    0x80 | 0x10 | 0x20,
+    baseData.length & 0xff,
+    (baseData.length >> 8) & 0xff,
+    secondFromExternalExtra.length,
+    ...secondFromExternalExtra,
+  ]);
+  const secondFromExternalDeflated = pako.deflate(secondFromExternalDelta);
+  const head2 = [];
+  let sz2 = secondFromExternalDelta.length;
+  head2.push((7 << 4) | (sz2 & 0x0f) | (sz2 >= 16 ? 0x80 : 0));
+  sz2 >>= 4;
+  while (sz2 > 0) {
+    head2.push((sz2 & 0x7f) | (sz2 >= 128 ? 0x80 : 0));
+    sz2 >>= 7;
+  }
+  const repeatedBody = Buffer.concat([
+    Buffer.from("PACK"),
+    Buffer.from([0, 0, 0, 2, 0, 0, 0, 2]),
+    firstEntryBytes,
+    Buffer.from(head2),
+    baseOidBytes,
+    Buffer.from(secondFromExternalDeflated),
+  ]);
+  const repeatedPack = new Uint8Array(Buffer.concat([repeatedBody, createHash("sha1").update(repeatedBody).digest()]));
+  let baseLookups = 0;
+  const repeatedParsed = await parseReceivedPack(repeatedPack, 20_000, async (oid) => {
+    baseLookups++;
+    return oid === baseOid ? { type: 3, data: baseData } : null;
+  });
+  assert.equal(repeatedParsed.entries.length, 2);
+  assert.equal(baseLookups, 1, "external REF_DELTA base must be memoized across entries");
+
+  // External base exceeding the 32 MiB external base budget must throw PackTooLargeError.
+  await assert.rejects(
+    parseReceivedPack(pack, 20_000, async (oid) => (
+      oid === baseOid ? { type: 3, data: new Uint8Array(32 * 1024 * 1024 + 1) } : null
+    )),
+    PackTooLargeError,
+  );
+
+  // Mixed-case refs/HEADS/ and refs/TAGS/ prefixes must be rejected on both receive parsers.
+  const pktLine = (text) => {
+    const payload = Buffer.from(text, "utf8");
+    return Buffer.concat([Buffer.from((payload.length + 4).toString(16).padStart(4, "0")), payload]);
+  };
+  for (const badRef of ["refs/HEADS/main", "refs/Heads/main", "refs/TAGS/v1", "refs/HEADS", "refs/TAGS"]) {
+    const wire = Buffer.concat([
+      pktLine(`${"0".repeat(40)} ${baseOid} ${badRef}\0report-status\n`),
+      Buffer.from("0000"),
+    ]);
+    assert.throws(() => parseReceiveBytes(new Uint8Array(wire)), /Invalid Git receive command/, badRef);
+    await assert.rejects(
+      shard_receive_request(new Response(wire).body, ""),
+      /Invalid Git receive command/,
+      badRef,
+    );
+  }
+
+  // PackStreamValidator: valid pack byte-by-byte passes; 512 MiB delta target and zip bomb fail immediately.
+  const validStream = new PackStreamValidator({ maxObjectBytes: 32 * 1024 * 1024, maxTotalInflated: 64 * 1024 * 1024 });
+  for (let i = 0; i < pack.length; i++) validStream.push(pack.subarray(i, i + 1));
+  validStream.finish(false);
+
+  const hugeTargetDelta = new Uint8Array([...varint(1), ...varint(512 * 1024 * 1024)]);
+  const hugeTargetDeflated = pako.deflate(hugeTargetDelta);
+  const hugeHead = [];
+  let hsz = hugeTargetDelta.length;
+  hugeHead.push((7 << 4) | (hsz & 0x0f) | (hsz >= 16 ? 0x80 : 0));
+  hsz >>= 4;
+  while (hsz > 0) {
+    hugeHead.push((hsz & 0x7f) | (hsz >= 128 ? 0x80 : 0));
+    hsz >>= 7;
+  }
+  const hugeBody = Buffer.concat([
+    Buffer.from("PACK"),
+    Buffer.from([0, 0, 0, 2, 0, 0, 0, 1]),
+    Buffer.from(hugeHead),
+    baseOidBytes,
+    Buffer.from(hugeTargetDeflated),
+  ]);
+  const hugePack = new Uint8Array(Buffer.concat([hugeBody, createHash("sha1").update(hugeBody).digest()]));
+  const deltaGuard = new PackStreamValidator({ maxObjectBytes: 32 * 1024 * 1024, maxTotalInflated: 64 * 1024 * 1024 });
+  assert.throws(() => deltaGuard.push(hugePack), PackLimitError);
+
+  const bombPayload = new Uint8Array(2 * 1024 * 1024);
+  const bombDeflated = pako.deflate(bombPayload);
+  // Declare tiny entrySize = 16 while zlib stream inflates to 2 MiB.
+  const bombBody = Buffer.concat([
+    Buffer.from("PACK"),
+    Buffer.from([0, 0, 0, 2, 0, 0, 0, 1]),
+    Buffer.from([(3 << 4) | 0x80, 0x01]),
+    Buffer.from(bombDeflated),
+  ]);
+  const bombPack = new Uint8Array(Buffer.concat([bombBody, createHash("sha1").update(bombBody).digest()]));
+  const bombGuard = new PackStreamValidator({ maxObjectBytes: 1024 * 1024, maxTotalInflated: 2 * 1024 * 1024 });
+  assert.throws(() => bombGuard.push(bombPack), PackLimitError);
+
+  // R2GitRepository must import parseTagTarget for annotated-tag direct reads/advertisements.
+  const r2RepoSource = readFileSync(new URL("../worker/git-r2-repository.mjs", import.meta.url), "utf8");
+  assert.match(r2RepoSource, /import\s*\{[^}]*\bparseTagTarget\b[^}]*\}\s*from\s*"\.\/git-r2-pack\.mjs"/);
 });

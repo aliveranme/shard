@@ -637,7 +637,7 @@ async fn finish(
                     return Ok(response);
                 }
                 let message = error.to_string();
-                if message.ends_with("(10024)") || message.ends_with("(10025)") {
+                if message.ends_with("(10024)") {
                     drop_session(database, &session.attempt).await?;
                     return failure(STALE);
                 }

@@ -62,6 +62,12 @@ pub(crate) async fn blocks_push(
     repo_id: i64,
     updates: &[RefUpdate],
 ) -> Result<bool> {
+    if updates
+        .iter()
+        .any(|update| crate::git_wire::has_noncanonical_ref_namespace(&update.name))
+    {
+        return Ok(true);
+    }
     let branches: Vec<_> = updates
         .iter()
         .filter(|update| observable(update) && update.name.starts_with("refs/heads/"))
@@ -90,6 +96,12 @@ pub(crate) async fn stage(
     updates: &[RefUpdate],
     require_admin: Option<i64>,
 ) -> Result<Admission> {
+    if updates
+        .iter()
+        .any(|update| crate::git_wire::has_noncanonical_ref_namespace(&update.name))
+    {
+        return Ok(Admission::Blocked);
+    }
     let updates: Vec<_> = updates.iter().filter(|update| observable(update)).collect();
     if updates.is_empty() {
         return Ok(Admission::Admitted(None));
