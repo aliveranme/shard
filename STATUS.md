@@ -92,6 +92,7 @@ The [Chinese Cloudflare Dashboard manual](docs/configuration.zh-CN.md) documents
 
 | Date | Check | Result |
 |---|---|---|
+| 2026-11-24 | v0.5.3 production deploy (`--env artifacts`) | `shard` deployed version `53060434-9a28-4d1f-aaf6-a26aeabd7b33` with message `release: v0.5.3`; remote D1 migrations `0036`–`0038` applied; `https://shard.aliveranmes.workers.dev/` returned HTTP 200 with `__Host-shard_csrf` and the strict CSP. |
 | 2026-11-17 | `mise run check` (wasm32) | pass, zero warnings |
 | 2026-11-17 | `mise run build` | pass, 29.2 KB entry |
 | 2026-11-17 | register/login/logout in browser | pass |
