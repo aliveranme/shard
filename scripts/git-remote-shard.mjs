@@ -746,9 +746,7 @@ async function remoteHelper(remote, controller) {
     server.close();
     server.closeAllConnections();
     await Promise.allSettled(pending);
-    if (exitCode === 0) {
-      for (const path of completed) await removePush(path).catch((error) => notice(error.message));
-    }
+    for (const path of completed) await removePush(path).catch((error) => notice(error.message));
   }
   return exitCode;
 }

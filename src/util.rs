@@ -50,15 +50,43 @@ pub fn redirect(path: &str) -> Result<Response> {
     Ok(resp)
 }
 
-pub fn set_cookie(token: &str, max_age: i64, secure: bool) -> Result<String> {
-    Ok(format!(
-        "shard_session={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}{}",
-        if secure { "; Secure" } else { "" }
-    ))
+pub fn session_cookie(req: &Request) -> Option<String> {
+    if is_secure(req) {
+        cookie(req, "__Host-shard_session").or_else(|| cookie(req, "shard_session"))
+    } else {
+        cookie(req, "shard_session")
+    }
 }
 
-pub fn clear_cookie() -> String {
-    "shard_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0".into()
+pub fn csrf_cookie(req: &Request) -> Option<String> {
+    if is_secure(req) {
+        cookie(req, "__Host-shard_csrf").or_else(|| cookie(req, "shard_csrf"))
+    } else {
+        cookie(req, "shard_csrf")
+    }
+}
+
+pub fn set_cookie(token: &str, max_age: i64, secure: bool) -> Result<String> {
+    if secure {
+        Ok(format!(
+            "__Host-shard_session={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}; Secure"
+        ))
+    } else {
+        Ok(format!(
+            "shard_session={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}"
+        ))
+    }
+}
+
+pub fn clear_cookies(secure: bool) -> Vec<String> {
+    if secure {
+        vec![
+            "__Host-shard_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Secure".into(),
+            "shard_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Secure".into(),
+        ]
+    } else {
+        vec!["shard_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0".into()]
+    }
 }
 
 pub fn js_text(value: &str) -> JsValue {

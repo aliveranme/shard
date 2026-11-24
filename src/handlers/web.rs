@@ -45,10 +45,12 @@ pub async fn home(req: Request, ctx: RouteContext<AppState>) -> Result<Response>
 pub async fn explore(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = ctx.data.clone();
     let [viewer_id, viewer_admin] = viewer_params(&state);
-    let query = util::query_param(&req, "q").unwrap_or_default();
+    let raw_query = util::query_param(&req, "q").unwrap_or_default();
+    let trimmed = raw_query.trim();
+    let trimmed = &trimmed[..trimmed.floor_char_boundary(256.min(trimmed.len()))];
+    let query = trimmed.to_string();
     let request_page = PageRequest::new(&req, "page");
     let database = state.db()?;
-    let trimmed = query.trim();
     let mut repos: Vec<Repo> = db::all(
         &database,
         &format!(

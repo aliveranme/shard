@@ -374,6 +374,8 @@ async fn serve(
     let machine = is_git || is_check;
     let previous_csrf = if machine {
         None
+    } else if secure {
+        util::cookie(&req, "__Host-shard_csrf")
     } else {
         util::cookie(&req, "shard_csrf")
     };
@@ -427,6 +429,22 @@ async fn serve(
         let mut response = Response::error(locale.t(CommonText::RateLimit), 429)?;
         response.headers_mut().set("Retry-After", "60")?;
         response.headers_mut().set("Cache-Control", "no-store")?;
+        response
+            .headers_mut()
+            .set("X-Content-Type-Options", "nosniff")?;
+        response.headers_mut().set("X-Frame-Options", "DENY")?;
+        response
+            .headers_mut()
+            .set("Referrer-Policy", "same-origin")?;
+        response.headers_mut().set(
+            "Content-Security-Policy",
+            "default-src 'none'; frame-ancestors 'none'",
+        )?;
+        if secure {
+            response
+                .headers_mut()
+                .set("Strict-Transport-Security", "max-age=31536000")?;
+        }
         if !machine {
             response
                 .headers_mut()

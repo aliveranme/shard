@@ -170,7 +170,7 @@ pub async fn signup_submit(req: Request, ctx: RouteContext<AppState>) -> Result<
     if email.len() > 254 || !util::valid_email(&email) {
         return invalid(AccountText::InvalidEmail);
     }
-    if password.len() < 8 || password.len() > 1024 {
+    if password.chars().count() < 8 || password.len() > 1024 {
         return invalid(AccountText::InvalidPasswordLength);
     }
 
@@ -203,13 +203,13 @@ pub async fn signup_submit(req: Request, ctx: RouteContext<AppState>) -> Result<
 
 pub async fn logout(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = ctx.data.clone();
-    if let Some(token) = util::cookie(&req, "shard_session") {
+    if let Some(token) = util::session_cookie(&req) {
         let _ = auth::destroy_session(&state.env, &token).await;
     }
     let mut response = util::redirect("/")?;
-    response
-        .headers_mut()
-        .append("Set-Cookie", &util::clear_cookie())?;
+    for cookie in util::clear_cookies(util::is_secure(&req)) {
+        response.headers_mut().append("Set-Cookie", &cookie)?;
+    }
     Ok(response)
 }
 
@@ -536,7 +536,7 @@ pub async fn update_password(req: Request, ctx: RouteContext<AppState>) -> Resul
     let current = util::form_value(form, "current_password").unwrap_or_default();
     let password = util::form_value(form, "password").unwrap_or_default();
     let confirmation = util::form_value(form, "password_confirm").unwrap_or_default();
-    let error = if password.len() < 8 || password.len() > 1024 {
+    let error = if password.chars().count() < 8 || password.len() > 1024 {
         Some(AccountText::InvalidPasswordLength)
     } else if password != confirmation {
         Some(AccountText::PasswordsMismatch)
@@ -581,7 +581,7 @@ pub async fn update_password(req: Request, ctx: RouteContext<AppState>) -> Resul
     Ok(response)
 }
 
-pub async fn delete_account(_req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
+pub async fn delete_account(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = &ctx.data;
     let Some(user) = &state.user else {
         return util::redirect("/user/login?next=/user/settings");
@@ -616,9 +616,9 @@ pub async fn delete_account(_req: Request, ctx: RouteContext<AppState>) -> Resul
         return error(409, AccountText::AccountDeletionBlocked);
     }
     let mut response = util::redirect("/")?;
-    response
-        .headers_mut()
-        .append("Set-Cookie", &util::clear_cookie())?;
+    for cookie in util::clear_cookies(util::is_secure(&req)) {
+        response.headers_mut().append("Set-Cookie", &cookie)?;
+    }
     Ok(response)
 }
 

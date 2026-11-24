@@ -1111,6 +1111,13 @@ export class GitRepository extends RepoCell {
     }
     const head = this.store.head();
     const updates = JSON.parse(push.updates);
+    if (updates.some(({ name: refName }) => !validRef(refName))) {
+      void push.body.cancel().catch(() => {});
+      if (oversized) return empty(413);
+      if (!push.report) return empty(422);
+      const results = updates.map(({ name: refName }) => ({ ref: refName, ok: false, msg: "invalid reference name" }));
+      return gitResponse(RECEIVE, "result", renderStatus(results, null, push.sideband));
+    }
     // A settings change can reach this cell before the matching D1 update.
     // Check the actual symbolic HEAD under the same lock as receive-pack.
     if (updates.some(({ name, before, after }) => name === head && before !== ZERO_OID && after === ZERO_OID)) {

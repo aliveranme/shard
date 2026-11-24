@@ -1802,6 +1802,31 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
       );
       const burst429 = burstResults.filter((r) => r.status === 429).length;
       assert.ok(burst429 >= 4, `expected at least 4 throttled login responses in a 12-request burst, got ${burst429}`);
+
+      // Password minimum length must count Unicode characters, not UTF-8 bytes (3 CJK chars = 9 bytes < 8 chars).
+      const shortUnicode = new Client();
+      await shortUnicode.get("/user/sign_up");
+      const shortUnicodeReply = await shortUnicode.post("/user/sign_up", {
+        username: "unicodetest",
+        email: "unicodetest@example.test",
+        password: "密码短",
+      });
+      assert.equal(shortUnicodeReply.status, 200);
+      assert.match(shortUnicodeReply.body, /8/);
+
+      // /explore truncates oversized q parameters safely at a 256-byte UTF-8 boundary.
+      const longExplore = await shortUnicode.get(`/explore/repos?q=${encodeURIComponent("测".repeat(200))}`);
+      assert.equal(longExplore.status, 200);
+
+      // Migration 0038 enforces repository description length at the database layer.
+      const descProbeSql = join(temporary, "desc-trigger-probe.sql");
+      await writeFile(descProbeSql, `
+        UPDATE repos SET description = '${"x".repeat(351)}' WHERE name = 'project';
+      `);
+      await assert.rejects(
+        cli(["d1", "execute", "DB", "--local", "--persist-to", persistence, "--file", descProbeSql]),
+        /repository description too long/,
+      );
     });
   } finally {
     await worker?.stop();

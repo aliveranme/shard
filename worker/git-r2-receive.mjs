@@ -12,7 +12,7 @@ export class ThinPackError extends Error {}
 export class PackTooLargeError extends Error {}
 
 export function parseReceiveBytes(bytes) {
-  const decoder = new TextDecoder();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
   const updates = [];
   const seen = new Set();
   let sideband = false;

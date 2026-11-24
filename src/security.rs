@@ -55,11 +55,11 @@ fn valid_token(value: &str) -> bool {
 /// use a host-only random cookie, including login and account registration.
 pub async fn csrf_token(req: &Request, signed_in: bool) -> Result<String> {
     if signed_in {
-        if let Some(session) = util::cookie(req, "shard_session") {
+        if let Some(session) = util::session_cookie(req) {
             return crypto::sha256_hex(&format!("shard-csrf:{session}")).await;
         }
     }
-    match util::cookie(req, "shard_csrf").filter(|token| valid_token(token)) {
+    match util::csrf_cookie(req).filter(|token| valid_token(token)) {
         Some(token) => Ok(token),
         None => crypto::random_token(),
     }
@@ -178,7 +178,7 @@ fn apply(
     if headers.get("Content-Security-Policy")?.is_none() {
         headers.set(
             "Content-Security-Policy",
-            "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'none'; style-src 'self'; img-src 'self' data: https:; font-src 'self'; connect-src 'self'",
+            "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'none'; style-src 'self'; img-src 'self' https:; font-src 'self'; connect-src 'self'",
         )?;
     }
     let html = is_html(headers)?;
@@ -196,13 +196,12 @@ fn apply(
     if html {
         headers.set("Content-Language", locale.code())?;
         if !token.is_empty() && previous_token != Some(token) {
-            headers.append(
-                "Set-Cookie",
-                &format!(
-                    "shard_csrf={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000{}",
-                    if secure { "; Secure" } else { "" },
-                ),
-            )?;
+            let cookie = if secure {
+                format!("__Host-shard_csrf={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000; Secure")
+            } else {
+                format!("shard_csrf={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000")
+            };
+            headers.append("Set-Cookie", &cookie)?;
         }
     }
     Ok(())

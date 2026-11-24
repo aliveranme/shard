@@ -29,7 +29,7 @@ pub fn registration_open(env: &Env) -> bool {
 }
 
 pub async fn current_user(env: &Env, req: &Request) -> Result<Option<User>> {
-    let Some(token) = util::cookie(req, "shard_session") else {
+    let Some(token) = util::session_cookie(req) else {
         return Ok(None);
     };
     let hash = crypto::sha256_hex(&token).await?;

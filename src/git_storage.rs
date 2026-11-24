@@ -441,8 +441,17 @@ impl RepoHandle {
                 repo.merge(reference, base, head, Some(id)).await
             }
             (_, None) if fast_forward => {
-                self.write_ref(reference, base, head).await?;
-                Ok(head.to_owned())
+                match crate::pull_base::is_ancestor(self, base, head).await {
+                    Ok(true) => {
+                        self.write_ref(reference, base, head).await?;
+                        Ok(head.to_owned())
+                    }
+                    Ok(false)
+                    | Err(crate::pull_base::BaseError::Missing)
+                    | Err(crate::pull_base::BaseError::Unrelated) => Err(WriteError::Conflict),
+                    Err(crate::pull_base::BaseError::Storage(_)) => Err(WriteError::Unavailable),
+                    Err(_) => Err(WriteError::Unsupported),
+                }
             }
             (Self::Artifacts(repo), source @ (None | Some((Self::Artifacts(_), _)))) => {
                 let transport = ArtifactsMergeTransport::from_env(env).await?;

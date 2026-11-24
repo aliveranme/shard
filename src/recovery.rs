@@ -451,7 +451,7 @@ pub async fn verify_submit(_req: Request, ctx: RouteContext<AppState>) -> Result
     page.response(200)
 }
 
-pub async fn reset_submit(_req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
+pub async fn reset_submit(req: Request, ctx: RouteContext<AppState>) -> Result<Response> {
     let state = &ctx.data;
     let purpose = Purpose::Reset;
     let form = state.form()?;
@@ -465,7 +465,7 @@ pub async fn reset_submit(_req: Request, ctx: RouteContext<AppState>) -> Result<
     }
     let password = util::form_value(form, "password").unwrap_or_default();
     let confirmation = util::form_value(form, "password_confirm").unwrap_or_default();
-    let error = if !(8..=1024).contains(&password.len()) {
+    let error = if password.chars().count() < 8 || password.len() > 1024 {
         Some(AccountText::InvalidPasswordLength)
     } else if password != confirmation {
         Some(AccountText::PasswordsMismatch)
@@ -491,9 +491,9 @@ pub async fn reset_submit(_req: Request, ctx: RouteContext<AppState>) -> Result<
     page.notice = Some(state.locale.t(AccountText::PasswordReset));
     let mut response = page.response(200)?;
     if signed_out {
-        response
-            .headers_mut()
-            .append("Set-Cookie", &util::clear_cookie())?;
+        for cookie in util::clear_cookies(util::is_secure(&req)) {
+            response.headers_mut().append("Set-Cookie", &cookie)?;
+        }
     }
     Ok(response)
 }

@@ -226,6 +226,42 @@ pub(crate) async fn find(
     Err(BaseError::Ambiguous)
 }
 
+pub(crate) async fn is_ancestor(
+    repo: &RepoHandle,
+    ancestor: &str,
+    descendant: &str,
+) -> Result<bool, BaseError> {
+    if !is_object_id(ancestor) || !is_object_id(descendant) {
+        return Err(BaseError::Missing);
+    }
+    if ancestor == descendant {
+        repo.read_commit(ancestor)
+            .await
+            .map_err(BaseError::Storage)?
+            .ok_or(BaseError::Missing)?;
+        return Ok(true);
+    }
+    let mut graph = Graph::default();
+    let target = graph.intern(ancestor.to_owned())?;
+    let start = graph.intern(descendant.to_owned())?;
+    graph.nodes[start].flags = HEAD;
+    let mut queue = VecDeque::from([start]);
+    while let Some(id) = queue.pop_front() {
+        for edge in graph.parents(repo, id).await? {
+            let parent = graph.edges[edge];
+            if parent == target {
+                return Ok(true);
+            }
+            if graph.nodes[parent].flags & HEAD != 0 {
+                continue;
+            }
+            graph.nodes[parent].flags |= HEAD;
+            queue.push_back(parent);
+        }
+    }
+    Ok(false)
+}
+
 #[derive(Default)]
 struct Graph {
     index: HashMap<Rc<String>, usize>,

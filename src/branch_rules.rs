@@ -192,9 +192,8 @@ pub(crate) async fn write_ref(_req: Request, ctx: RouteContext<AppState>) -> Res
             }
         }
         Err(cause) => {
-            if cause == WriteError::Unavailable {
-                let _ = git_activity::release_admission(&state.env, repo.id, intent.id()).await;
-            } else {
+            // Keep the admission lease until TTL expiry if storage did not confirm rejection.
+            if cause != WriteError::Unavailable {
                 git_activity::confirm(&state.env, intent, Some(actor), &[]).await?;
             }
             return match cause {

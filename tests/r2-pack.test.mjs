@@ -524,4 +524,34 @@ test("parseReceivedPack resolves REF_DELTA with exact Git OID and rejects trunca
     }),
     /exceeds the read limit|delta sizes/i,
   );
+
+  // PackIndex must reject non-monotonic fanout tables and large-offset slots overlapping the 40-byte trailer.
+  const badFanout = new Uint8Array(parsed.idx);
+  const fanoutView = new DataView(badFanout.buffer, badFanout.byteOffset, badFanout.byteLength);
+  fanoutView.setUint32(8, 2);
+  fanoutView.setUint32(12, 1);
+  assert.throws(() => new PackIndex(badFanout), /Invalid Git pack index fanout/);
+
+  const badLargeIdx = new Uint8Array(8 + 1024 + 20 + 4 + 4 + 40);
+  const badLargeView = new DataView(badLargeIdx.buffer);
+  badLargeView.setUint32(0, 0xff744f63);
+  badLargeView.setUint32(4, 2);
+  for (let i = 0; i < 256; i++) badLargeView.setUint32(8 + i * 4, 1);
+  // Set offset entry 0 to large-offset slot 0, which would read into the 40-byte trailer.
+  badLargeView.setUint32(8 + 1024 + 20 + 4, 0x80000000);
+  const parsedBadLarge = new PackIndex(badLargeIdx);
+  assert.throws(() => parsedBadLarge.offsetAt(0), /Invalid Git pack offset/);
+
+  // parseReceiveBytes must reject invalid UTF-8 sequences fatally.
+  const invalidUtf8Line = Buffer.concat([
+    Buffer.from(`${"0".repeat(40)} ${baseOid} refs/heads/`),
+    Buffer.from([0xff, 0xfe]),
+    Buffer.from("\0report-status\n"),
+  ]);
+  const invalidUtf8Wire = Buffer.concat([
+    Buffer.from((invalidUtf8Line.length + 4).toString(16).padStart(4, "0")),
+    invalidUtf8Line,
+    Buffer.from("0000"),
+  ]);
+  assert.throws(() => parseReceiveBytes(new Uint8Array(invalidUtf8Wire)));
 });

@@ -93,7 +93,13 @@ async function compact(workspace, id, mount, req, signal) {
       packs.some(key => typeof key !== "string" || PACK_KEY.exec(key)?.[1] !== id)) throw new HttpError(422);
   const cwd = workspace.directory;
   const repo = join(cwd, `${id}.git`);
-  const disk = await statfs(repo);
+  let disk;
+  try {
+    disk = await statfs(repo);
+  } catch (error) {
+    if (error?.code === "ENOENT") throw new HttpError(404);
+    throw error;
+  }
   if (disk.bavail * disk.bsize < 2 * MAX_COMPACT_BYTES) throw new HttpError(507);
 
   let bytes = 0;
@@ -299,8 +305,11 @@ export async function createR2GitOrigin({ directory, mount, token, importHosts, 
   }
 
   async function dispose(job, workspace) {
-    await rm(workspace.directory, { recursive: true, force: true, maxRetries: 3 });
-    workspaces.delete(job);
+    try {
+      await rm(workspace.directory, { recursive: true, force: true, maxRetries: 3 });
+    } finally {
+      workspaces.delete(job);
+    }
   }
 
   const server = createServer({ requestTimeout: 0, headersTimeout: 60_000 }, (req, res) => {

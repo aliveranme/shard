@@ -42,7 +42,13 @@ export class PackIndex {
     if (bytes.length < 8 + 1024 || be32(bytes, 0) !== INDEX_MAGIC || be32(bytes, 4) !== 2) {
       throw new Error("Unsupported Git pack index");
     }
-    this.count = be32(bytes, 8 + 255 * 4);
+    let previous = 0;
+    for (let i = 0; i < 256; i++) {
+      const value = be32(bytes, 8 + i * 4);
+      if (value < previous) throw new Error("Invalid Git pack index fanout");
+      previous = value;
+    }
+    this.count = previous;
     const shaStart = 8 + 1024;
     const crcStart = shaStart + this.count * 20;
     const offsetStart = crcStart + this.count * 4;
@@ -78,7 +84,7 @@ export class PackIndex {
     let offset = value;
     if (value & 0x80000000) {
       const slot = value & 0x7fffffff;
-      if (this.largeStart + (slot + 1) * 8 > this.bytes.length) throw new Error("Invalid Git pack offset");
+      if (this.largeStart + (slot + 1) * 8 > this.bytes.length - 40) throw new Error("Invalid Git pack offset");
       offset = be64(this.bytes, this.largeStart + slot * 8);
     }
     if (!Number.isSafeInteger(offset) || offset < 12) throw new Error("Invalid Git pack offset");
@@ -100,6 +106,7 @@ export class PackIndex {
 }
 
 export function parsePackEntry(bytes, offset) {
+  if (!bytes?.length) throw new Error("Empty Git pack entry");
   let cursor = 0;
   let byte = bytes[cursor++];
   const type = (byte >> 4) & 7;

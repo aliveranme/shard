@@ -30,9 +30,22 @@ Tracked findings from the full-repository code reviews.
 - [x] `git-remote-shard.mjs` passes loopback proxy URL and `http.*` settings through `GIT_CONFIG_*` environment variables instead of `argv` (`scripts/git-remote-shard.mjs`).
 - [x] `deploy.mjs` defers writing temporary R2 secrets until immediately before `wrangler deploy`, writes temp configs with `0o600`, and both `deploy.mjs` and `admin.mjs` use async `spawn` with `SIGINT`/`SIGTERM` cleanup; `.gitignore` ignores `.wrangler.admin-*.json`.
 
-### Remaining Low/Info follow-ups
-- [ ] Clean up `.receive` spool files on terminal rejected pushes (`ng`) in `scripts/git-remote-shard.mjs`.
-- [ ] Add `issue_labels(repo_id, issue_id)` index, `__Host-` cookie prefix on HTTPS, character-based password minimum check, and static asset / 429 security headers.
+### Low / Info (complete)
+- [x] `git-remote-shard.mjs` removes completed `.receive` spool files unconditionally after terminal server reports, even when refs are rejected (`ng`).
+- [x] `branch_rules::write_ref` retains the branch-write admission lease until TTL expiry on `WriteError::Unavailable`.
+- [x] `RepoHandle::merge_saved` verifies commit ancestry via `pull_base::is_ancestor` before taking the fast-forward `write_ref` shortcut.
+- [x] `PackIndex` validates fanout monotonicity and large-offset bounds before the 40-byte trailer; `parsePackEntry` rejects empty slices.
+- [x] `parseReceiveBytes` uses fatal UTF-8 decoding; `GitRepository.#receive` validates pushed ref names with `validRef()`.
+- [x] `lfs::download` emits `X-Content-Type-Options: nosniff`; `lfs_remote::publish` returns LFS JSON `503` on timeout/hash/stream errors.
+- [x] HTTPS session and CSRF cookies use `__Host-` prefixes (with fallback read of legacy names) and `clear_cookies(secure)` emits `Secure` on HTTPS.
+- [x] Password minimum length enforces at least 8 Unicode characters (`.chars().count() < 8`) while retaining the 1024-byte ceiling.
+- [x] `/explore` truncates `q` at a 256-byte UTF-8 boundary.
+- [x] `static/_headers` and 429 responses include security headers (`nosniff`, `DENY`, HSTS, sandboxed `/img/*` CSP); removed unused `data:` from CSP `img-src`; normalized `static/css/shard.css` to LF.
+- [x] `git-r2-origin.mjs` maps `compact()` `ENOENT` to 404 and deletes workspace entries in `finally`; `R2GitRepository` prunes `#counts` on pack retirement, deduplicates `#restore` keys with `Map`, and filters `aborted = 0` in upload slot counts.
+- [x] Migration `0038_issue_labels_index_and_description_check.sql` adds `issue_labels(repo_id, issue_id)` index and 350-char description triggers; `deploy.mjs` derives reserved binding names dynamically.
+
+### Known follow-ups
+- [ ] Pin GitHub Actions workflows to commit SHAs and evaluate non-root FUSE support in `containers/git-r2.Dockerfile` on Cloudflare staging.
 
 ## Third review (2026-11-24)
 

@@ -373,8 +373,8 @@ export class R2GitRepository extends DurableObject {
       }
 
       // Validate every pack/index pair; a failed preflight leaves the object empty.
-      const packSizes = {};
-      const indexSizes = {};
+      const packSizes = new Map();
+      const indexSizes = new Map();
       const expected = new Set(manifest.packs);
       let needed = expected.size * 2;
       let cursor;
@@ -383,8 +383,8 @@ export class R2GitRepository extends DurableObject {
         for (const { key, size } of page.objects) {
           const base = key.slice(0, key.lastIndexOf("."));
           if (!expected.has(base)) continue;
-          if (key.endsWith(".pack") && size >= 32) { packSizes[base] = size; needed--; }
-          if (key.endsWith(".idx") && size > 0) { indexSizes[base] = size; needed--; }
+          if (key.endsWith(".pack") && size >= 32 && !packSizes.has(base)) { packSizes.set(base, size); needed--; }
+          if (key.endsWith(".idx") && size > 0 && !indexSizes.has(base)) { indexSizes.set(base, size); needed--; }
         }
         if (!page.truncated) break;
         cursor = page.cursor;
@@ -392,7 +392,7 @@ export class R2GitRepository extends DurableObject {
       if (needed) {
         return json({ message: "Restore the Git pack and index objects before importing the manifest" }, 422);
       }
-      const packBytes = manifest.packs.map(key => packSizes[key] + indexSizes[key]);
+      const packBytes = manifest.packs.map(key => packSizes.get(key) + indexSizes.get(key));
       this.ctx.storage.transactionSync(() => this.#insert(id, { ...manifest, packSizes: packBytes }, manifest.revision));
       this.ctx.waitUntil(this.#arm());
       return empty(201);
@@ -524,6 +524,7 @@ export class R2GitRepository extends DurableObject {
             if (key === keep) continue;
             this.#sql.exec("DELETE FROM packs WHERE oid = ?", key.slice(-40));
             this.#sql.exec("INSERT INTO retired_packs (key, expires) VALUES (?, ?)", key, expires);
+            this.#counts.delete(key);
           }
           if (!keep) {
             this.#addPacks(snapshot.packs, snapshot.packSizes);
@@ -1745,7 +1746,7 @@ export class R2GitRepository extends DurableObject {
     }
     if (!active) {
       if (size > this.#inputLimit()) return empty(413);
-      if (this.#one("SELECT COUNT(*) AS count FROM uploads WHERE report IS NULL AND expires > ?", Date.now()).count >= 8) {
+      if (this.#one("SELECT COUNT(*) AS count FROM uploads WHERE report IS NULL AND aborted = 0 AND expires > ?", Date.now()).count >= 8) {
         return json({ message: "Finish or abort an existing Git upload before creating another" }, 429);
       }
       const partBytes = Math.max(32, Math.ceil(size / (MAX_PARTS * MiB))) * MiB;

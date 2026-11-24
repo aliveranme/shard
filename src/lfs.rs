@@ -375,6 +375,9 @@ pub async fn download(req: Request, ctx: RouteContext<AppState>) -> Result<Respo
                 .headers_mut()
                 .set("Content-Length", &size.to_string())?;
             response.headers_mut().set("Cache-Control", "no-store")?;
+            response
+                .headers_mut()
+                .set("X-Content-Type-Options", "nosniff")?;
             Ok(response)
         }
         Ok(Some(_)) => failure(WRONG_SIZE),

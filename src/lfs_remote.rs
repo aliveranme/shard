@@ -806,8 +806,13 @@ async fn publish(state: &AppState, target: &Transfer<'_>, stage: &str) -> Result
         Some(body)
     } else {
         // A multipart checksum is composite. Hash the actual assembled bytes once.
-        let timeout = time_left(now() + WRITE_LEASE - WRITE_GRACE)?;
-        let sha = shard_lfs_sha256(body, timeout).await.map_err(Error::from)?;
+        let Ok(timeout) = time_left(now() + WRITE_LEASE - WRITE_GRACE) else {
+            let _ = body.cancel();
+            return failure(STORAGE);
+        };
+        let Ok(sha) = shard_lfs_sha256(body, timeout).await else {
+            return failure(STORAGE);
+        };
         if sha != target.oid {
             return failure(BAD_DIGEST);
         }
@@ -825,7 +830,9 @@ async fn publish(state: &AppState, target: &Transfer<'_>, stage: &str) -> Result
     // the repository's storage cleanup until the lease expires.
     let result: Result<std::result::Result<bool, Response>> = async {
         if let Some(body) = data {
-            let data = bounded_stream(body, target.size, expires)?;
+            let Ok(data) = bounded_stream(body, target.size, expires) else {
+                return Ok(Err(failure(STORAGE)?));
+            };
             return Ok(
                 match put_object(&target.bucket, &target.key, data, target.oid).await {
                     Ok(object) => Ok(object.is_some()),
@@ -838,7 +845,9 @@ async fn publish(state: &AppState, target: &Transfer<'_>, stage: &str) -> Result
             Ok(s3) => s3,
             Err(error) => return Ok(Err(failure(error)?)),
         };
-        let timeout = time_left(expires - WRITE_GRACE)?;
+        let Ok(timeout) = time_left(expires - WRITE_GRACE) else {
+            return Ok(Err(failure(STORAGE)?));
+        };
         Ok(
             match s3
                 .copy(

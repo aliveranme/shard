@@ -16,7 +16,33 @@ const maxR2ObjectBytes = (5 * 1024 - 5) * 1024 ** 3;
 const r2SecretNames = ["SHARD_LFS_R2_ACCESS_KEY_ID", "SHARD_LFS_R2_SECRET_ACCESS_KEY"];
 const gitSecretNames = ["SHARD_GIT_R2_ACCESS_KEY_ID", "SHARD_GIT_R2_SECRET_ACCESS_KEY"];
 
-function readPaidSecrets(file, vars, required) {
+function reservedBindingNames(rawConfig, target, vars) {
+  const names = new Set([
+    "DB", "ARTIFACTS", "LFS_OBJECTS", "GIT_PACKS", "GIT_R2_REPOS",
+    "SHARD_GIT_R2_CONTAINER_ENDPOINT", "SHARD_GIT_R2_MAX_PUSH_BYTES", "SHARD_LFS_MAX_BYTES",
+    ...Object.keys(vars),
+  ]);
+  for (const source of [rawConfig, target]) {
+    if (!source || typeof source !== "object") continue;
+    if (source.assets?.binding) names.add(source.assets.binding);
+    if (source.version_metadata?.binding) names.add(source.version_metadata.binding);
+    for (const key of ["d1_databases", "r2_buckets", "artifacts", "workflows", "send_email"]) {
+      for (const entry of source[key] ?? []) {
+        if (entry?.binding) names.add(entry.binding);
+        if (entry?.name && key === "send_email") names.add(entry.name);
+      }
+    }
+    for (const entry of source.durable_objects?.bindings ?? []) {
+      if (entry?.name) names.add(entry.name);
+    }
+    for (const entry of source.ratelimits ?? []) {
+      if (entry?.name) names.add(entry.name);
+    }
+  }
+  return [...names];
+}
+
+function readPaidSecrets(file, rawConfig, target, vars, required) {
   if (!file) throw new Error("Provide --secrets-file with the bucket-scoped R2 credentials for this environment.");
   let secrets;
   try {
@@ -34,7 +60,7 @@ function readPaidSecrets(file, vars, required) {
       throw new Error(`Provide a nonempty ${name} in --secrets-file.`);
     }
   }
-  const reserved = ["DB", "ARTIFACTS", "LFS_OBJECTS", "GIT_PACKS", "GIT_R2_REPOS", "SHARD_GIT_R2_CONTAINER_ENDPOINT", "SHARD_LFS_MAX_BYTES", ...Object.keys(vars)];
+  const reserved = reservedBindingNames(rawConfig, target, vars);
   if (reserved.some((name) => Object.hasOwn(secrets, name) && secrets[name] !== null)) {
     throw new Error("--secrets-file must not redefine paid preset bindings or selected Worker variables.");
   }
@@ -279,7 +305,7 @@ async function deploy() {
   let paidSecrets;
   if (paid) {
     configurePaid(rawConfig, target, lfsBinding, dryRun);
-    if (!dryRun) paidSecrets = readPaidSecrets(secretsFile, target.vars,
+    if (!dryRun) paidSecrets = readPaidSecrets(secretsFile, rawConfig, target, target.vars,
       target.vars.GIT_BACKEND === "r2" ? [...r2SecretNames, ...gitSecretNames] : r2SecretNames);
   }
 
