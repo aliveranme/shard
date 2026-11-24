@@ -3,7 +3,7 @@
 Living record of what works, what is missing, and how it was verified.
 Update this file whenever a milestone lands or a limitation changes.
 
-**Snapshot:** 2026-11-23 · Shard 0.5.2 · local verification & Cloudflare R2 deployment
+**Snapshot:** 2026-11-24 · Shard 0.5.3 · local verification & Cloudflare R2 deployment
 
 | Item | Value |
 |---|---|

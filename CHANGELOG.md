@@ -1,11 +1,28 @@
 # Changelog
 
-## Unreleased
+## 0.5.3
+
+### Security & Reliability (fourth audit)
+
+- **Git engines**: Import annotated tag targets in R2 direct reads and advertisements; clear reachable metadata on Free Git push rollback; stream-validate incoming packs before ingestion; reject duplicate tree entries and symlink `.gitmodules`; validate `commit.tree`, parents and tree entry types after fsck; memoize external `REF_DELTA` bases under a 32 MiB budget; reject mixed-case `refs/HEADS/` and `refs/TAGS/` prefixes; retry R2 multipart LFS `10025` through authoritative `ListParts` reconciliation; bound pack stores, delta chains, archive reads and direct-receive pre-buffering.
+- **Access control & auth**: Reject untrusted Git-origin tokens before D1 lookups; enforce private-source-to-public-target PR visibility; reserve login and re-authentication attempts before PBKDF2; require verified emails for commit avatar matching and throttle email-collision probes; cap repository descriptions at 350 characters across creation, settings, forks and imports; match Native branch rules case-insensitively in the merge queue.
+- **Webhooks, LFS & lifecycle**: Add per-repository webhook fairness timeouts; reconcile wrong-size multipart LFS sessions; retain branch-write leases on storage unavailability; verify fast-forward ancestry before merge shortcuts; clean up spool files, container tokens and merge workspaces on every terminal path.
+- **Operations**: Bound native Git origin sockets, connections and upload-pack bodies; defer temporary R2 secret files and write them `0o600`; make deploy/admin cleanup signal-safe; add security headers to static and 429 responses; use `__Host-` session/CSRF cookies with legacy fallback; add migration `0038_issue_labels_index_and_description_check.sql`.
+
+### Hardening (fifth review)
+
+- **Password KDF**: Raise PBKDF2 from 100,000 to 600,000 iterations; rehash verified legacy hashes opportunistically on login and re-authentication while keeping a concurrent password change authoritative.
+- **Collection caps**: Enforce 50 access tokens per user, 50 issue templates and 100 labels or milestones per repository inside conditional D1 inserts, with localized errors and regression coverage.
+- **Supply chain**: Pin CI and release workflow actions to commit SHAs.
 
 ### Fixed
 
 - **Repository descriptions**: Cap descriptions at 350 characters on creation, settings, forks and imports, reject control characters, and truncate legacy oversized values (migration `0036_repo_description_limit.sql`). Public home, Explore, profile and repository pages can no longer be inflated by a single repository description.
 - **Native branch rules**: Match merge-queue approvals and checks against Native branch rules with the same case-insensitive semantics as push admission, and compare pending writes case-insensitively when changing rules. A case-only rule mismatch can no longer bypass required approvals or checks.
+
+### Upgrade
+
+- Apply D1 migrations `0036_repo_description_limit.sql`, `0037_pull_creation_hardening.sql` and `0038_issue_labels_index_and_description_check.sql` before deploying `v0.5.3`. Instances below `v0.5.2` must first apply `0034_audit_hardening.sql` and `0035_audit_remediation.sql`.
 
 ## 0.5.2
 

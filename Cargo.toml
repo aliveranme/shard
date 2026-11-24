@@ -1,6 +1,6 @@
 [package]
 name = "shard"
-version = "0.5.2"
+version = "0.5.3"
 edition = "2021"
 description = "Shard - a self-hosted, Cloudflare-native Git forge"
 license = "MIT"
