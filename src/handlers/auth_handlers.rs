@@ -6,6 +6,7 @@ use crate::crypto;
 use crate::ctx::{AppState, ThemePreference, THEME_COOKIE};
 use crate::db;
 use crate::i18n::{AccountText, CommonText, LanguagePreference, Locale, LANGUAGE_COOKIE};
+use crate::limits;
 use crate::models::AccessToken;
 use crate::pagination::{PageRequest, PAGE_SIZE};
 use crate::templates::{error_response, render, AuthPage, Chrome};
@@ -318,14 +319,43 @@ pub async fn create_token(req: Request, ctx: RouteContext<AppState>) -> Result<R
     let hash = crypto::sha256_hex(&plaintext).await?;
     let database = state.db()?;
     let now = util::now();
-    let created = db::first::<serde::de::IgnoredAny>(&database,
+    let created = db::first::<serde::de::IgnoredAny>(
+        &database,
         "INSERT INTO access_tokens (user_id, name, token_hash, scope, created_at, expires_at)
-         SELECT id, ?2, ?3, ?4, ?5, ?6 FROM users WHERE id = ?1 AND password_hash = ?7 RETURNING id",
+         SELECT u.id, ?2, ?3, ?4, ?5, ?6 FROM users u
+          WHERE u.id = ?1 AND u.password_hash = ?7
+            AND (SELECT COUNT(*) FROM access_tokens t WHERE t.user_id = u.id) < ?8
+         RETURNING id",
         &[
-            util::js_int(user.id), util::js_text(&name), util::js_text(&hash), util::js_text(&scope),
-            util::js_int(now), util::js_int(now + days * 86400), util::js_text(&verified_hash),
-        ]).await?;
+            util::js_int(user.id),
+            util::js_text(&name),
+            util::js_text(&hash),
+            util::js_text(&scope),
+            util::js_int(now),
+            util::js_int(now + days * 86400),
+            util::js_text(&verified_hash),
+            util::js_int(limits::MAX_ACCESS_TOKENS_PER_USER),
+        ],
+    )
+    .await?;
     if created.is_none() {
+        #[derive(serde::Deserialize)]
+        struct Count {
+            count: i64,
+        }
+        let count = db::first::<Count>(
+            &database,
+            "SELECT COUNT(*) AS count FROM access_tokens WHERE user_id = ?",
+            &[util::js_int(user.id)],
+        )
+        .await?
+        .map_or(0, |row| row.count);
+        if count >= limits::MAX_ACCESS_TOKENS_PER_USER {
+            let message = state.locale.t(AccountText::TokenLimitReached);
+            return Ok(render_tokens(&req, &state, None, Some(message))
+                .await?
+                .with_status(422));
+        }
         return password_error().await;
     }
     render_tokens(&req, &state, Some(plaintext), None).await

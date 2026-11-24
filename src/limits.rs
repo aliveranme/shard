@@ -4,6 +4,12 @@ const DEFAULT_LFS_BYTES: u64 = 100_000_000;
 pub(crate) const R2_SINGLE_PUT_BYTES: u64 = (5 * 1024 - 5) * 1024 * 1024;
 const R2_OBJECT_BYTES: u64 = (5 * 1024 - 5) * 1024 * 1024 * 1024;
 
+/// Small, user-visible collection caps that keep D1 rows and settings pages
+/// bounded. They are deliberately generous for normal use.
+pub(crate) const MAX_ACCESS_TOKENS_PER_USER: i64 = 50;
+pub(crate) const MAX_ISSUE_TEMPLATES_PER_REPO: i64 = 50;
+pub(crate) const MAX_ISSUE_CATALOG_ENTRIES_PER_REPO: i64 = 100;
+
 #[derive(Clone, Copy)]
 pub(crate) enum Profile {
     Free,

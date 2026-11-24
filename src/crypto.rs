@@ -1,12 +1,15 @@
 //! Password, session and token cryptography.
 //!
 //! Hashing runs through WebCrypto rather than a Rust implementation: PBKDF2 at
-//! 100k iterations is native on Workers and does not burn the Worker's CPU
+//! 600k iterations is native on Workers and does not burn the Worker's CPU
 //! budget the way a pure-Rust KDF would.
 use wasm_bindgen::prelude::*;
 use worker::*;
 
-const PBKDF2_ITERATIONS: u32 = 100_000;
+pub(crate) const PBKDF2_ITERATIONS: u32 = 600_000;
+/// Refuse hashes that claim an unreasonable work factor, so a corrupted row
+/// cannot turn one login into an unbounded KDF call.
+const MAX_PBKDF2_ITERATIONS: u32 = 4 * PBKDF2_ITERATIONS;
 
 #[wasm_bindgen(inline_js = r#"
 function shardToHex(buffer) {
@@ -89,20 +92,36 @@ pub async fn hash_password(password: &str) -> Result<String> {
 }
 
 pub async fn verify_password(password: &str, stored: &str) -> Result<bool> {
+    let Some(iterations) = password_iterations(stored) else {
+        return Ok(false);
+    };
     let mut parts = stored.split('$');
-    let (Some("pbkdf2_sha256"), Some(iterations), Some(salt), Some(expected)) =
+    let (Some("pbkdf2_sha256"), Some(_), Some(salt), Some(expected)) =
         (parts.next(), parts.next(), parts.next(), parts.next())
     else {
         return Ok(false);
     };
-    let iterations: u32 = iterations.parse().unwrap_or(0);
-    if iterations == 0 {
-        return Ok(false);
-    }
     let computed = pbkdf2_hex_js(password, salt, iterations)
         .await
         .map_err(|e| js_err("pbkdf2", e))?;
     Ok(constant_time_eq(computed.as_bytes(), expected.as_bytes()))
+}
+
+fn password_iterations(stored: &str) -> Option<u32> {
+    let mut parts = stored.split('$');
+    if parts.next()? != "pbkdf2_sha256" {
+        return None;
+    }
+    let iterations: u32 = parts.next()?.parse().ok()?;
+    (1..=MAX_PBKDF2_ITERATIONS)
+        .contains(&iterations)
+        .then_some(iterations)
+}
+
+/// True when a verified password hash uses fewer iterations than the current
+/// policy. Login upgrades it while the plaintext is still available.
+pub(crate) fn password_needs_rehash(stored: &str) -> bool {
+    password_iterations(stored).is_none_or(|iterations| iterations < PBKDF2_ITERATIONS)
 }
 
 pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {

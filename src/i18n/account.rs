@@ -112,6 +112,7 @@ catalog! {
         Revoke => "Revoke", "撤销";
         InvalidTokenExpiry => "Choose a valid token expiry.", "请选择有效的令牌有效期。";
         InvalidTokenNameOrScope => "Use a name of 1 to 100 characters and choose read or write scope.", "请输入 1 到 100 个字符的名称，并选择读取或写入权限。";
+        TokenLimitReached => "You can keep at most 50 access tokens. Revoke one before creating another.", "最多可保留 50 个访问令牌。请先撤销一个再创建。";
     }
 }
 

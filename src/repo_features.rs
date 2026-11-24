@@ -6,6 +6,7 @@ use crate::handlers::common::{
     REPO_COLUMNS, VISIBLE_REPO_SQL,
 };
 use crate::i18n::{CommonText, Locale, RepoFeatureText as Text, RepoText};
+use crate::limits;
 use crate::models::{Repo, Ts};
 use crate::pagination::{PageRequest, Pagination, PAGE_SIZE};
 use crate::refs::{self, RefsError, Tag};
@@ -731,9 +732,11 @@ pub async fn save_issue_template(_req: Request, ctx: RouteContext<AppState>) -> 
              RETURNING id"
         )
     } else {
+        args.push(js_int(limits::MAX_ISSUE_TEMPLATES_PER_REPO));
         format!(
             "INSERT INTO issue_templates (repo_id, name, title, body)
              SELECT r.id, ?4, ?5, ?6 FROM repos r WHERE r.id = ?3 AND {ADMIN_SQL}
+               AND (SELECT COUNT(*) FROM issue_templates t WHERE t.repo_id = r.id) < ?7
              ON CONFLICT(repo_id, name) DO NOTHING RETURNING id"
         )
     };
@@ -758,17 +761,36 @@ pub async fn save_issue_template(_req: Request, ctx: RouteContext<AppState>) -> 
             ])?
             .first::<i64>(Some("id"))
             .await?;
-        return if duplicate.is_some() {
-            issue_templates_page(
+        if duplicate.is_some() {
+            return issue_templates_page(
                 state,
                 repo,
                 Some(editor),
                 Some((409, Text::IssueTemplateNameUsed)),
             )
-            .await
-        } else {
-            failure(state, 409, Text::IssueTemplateChanged)
-        };
+            .await;
+        }
+        #[derive(Deserialize)]
+        struct Count {
+            count: i64,
+        }
+        let count = db::first::<Count>(
+            &database,
+            "SELECT COUNT(*) AS count FROM issue_templates WHERE repo_id = ?",
+            &[js_int(repo.id)],
+        )
+        .await?
+        .map_or(0, |row| row.count);
+        if editor.id.is_none() && count >= limits::MAX_ISSUE_TEMPLATES_PER_REPO {
+            return issue_templates_page(
+                state,
+                repo,
+                Some(editor),
+                Some((422, Text::IssueTemplateLimitReached)),
+            )
+            .await;
+        }
+        return failure(state, 409, Text::IssueTemplateChanged);
     }
     redirect(&format!("/{}/settings/issue-templates", repo.full_name()))
 }

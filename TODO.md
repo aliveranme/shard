@@ -45,7 +45,21 @@ Tracked findings from the full-repository code reviews.
 - [x] Migration `0038_issue_labels_index_and_description_check.sql` adds `issue_labels(repo_id, issue_id)` index and 350-char description triggers; `deploy.mjs` derives reserved binding names dynamically.
 
 ### Known follow-ups
-- [ ] Pin GitHub Actions workflows to commit SHAs and evaluate non-root FUSE support in `containers/git-r2.Dockerfile` on Cloudflare staging.
+- [x] Pin GitHub Actions workflows to commit SHAs (`actions/checkout` v7.0.1, `jdx/mise-action` v5.3.0, `actions/upload-artifact` v7.0.2, `actions/download-artifact` v8.0.2).
+- [ ] Evaluate non-root FUSE support in `containers/git-r2.Dockerfile` on Cloudflare staging; the image still runs as root because `/dev/fuse` access and `fusermount3` behavior are unverified.
+- [ ] Gate public reads of arbitrary 40-character SHAs on ref or saved PR/review reachability across every Git backend. The Artifacts binding exposes no ancestry query, so this needs a product policy or an upstream primitive.
+- [ ] Add a retention policy for historical `repo_paths` aliases; the table currently grows with every rename/transfer and has no timestamp for age-based cleanup.
+- [ ] Organization membership still has no invitation/accept step; owned organizations are listed first to limit displacement.
+- [ ] Exercise the R2 container, hosted Free quotas and proxied push timeouts on Cloudflare staging.
+
+## Fifth review / hardening (2026-11-24)
+
+### Low / Info
+- [x] PBKDF2 password hashes upgraded from 100,000 to 600,000 iterations; successful login and re-authentication opportunistically rehash legacy rows without binding the new session to a concurrently changed password (`src/crypto.rs`, `src/auth.rs`).
+- [x] Per-account and per-repository collection caps: 50 access tokens per user, 50 issue templates and 100 labels or milestones per repository, enforced inside the conditional D1 inserts (`src/limits.rs`, `src/handlers/auth_handlers.rs`, `src/repo_features.rs`, `src/issue_metadata.rs`).
+- [x] GitHub Actions pinned to commit SHAs in CI and release workflows.
+- [x] Verified `sessions.expires_at` already has an index from migration `0002_account_security.sql`; no new migration needed.
+- [x] Verified Markdown and filtered HTML images already carry `referrerpolicy="no-referrer"`, `loading="lazy"` and `decoding="async"` (`src/markdown.rs`).
 
 ## Third review (2026-11-24)
 

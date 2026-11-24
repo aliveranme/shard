@@ -9,7 +9,7 @@ use worker::*;
 
 const SESSION_TTL: i64 = 30 * 24 * 3600;
 const TOKEN_USAGE_INTERVAL: i64 = 60;
-const DUMMY_PASSWORD_HASH: &str = "pbkdf2_sha256$100000$00000000000000000000000000000000$0000000000000000000000000000000000000000000000000000000000000000";
+const DUMMY_PASSWORD_HASH: &str = "pbkdf2_sha256$600000$00000000000000000000000000000000$0000000000000000000000000000000000000000000000000000000000000000";
 
 /// `SHARD_REGISTRATION=open|closed`; missing or `"open"` allows registration, while `"closed"` or any invalid value closes it.
 pub fn registration_open(env: &Env) -> bool {
@@ -79,6 +79,39 @@ async fn create_session(
     Ok(inserted.map(|_| token))
 }
 
+/// Upgrade a verified legacy hash while its plaintext is available. The
+/// conditional update keeps a concurrent password change authoritative; on a
+/// lost race the caller's conditional session/token insert then fails safely.
+async fn upgrade_password_hash(
+    database: &D1Database,
+    user_id: i64,
+    stored: &str,
+    password: &str,
+) -> Result<String> {
+    if !crypto::password_needs_rehash(stored) {
+        return Ok(stored.to_owned());
+    }
+    let upgraded = crypto::hash_password(password).await?;
+    let updated: Option<IgnoredAny> = db::first(
+        database,
+        "UPDATE users SET password_hash = ? WHERE id = ? AND password_hash = ? RETURNING id",
+        &[
+            util::js_text(&upgraded),
+            util::js_int(user_id),
+            util::js_text(stored),
+        ],
+    )
+    .await?;
+    // On a concurrent password change keep the verified legacy hash so the
+    // caller's conditional session/token insert fails instead of binding to
+    // the new password.
+    Ok(if updated.is_some() {
+        upgraded
+    } else {
+        stored.to_owned()
+    })
+}
+
 pub async fn destroy_session(env: &Env, token: &str) -> Result<()> {
     let hash = crypto::sha256_hex(token).await?;
     let database = env.d1("DB")?;
@@ -117,7 +150,9 @@ pub(crate) async fn login_session(
     if !crypto::verify_password(password, &account.password_hash).await? {
         return Ok(None);
     }
-    create_session(&database, account.id, &account.password_hash).await
+    let password_hash =
+        upgrade_password_hash(&database, account.id, &account.password_hash, password).await?;
+    create_session(&database, account.id, &password_hash).await
 }
 
 /// Returns `Some(token)` on success and `None` when a concurrent signup
@@ -361,7 +396,9 @@ pub(crate) async fn verified_password_hash(
     let Some(row) = row else { return Ok(None) };
     if crypto::verify_password(password, &row.password_hash).await? {
         reset_login_failures(env, &reauth_key).await?;
-        Ok(Some(row.password_hash))
+        let password_hash =
+            upgrade_password_hash(&database, row.id, &row.password_hash, password).await?;
+        Ok(Some(password_hash))
     } else {
         Ok(None)
     }

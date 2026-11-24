@@ -32,6 +32,7 @@ catalog! {
         LabelExists => "A label with that name already exists in this repository.", "此仓库中已存在同名标签。";
         MilestoneExists => "A milestone with that name already exists in this repository.", "此仓库中已存在同名里程碑。";
         CatalogEntryNotFound => "That label or milestone is unavailable in this repository.", "此仓库中没有该标签或里程碑。";
+        CatalogLimitReached => "This repository already has 100 labels or milestones of this kind. Remove one before adding another.", "此仓库已有 100 个同类标签或里程碑。请先移除一个再添加。";
         InvalidAction => "Choose a valid issue settings action.", "请选择有效的议题设置操作。";
     }
 }

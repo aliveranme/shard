@@ -4,6 +4,7 @@ use crate::handlers::common::{
     can_admin, can_write, forbidden, not_found, page_title, visible_repo,
 };
 use crate::i18n::{CommonText, DiscussionText, IssueMetadataText};
+use crate::limits;
 use crate::models::{Issue, Repo};
 use crate::templates::{render, Chrome};
 use crate::util::{js_int, js_null, js_text, now, query_param, redirect};
@@ -571,7 +572,8 @@ impl CatalogAction {
                      WHERE r.id = ?1 AND (r.owner_id = u.id OR u.is_admin = 1)";
         let status = database.prepare(format!(
             "SELECT EXISTS ({guard}) AS allowed,
-                    EXISTS (SELECT 1 FROM {table} WHERE repo_id = ?1 AND id = ?3) AS found",
+                    EXISTS (SELECT 1 FROM {table} WHERE repo_id = ?1 AND id = ?3) AS found,
+                    (SELECT COUNT(*) FROM {table} WHERE repo_id = ?1) AS count",
         ));
         let scope = [
             js_int(repo_id),
@@ -581,8 +583,14 @@ impl CatalogAction {
         let mutation = match self {
             Self::Create(_) => database.prepare(format!(
                 "INSERT INTO {table}(repo_id, name) SELECT id, ?3 FROM ({guard}) WHERE 1
+                   AND (SELECT COUNT(*) FROM {table} WHERE repo_id = ?1) < ?4
                  ON CONFLICT(repo_id, name) DO NOTHING RETURNING id",
-            )).bind(&[scope[0].clone(), scope[1].clone(), js_text(name.trim())])?,
+            )).bind(&[
+                scope[0].clone(),
+                scope[1].clone(),
+                js_text(name.trim()),
+                js_int(limits::MAX_ISSUE_CATALOG_ENTRIES_PER_REPO),
+            ])?,
             Self::Rename(..) => database.prepare(format!(
                 "UPDATE OR IGNORE {table} SET name = ?4 WHERE id = ?3 AND repo_id IN ({guard}) RETURNING id",
             )).bind(&[scope[0].clone(), scope[1].clone(), scope[2].clone(), js_text(name.trim())])?,
@@ -596,6 +604,7 @@ impl CatalogAction {
         struct Status {
             allowed: i64,
             found: i64,
+            count: i64,
         }
         let status = results[0]
             .results::<Status>()?
@@ -607,10 +616,15 @@ impl CatalogAction {
         if id.is_some() && status.found == 0 {
             return Ok(Some((404, CatalogEntryNotFound)));
         }
-        Ok(results[1]
-            .results::<serde::de::IgnoredAny>()?
-            .is_empty()
-            .then(|| (409, kind.duplicate())))
+        if results[1].results::<serde::de::IgnoredAny>()?.is_empty() {
+            if matches!(self, Self::Create(_))
+                && status.count >= limits::MAX_ISSUE_CATALOG_ENTRIES_PER_REPO
+            {
+                return Ok(Some((422, IssueMetadataText::CatalogLimitReached)));
+            }
+            return Ok(Some((409, kind.duplicate())));
+        }
+        Ok(None)
     }
 }
 

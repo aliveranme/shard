@@ -36,6 +36,7 @@ catalog! {
         IssueTemplateBodyTooLong => "The default issue description must be 64 KiB or smaller.", "默认议题描述不能超过 64 KiB。";
         IssueTemplateNameUsed => "A template with this name already exists.", "已有同名模板。";
         IssueTemplateChanged => "This template changed. Reload it and try again.", "此模板已更改。请重新加载后再试。";
+        IssueTemplateLimitReached => "This repository already has 50 issue templates. Remove one before creating another.", "此仓库已有 50 个议题模板。请先移除一个再创建。";
         BlankIssue => "Blank issue", "空白议题";
         ApplyIssueTemplate => "Apply template", "应用模板";
         ApplyIssueTemplateHelp => "Applying a template fills empty fields.", "应用模板会填入空白字段。";

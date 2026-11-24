@@ -466,9 +466,35 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
       assert.doesNotMatch((await client.get(path)).body, /rel="next"/);
     });
 
+    await t.test("access token creation stops at the per-user cap", async () => {
+      const client = await login("tokenpages").then(async ({ client: signedIn }) => {
+        await signedIn.get("/user/settings/tokens");
+        return signedIn;
+      });
+      const database = (sql) => cli([
+        "d1", "execute", "DB", "--local", "--persist-to", persistence, "--command", sql,
+      ]);
+      await database(`
+        WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 30)
+        INSERT INTO access_tokens (user_id, name, token_hash, scope, created_at, expires_at)
+        SELECT u.id, 'cap-token-' || printf('%02d', i), 'cap' || printf('%061d', i), 'read', 0, 4102444800
+          FROM users u, n WHERE u.username = 'tokenpages';`);
+      const blocked = await client.post("/user/settings/tokens", {
+        name: "over cap", scope: "read", expires_in: "7", current_password: password,
+      });
+      assert.equal(blocked.status, 422);
+      assert.match(blocked.body, /at most 50 access tokens/);
+      await database("DELETE FROM access_tokens WHERE name LIKE 'cap-token-%'");
+    });
+
     await t.test("expired Git tokens and browser sessions are rejected", async () => {
       const fixtureLogin = await login("expiredfixture");
       redirected(fixtureLogin.result);
+      const [stored] = JSON.parse(await cli([
+        "d1", "execute", "DB", "--local", "--persist-to", persistence, "--json",
+        "--command", "SELECT password_hash FROM users WHERE username = 'expiredfixture'",
+      ]))[0].results;
+      assert.match(stored.password_hash, /^pbkdf2_sha256\$600000\$/);
       await fixtureLogin.client.get("/new");
       redirected(await fixtureLogin.client.post("/repo/create", { name: "private", private: "on" }));
       const response = await new Client().request("/expiredfixture/private.git/info/refs?service=git-upload-pack", {
@@ -1235,6 +1261,33 @@ test("forge HTTP regression scenarios", { timeout: 480_000 }, async (t) => {
       assert.equal((await viewer.get(privateRepo)).status, 200);
       await assertCleared();
       redirected(await owner.post(team, { action: "remove_member", user_id: assignee_id }));
+    });
+
+    await t.test("issue settings stop at per-repository collection caps", async () => {
+      const database = (sql) => cli([
+        "d1", "execute", "DB", "--local", "--persist-to", persistence, "--command", sql,
+      ]);
+      const catalog = `${privateRepo}/settings/issues`;
+      const templates = `${privateRepo}/settings/issue-templates`;
+      await owner.get(catalog);
+      await database(`
+        WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 99)
+        INSERT INTO repo_labels (repo_id, name)
+        SELECT r.id, 'cap-label-' || printf('%02d', i) FROM repos r, n WHERE r.name = 'private-vault';`);
+      const overLabel = await owner.post(catalog, { action: "create_label", name: "cap-over" });
+      assert.equal(overLabel.status, 422);
+      assert.match(overLabel.body, /already has 100 labels/);
+      await database("DELETE FROM repo_labels WHERE name LIKE 'cap-label-%'");
+
+      await owner.get(templates);
+      await database(`
+        WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 49)
+        INSERT INTO issue_templates (repo_id, name, title, body)
+        SELECT r.id, 'cap-template-' || printf('%02d', i), '', '' FROM repos r, n WHERE r.name = 'private-vault';`);
+      const overTemplate = await owner.post(templates, { name: "Over cap", title: "Title", body: "Body" });
+      assert.equal(overTemplate.status, 422);
+      assert.match(overTemplate.body, /already has 50 issue templates/);
+      await database("DELETE FROM issue_templates WHERE name LIKE 'cap-template-%'");
     });
 
     await t.test("portable metadata import is owner-only and atomic", async () => {
